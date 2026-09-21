@@ -1,0 +1,20 @@
+# Local build output and private credentials
+node_modules/
+.next/
+.wrangler/
+.vercel/
+.clerk/
+.env*
+!.env.example
+*.tsbuildinfo
+coverage/
+tmp/
+output/
+assets/pitch/
+.codex-finalizer-pitch/
+apps/data-bridge/worker-configuration.d.ts
+
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+*.log

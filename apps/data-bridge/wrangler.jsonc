@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "cozte-d1-bridge",
+  "account_id": "b16b057db473a7ca309e70724394acb6",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "claro-costos-db",
+      "database_id": "c7fedc6a-ec1c-43ce-8021-29f98710acee",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

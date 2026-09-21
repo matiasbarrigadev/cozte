@@ -1,0 +1,22 @@
+{
+  "name": "cozte-d1-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "types": "wrangler types",
+    "pretypecheck": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs",
+    "deploy:dry": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 migrations apply claro-costos-db --local",
+    "db:remote": "wrangler d1 migrations apply claro-costos-db --remote"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.136.1"
+  }
+}

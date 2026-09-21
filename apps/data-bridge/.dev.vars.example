@@ -1,0 +1,2 @@
+# Use the same 32+ character random value in Vercel as DATA_BRIDGE_SECRET.
+DATA_BRIDGE_SECRET=
