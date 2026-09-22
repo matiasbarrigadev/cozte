@@ -72,7 +72,7 @@ function validStatements(input: unknown): input is { statements: Statement[] } {
     if (params === undefined) return true;
     return Array.isArray(params) && params.length <= 100 && params.every((param) =>
       param === null ||
-      (typeof param === "string" && param.length <= 10000) ||
+      (typeof param === "string" && param.length <= 100000) ||
       (typeof param === "number" && Number.isSafeInteger(param)),
     );
   });

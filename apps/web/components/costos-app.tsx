@@ -16,25 +16,24 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { EntityDialog } from "./entity-dialog";
 import { EvidencePanel } from "./evidence-panel";
 import { CostSheet } from "./cost-sheet";
+import { CozteAssistant } from "./cozte-assistant";
+import { CostHistory, type CostSnapshotRow, type HistoryEntry, type ProfileSnapshotRow } from "./cost-history";
 
 type Dashboard = DomainState & { costs: ProductCost[]; alerts: { id: string; material_id: string; message: string; first_detected_at: string }[] };
 type View = "dashboard" | "producto" | "planilla" | "revision" | "comprobantes" | "asistente" | "historial";
 type Draft = { materials: Record<string, number>; expenses: Record<string, number>; source: string; effectiveDate: string };
-type ChatMessage = { role: "user" | "assistant"; text: string };
-type HistoryEntry = { id: string; action: string; entity_id: string | null; created_at: string; actor_id: string };
 
 const nav: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "planilla", label: "Planilla de costos", icon: Table2 },
+  { id: "planilla", label: "Costos de producción", icon: Table2 },
   { id: "revision", label: "Revisar cambios", icon: ClipboardCheck },
   { id: "comprobantes", label: "Comprobantes", icon: FileText },
-  { id: "asistente", label: "Asistente", icon: Bot },
+  { id: "asistente", label: "Cozte AI", icon: Bot },
   { id: "historial", label: "Historial", icon: Clock3 },
 ];
 
@@ -56,9 +55,9 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
   const [busy, setBusy] = React.useState(false);
   const [pendingMeta, setPendingMeta] = React.useState<{ action: Record<string, unknown>; affected: string[]; description: string } | null>(null);
   const [dialog, setDialog] = React.useState<"product" | "material" | "expense" | "edit-product" | null>(null);
-  const [chatText, setChatText] = React.useState("");
-  const [chat, setChat] = React.useState<ChatMessage[]>([{ role: "assistant", text: "Contame qué costo cambió o preguntame cómo se reparte entre tus productos." }]);
   const [history, setHistory] = React.useState<HistoryEntry[]>([]);
+  const [snapshots, setSnapshots] = React.useState<CostSnapshotRow[]>([]);
+  const [profileSnapshots, setProfileSnapshots] = React.useState<ProfileSnapshotRow[]>([]);
   const [decision, setDecision] = React.useState("");
   const currency = state.organization.currency;
   const product = state.products.find((item) => item.id === selected) ?? state.products[0];
@@ -163,38 +162,13 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
 
   async function loadHistory() {
     if (demo) return;
-    try { const response = await fetch("/api/history", { cache: "no-store" }); if (response.ok) setHistory((await response.json()).events); }
+    try { const response = await fetch("/api/history", { cache: "no-store" }); if (response.ok) { const data = await response.json(); setHistory(data.events ?? []); setSnapshots(data.snapshots ?? []); setProfileSnapshots(data.profileSnapshots ?? []); } }
     catch { toast.error("No se pudo cargar el historial"); }
   }
 
   function navigate(next: View) {
     setView(next);
     if (next === "historial") void loadHistory();
-  }
-
-  async function sendChat(event: React.FormEvent) {
-    event.preventDefault();
-    const message = chatText.trim();
-    if (!message || busy) return;
-    setChat((items) => [...items, { role: "user", text: message }]);
-    setChatText("");
-    if (demo) {
-      setChat((items) => [...items, { role: "assistant", text: "En la demostración puedes editar el papel y revisar cómo afecta a los tres productos. En la aplicación conectada puedo ayudarte a identificar insumos y proponer cambios." }]);
-      return;
-    }
-    setBusy(true);
-    try {
-      const response = await fetch("/api/assistant", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "El asistente no respondió");
-      setChat((items) => [...items, { role: "assistant", text: data.reply }]);
-      if (data.proposal?.kind === "material-price" && data.proposal.materialId && Number.isSafeInteger(data.proposal.priceMinor)) {
-        setDraftStatus("saving");
-        setDraft((current) => ({ ...current, materials: { ...current.materials, [data.proposal.materialId]: data.proposal.priceMinor } }));
-        toast.info("Propuesta agregada al borrador. Revísala antes de confirmar.");
-      }
-    } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo consultar"); }
-    finally { setBusy(false); }
   }
 
   return (
@@ -247,12 +221,9 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
             </>}
           </> : null}
 
-          {view === "asistente" ? <>
-            <div><p className="text-sm text-muted-foreground">Asistente</p><h1 className="text-3xl font-semibold tracking-tight">Actualiza por chat</h1><p className="text-sm text-muted-foreground">El asistente propone; tú revisas y confirmas.</p></div>
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]"><Card className="min-h-[520px]"><CardHeader><CardTitle>Asistente de costos</CardTitle><CardDescription>{state.organization.name} · {state.products.length} productos</CardDescription></CardHeader><CardContent className="flex flex-1 flex-col gap-3">{chat.map((item, index) => <div key={index} className={item.role === "user" ? "ml-auto max-w-[85%] rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "max-w-[85%] rounded-xl bg-muted px-4 py-3 text-sm"}>{item.text}</div>)}</CardContent><CardFooter><form className="flex w-full gap-2" onSubmit={sendChat}><InputGroup><InputGroupInput value={chatText} onChange={(event) => setChatText(event.target.value)} placeholder="Ej. El papel subió a $10.000 por resma" aria-label="Mensaje al asistente" /><InputGroupAddon align="inline-end"><Bot /></InputGroupAddon></InputGroup><Button type="submit" disabled={busy || !chatText.trim()}>Enviar</Button></form></CardFooter></Card><Card><CardHeader><CardTitle>Siempre bajo control</CardTitle><CardDescription>El chat no cambia los costos directamente.</CardDescription></CardHeader><CardContent className="flex flex-col gap-3 text-sm"><p>1. Identificamos el costo.</p><p>2. Calculamos todos los productos afectados.</p><p>3. Tú confirmas el borrador.</p></CardContent><CardFooter><Button variant="outline" onClick={() => setView("planilla")}>Abrir planilla</Button></CardFooter></Card></div>
-          </> : null}
+          {view === "asistente" ? <CozteAssistant state={state} demo={demo} onOpenProductionCosts={() => setView("planilla")} onMaterialProposal={(materialId, priceMinor) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [materialId]: priceMinor } })); toast.info("Precio agregado al borrador. Revísalo antes de confirmar."); setView("planilla"); }} /> : null}
 
-          {view === "historial" ? <><div><p className="text-sm text-muted-foreground">Auditoría</p><h1 className="text-3xl font-semibold tracking-tight">Historial de cambios</h1></div><Card><CardHeader><CardTitle>Actividad reciente</CardTitle><CardDescription>Quién cambió los datos y cuándo.</CardDescription></CardHeader><CardContent>{history.length ? <Table><TableHeader><TableRow><TableHead>Acción</TableHead><TableHead>Fecha</TableHead><TableHead>Usuario</TableHead></TableRow></TableHeader><TableBody>{history.map((item) => <TableRow key={item.id}><TableCell>{item.action}</TableCell><TableCell>{new Date(item.created_at).toLocaleString("es-CL")}</TableCell><TableCell className="truncate">{item.actor_id}</TableCell></TableRow>)}</TableBody></Table> : <Empty><EmptyHeader><EmptyMedia variant="icon"><Clock3 /></EmptyMedia><EmptyTitle>Sin actividad reciente</EmptyTitle><EmptyDescription>Los cambios confirmados aparecerán aquí.</EmptyDescription></EmptyHeader></Empty>}</CardContent></Card></> : null}
+          {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
         </main>
       </SidebarInset>
       <EntityDialog kind={dialog} product={dialog === "edit-product" ? product : undefined} products={state.products} onClose={() => setDialog(null)} onSave={save} currency={currency} busy={busy} demo={demo} />

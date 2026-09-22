@@ -4,6 +4,7 @@ import { calculateCosts, type DomainState } from "@/lib/domain";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, type SqlStatement } from "./db";
 import { loadState } from "./state";
+import { loadProductionProfile } from "./production-profile";
 
 const name = z.string().trim().min(2).max(120);
 const money = z.number().int().min(0).max(1_000_000_000_000);
@@ -167,7 +168,7 @@ export function previewMutation(state: DomainState, input: Mutation) {
 }
 
 export async function commitMutation(principal: Principal, input: Mutation) {
-  const state = await loadState(principal);
+  const [state, profile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
   const { next, before } = previewMutation(state, input);
   const organizationId = principal.organizationId;
   const actorId = principal.userId;
@@ -241,7 +242,17 @@ export async function commitMutation(principal: Principal, input: Mutation) {
 
   // Snapshots are saved with the same transaction as the input change.
   for (const cost of calculateCosts(next)) {
-    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, cost.productId === "new" ? entityId : cost.productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent, JSON.stringify(cost.lines), JSON.stringify(cost.warnings)] });
+    const snapshotContext = {
+      product: next.products.find((item) => item.id === cost.productId),
+      components: next.components.filter((item) => item.productId === cost.productId),
+      materials: next.materials.filter((item) => next.components.some((component) => component.productId === cost.productId && component.materialId === item.id)),
+      expenses: next.expenses.filter((item) => item.period === next.activePeriod),
+      allocationPeers: next.products.map((item) => ({ id: item.id, lotUnits: item.lotUnits, productionHoursMilli: item.productionHoursMilli })),
+      activePeriod: next.activePeriod,
+      organizationRevision: next.revision,
+      productionProfileRevision: profile.confirmedRevision,
+    };
+    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, cost.productId === "new" ? entityId : cost.productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent, JSON.stringify(cost.lines), JSON.stringify(cost.warnings), JSON.stringify(snapshotContext)] });
   }
   if (statements.length > 100) throw new ApiError(400, "Demasiados cambios en una confirmación");
   await dbBatch(statements);

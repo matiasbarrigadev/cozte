@@ -11,13 +11,15 @@ MVP de costeo continuo para PyMEs manufactureras con varios productos, insumos c
 | Archivos | Cloudflare R2 | Comprobantes privados por empresa. |
 | Adaptador de datos | `apps/data-bridge`, Cloudflare Worker | Ejecuta consultas D1 firmadas con HMAC desde la API en Vercel; no expone endpoints de negocio. |
 
-El motor de costos es determinístico: un precio compartido se registra una vez y recalcula todos los productos que lo consumen. Los gastos se registran una vez por período activo; el reparto usa horas de producción o unidades de lote. Un dato esencial faltante impide mostrar un costo aparentemente exacto. La IA (Jev de TypeSafe para identificación/juicio y un modelo generativo para explicación) sugiere, pero no confirma, datos financieros. El consumo de modelos está centralizado en AI SDK 7.
+El motor de costos es determinístico: un precio compartido se registra una vez y recalcula todos los productos que lo consumen. Los gastos se registran una vez por período activo; el reparto usa horas de producción o unidades de lote. Un dato esencial faltante impide mostrar un costo aparentemente exacto. Cozte entrevista a la empresa con MiniMax M3 mediante AI SDK 7, configura un perfil estructurado y deja los cambios para aprobación; Jev de TypeSafe ayuda a identificar insumos ambiguos. La IA no hace la aritmética financiera.
+
+El perfil de producción registra ubicación, etapas, productos, categorías acordadas, conversión compra/consumo y reparto de gastos mensuales, trimestrales o anuales. Se puede revisar en cualquier momento. Cada confirmación del perfil guarda una versión inmutable con su costeo calculado; cada cambio confirmado de la planilla guarda una foto del costo y los datos usados para cada producto. El historial muestra variación y una explicación inicial de su principal componente.
 
 La planilla permite buscar y filtrar por tipo o categoría editable. Nombres, proveedor, unidad y base de reparto se guardan al salir de la celda; los cambios de unidad o reparto que afectan productos requieren confirmación. Los importes se autoguardan como **borrador privado en D1** y solo cambian los costos vigentes después de revisar el impacto, indicar fuente y fecha, y confirmar.
 
 ## Estado de la infraestructura
 
-- Cloudflare **Lightning CloudWave** (`b16b057db473a7ca309e70724394acb6`): D1 `claro-costos-db` creado; migraciones `0001` a `0003` aplicadas local y remotamente.
+- Cloudflare **Lightning CloudWave** (`b16b057db473a7ca309e70724394acb6`): D1 `claro-costos-db` creado; migraciones `0001` a `0007` aplicadas local y remotamente.
 - Worker `cozte-d1-bridge` desplegado con `DATA_BRIDGE_SECRET`; la conexión firmada desde Vercel fue verificada. Su URL se utiliza solo desde el servidor de Vercel.
 - R2 está habilitado y el bucket privado `cozte-documents` fue creado. Las variables S3 están en Vercel Production; falta verificar una carga autenticada desde la aplicación.
 - La aplicación Clerk **Cozte** (`app_3Jf9dlY7bLusslTQ1YTsxlPCbxG`) tiene instancia de producción (`ins_3JfBfzn3opJsD1vzLOLZyZJwexb`), organizaciones habilitadas e ingreso por correo. Las claves de producción están en Vercel; los cinco CNAME requeridos se crearon en Vercel DNS y Clerk verificó DNS, SSL y correo. Google OAuth queda desactivado por decisión del equipo.
@@ -38,11 +40,11 @@ Comprobaciones: `npm run typecheck`, `npm run lint`, `npm run test`, `npm run bu
 2. El secreto `DATA_BRIDGE_SECRET` ya está instalado en Cloudflare y Vercel Production y la conexión firmada fue verificada. `DATA_BRIDGE_URL` también está configurada.
 3. El primer usuario y su empresa ya ingresaron en producción; se verificaron el dashboard, la membresía en D1 y consultas privadas con respuesta 200. El piloto usa correo con código; Google OAuth no está activado.
 4. Verificar una carga autenticada de PDF/imagen pequeña. El token R2 con permiso **Object Read & Write** limitado a `cozte-documents` y las cuatro variables `R2_*` ya están en Vercel Production, pero las variables sensibles no se exportan a pruebas locales.
-5. `CRON_SECRET` ya está configurado en Vercel Production. En Vercel, AI Gateway puede autenticarse con OIDC sin `AI_GATEWAY_API_KEY`; para desarrollo local sí se requiere una clave. El cron en `apps/web/vercel.json` revisa cada día los insumos sin precio o cuya fecha efectiva supera 30 días; esta cadencia es una hipótesis de piloto.
+5. `CRON_SECRET` y `AI_GATEWAY_API_KEY` están configurados en Vercel Production. Cozte exige esta clave explícita, también en desarrollo, para atribuir el consumo al proyecto. El cron en `apps/web/vercel.json` revisa cada día los insumos sin precio o cuya fecha efectiva supera 30 días; esta cadencia es una hipótesis de piloto.
 6. Probar alta de empresa, carga de varios productos, actualización compartida, gastos, chat, archivos y revisión de permisos antes de invitar usuarios. El propietario gestiona el dominio y sus DNS.
 
 ## Alcance del piloto y límites
 
-Se implementó el flujo principal de costeo y actualización. La carga de evidencias almacena archivos privados, pero **no extrae automáticamente datos de facturas**; la importación masiva de Excel, impuestos por país, integraciones con proveedores y conciliación no están incluidos. El piloto opera con CLP por defecto; la configuración multimoneda/país y las reglas fiscales no están resueltas. No usar el resultado como sustituto de contabilidad o asesoría profesional.
+Se implementó el flujo principal de costeo y actualización. El perfil estructurado calcula una estimación vigente; el costo real por lote y el escenario/objetivo aún no tienen captura independiente. Las pérdidas extraordinarias se detectan como brecha de rendimiento, pero no se cuantifican en una cuenta separada; tampoco se calcula capacidad ociosa. La carga de evidencias almacena archivos privados, pero **no extrae automáticamente datos de facturas**; la importación masiva de Excel, impuestos por país, integraciones con proveedores y conciliación no están incluidos. El piloto opera con CLP por defecto; la configuración multimoneda/país y las reglas fiscales no están resueltas. No usar el resultado como sustituto de contabilidad o asesoría profesional.
 
 El [plan de implementación](PLAN_IMPLEMENTACION_MVP.md) desarrolla producto, hipótesis y evolución. El [mockup HTML](MOCKUPS_UX_MVP.html) conserva la exploración de UX.

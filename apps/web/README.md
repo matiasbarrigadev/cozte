@@ -15,6 +15,6 @@ npm run dev
 
 Abre `/demo` para explorar un conjunto de tres productos sin credenciales de datos. La demostración es de solo lectura; sus cambios se simulan localmente.
 
-Para usar datos reales, copia `.env.example` a `.env.local` y configura Clerk, la URL y secreto compartido del puente D1, AI Gateway para el asistente y las credenciales R2 para documentos. No subas `.env.local` al repositorio. En Vercel, AI Gateway puede usar OIDC sin clave adicional; localmente usa `AI_GATEWAY_API_KEY`. El secreto `DATA_BRIDGE_SECRET` debe coincidir con el secreto del Worker; `CRON_SECRET` protege la revisión diaria de precios. El asistente nunca confirma cambios: deja propuestas para revisión humana.
+Para usar datos reales, copia `.env.example` a `.env.local` y configura Clerk, la URL y secreto compartido del puente D1, `AI_GATEWAY_API_KEY` para MiniMax M3 y las credenciales R2 para documentos. No subas `.env.local` al repositorio. Cozte exige una clave explícita de AI Gateway tanto local como en Vercel; no depende de OIDC. El secreto `DATA_BRIDGE_SECRET` debe coincidir con el secreto del Worker; `CRON_SECRET` protege la revisión diaria de precios. El asistente nunca confirma cambios: deja propuestas para revisión humana. El historial conserva fotos inmutables de cada cambio confirmado.
 
 El proyecto `lightningteam/cozte` ya importa este repositorio con **Root Directory `apps/web`**. El propietario administra `cozte.com`. Consulta el README raíz para el estado de los servicios y los pasos pendientes.

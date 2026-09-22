@@ -1,10 +1,12 @@
 # Cozte — plan de implementación del MVP de costeo continuo
 
-**Versión:** 1.4 — 21 de septiembre de 2026
+**Versión:** 1.5 — 22 de septiembre de 2026
 **Estado:** plan de trabajo para revisión del equipo
-**Marca y dominio:** Cozte · cozte.com. El dominio se conectará a Vercel cuando el repositorio y el proyecto estén listos; no forma parte de la configuración actual.
+**Marca y dominio:** Cozte · cozte.com, conectado a Vercel.
 **Infraestructura base:** Vercel y Cloudflare
-**Capa de modelos:** Vercel AI SDK 7 para todo consumo de modelos; Jev de TypeSafe AI como candidato prioritario para juicios de clasificación
+**Capa de modelos:** Vercel AI SDK 7 y AI Gateway con clave explícita; MiniMax M3 para la entrevista y Jev de TypeSafe AI para juicios de identificación acotados.
+
+**Decisión vigente de producto:** Cozte entrevista y reevalúa el proceso continuamente, sin etapas cerradas. La persona puede informar cambios de fabricación en cualquier momento. El alcance termina en el producto apto, empacado y listo para despacho. Cada cambio confirmado genera una foto inmutable de datos, reglas y costo calculado; el historial compara fotos y no recalcula el pasado con criterios actuales. Una foto es un snapshot de datos, no una captura visual de pantalla.
 
 ## 1. Resumen ejecutivo
 
@@ -237,7 +239,7 @@ Para gastos compartidos, el sistema guardará **importe original, período, prod
 | Archivos de evidencia | Cloudflare R2 | Comprobantes privados y documentos originales; en D1 solo metadatos y referencias al objeto. |
 | Procesamiento asíncrono (si hace falta) | Vercel Functions + cola de trabajos persistida en D1 | Ejecutar extracción, recálculo y alertas desde Vercel; se añadirá infraestructura de colas solo al comprobar necesidad real. |
 | Revisión programada | Vercel Cron Jobs | Invocar una ruta privada de Vercel; interpretar fechas en la zona horaria de la empresa. |
-| Servicio de IA | Funciones de servidor de Vercel, Node.js 22+, ESM, Vercel AI SDK 7 y AI Gateway | Único punto de acceso a modelos. Jev se invoca mediante `experimental_evaluate` y `typesafe-ai/jev`; los modelos generativos se invocan con AI SDK 7. El modelo generativo concreto se decide con pruebas. |
+| Servicio de IA | Funciones de servidor de Vercel, Node.js 22+, ESM, Vercel AI SDK 7 y AI Gateway | Único punto de acceso a modelos. Cozte usa `minimax/minimax-m3` con clave explícita `AI_GATEWAY_API_KEY`; Jev se invoca mediante `experimental_evaluate` y `typesafe-ai/jev` para juicios acotados. |
 | Identidad de usuarios | Clerk, integrado en Vercel | Inicio de sesión, organizaciones e invitaciones; elección aprobada para el piloto. |
 
 La aplicación llamará a Cloudflare **solo desde el servidor de Vercel**. El navegador no tendrá credenciales permanentes de D1 ni R2. Clerk y la API de Vercel determinarán la identidad, organización y rol; cada consulta de negocio incluirá un filtro por `organization_id`. El puente de D1 no conoce usuarios ni decide permisos: solo acepta lotes de SQL parametrizado firmados por Vercel, con caducidad breve, tamaño acotado y secreto privado. R2 se conectará directamente desde Vercel con su API S3 y credenciales limitadas al bucket; los archivos serán privados y las cargas usarán permisos temporales cuando se habilite R2.
@@ -301,7 +303,7 @@ Jev recibe **estado estructurado y preguntas acotadas**, y devuelve decisiones t
 
 En documentos: primero se extrae texto y se detectan candidatos de monto, fecha y unidad con código; Jev puede seleccionar el fragmento que cumple un rol, y luego código lo normaliza y valida. Si el texto es ilegible o los candidatos no cubren el dato necesario, se solicita corrección o se prueba un modelo multimodal **también vía AI SDK 7**. Nunca se acepta un número generado sin cotejo con el comprobante. Esta cascada limita llamadas costosas y evita pedirle a Jev tareas para las que no fue diseñado. [Patrón de extracción de TypeSafe](https://docs.typesafe.ai/cookbooks/pre_parsed_value_extraction_cookbook).
 
-Las propuestas guardarán fuente y fragmento, versión de pregunta/esquema/modelo, probabilidades pertinentes, estado de revisión, corrección humana y fecha. La IA no actualizará D1 por su cuenta. Los textos de empresas son datos no confiables y sus instrucciones internas no alteran políticas, permisos ni reglas de costeo. Solo se enviará al proveedor el contexto mínimo; claves siempre en servidor. Configuraremos controles de **Zero Data Retention y No Training** en AI Gateway cuando correspondan y comprobaremos las condiciones contractuales aplicables al piloto. [Controles de AI Gateway](https://vercel.com/changelog/typesafe-ai-jev-now-available-on-ai-gateway).
+Las propuestas guardarán fuente y fragmento, versión de pregunta/esquema/modelo, probabilidades pertinentes, estado de revisión, corrección humana y fecha. La IA solo puede guardar un **borrador** estructurado en D1; confirmar el perfil o los precios vigentes requiere acción humana. Los textos de empresas son datos no confiables y sus instrucciones internas no alteran políticas, permisos ni reglas de costeo. Solo se enviará al proveedor el contexto mínimo; claves siempre en servidor. Configuraremos controles de **Zero Data Retention y No Training** en AI Gateway cuando correspondan y comprobaremos las condiciones contractuales aplicables al piloto. [Controles de AI Gateway](https://vercel.com/changelog/typesafe-ai-jev-now-available-on-ai-gateway).
 
 ### Prueba de valor y puerta de adopción de Jev
 
