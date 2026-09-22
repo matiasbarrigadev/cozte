@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, Bot, Boxes, ClipboardCheck, Clock3, LayoutDashboard, Plus, RotateCcw, Table2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bot, Boxes, ClipboardCheck, Clock3, FileText, LayoutDashboard, Plus, Table2 } from "lucide-react";
 import { calculateCosts, type DomainState, type Product, type ProductCost } from "@/lib/domain";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,13 +17,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
-import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { EntityDialog } from "./entity-dialog";
 import { EvidencePanel } from "./evidence-panel";
+import { CostSheet } from "./cost-sheet";
 
 type Dashboard = DomainState & { costs: ProductCost[]; alerts: { id: string; material_id: string; message: string; first_detected_at: string }[] };
-type View = "dashboard" | "producto" | "planilla" | "revision" | "asistente" | "historial";
-type Draft = { materials: Record<string, number>; expenses: Record<string, number> };
+type View = "dashboard" | "producto" | "planilla" | "revision" | "comprobantes" | "asistente" | "historial";
+type Draft = { materials: Record<string, number>; expenses: Record<string, number>; source: string; effectiveDate: string };
 type ChatMessage = { role: "user" | "assistant"; text: string };
 type HistoryEntry = { id: string; action: string; entity_id: string | null; created_at: string; actor_id: string };
 
@@ -31,28 +33,29 @@ const nav: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "planilla", label: "Planilla de costos", icon: Table2 },
   { id: "revision", label: "Revisar cambios", icon: ClipboardCheck },
+  { id: "comprobantes", label: "Comprobantes", icon: FileText },
   { id: "asistente", label: "Asistente", icon: Bot },
   { id: "historial", label: "Historial", icon: Clock3 },
 ];
 
 const formatMoney = (value: number | null, currency: string) => value === null ? "Sin calcular" : new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
 const formatPercent = (value: number | null) => value === null ? "—" : `${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 1 }).format(value)}%`;
-const formNumber = (value: string) => Number.isFinite(Number(value)) ? Math.max(0, Math.trunc(Number(value))) : 0;
+const emptyDraft = (): Draft => ({ materials: {}, expenses: {}, source: "", effectiveDate: new Date().toISOString().slice(0, 10) });
 
 export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?: boolean }) {
   const [state, setState] = React.useState<Dashboard>(initial);
   const [view, setView] = React.useState<View>("dashboard");
   const [selected, setSelected] = React.useState<string | null>(initial.products[0]?.id ?? null);
-  const [draft, setDraft] = React.useState<Draft>(() => {
-    const materials: Record<string, number> = {};
-    if (demo) materials.papel = 10000;
-    return { materials, expenses: {} };
-  });
+  const [draft, setDraft] = React.useState<Draft>(() => { const value = emptyDraft(); if (demo) value.materials.papel = 10000; return value; });
+  const [draftReady, setDraftReady] = React.useState(demo);
+  const [draftLoadAttempt, setDraftLoadAttempt] = React.useState(0);
+  const [draftStatus, setDraftStatus] = React.useState<"loading" | "saving" | "saved" | "error">(demo ? "saved" : "loading");
+  const draftGeneration = React.useRef(0);
+  const draftWriteChain = React.useRef<Promise<void>>(Promise.resolve());
   const [review, setReview] = React.useState<ProductCost[] | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [pendingMeta, setPendingMeta] = React.useState<{ action: Record<string, unknown>; affected: string[]; description: string } | null>(null);
   const [dialog, setDialog] = React.useState<"product" | "material" | "expense" | "edit-product" | null>(null);
-  const [source, setSource] = React.useState("");
-  const [effectiveDate, setEffectiveDate] = React.useState(() => new Date().toISOString().slice(0, 10));
   const [chatText, setChatText] = React.useState("");
   const [chat, setChat] = React.useState<ChatMessage[]>([{ role: "assistant", text: "Contame qué costo cambió o preguntame cómo se reparte entre tus productos." }]);
   const [history, setHistory] = React.useState<HistoryEntry[]>([]);
@@ -68,6 +71,35 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
   }, [state, draft]);
   const preview = review ?? clientPreview;
 
+  React.useEffect(() => {
+    if (demo) return;
+    let active = true;
+    fetch("/api/draft", { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) throw new Error("No se pudo cargar el borrador");
+      const data = await response.json();
+      if (active) {
+        if (data.draft) setDraft(data.draft);
+        setDraftReady(true);
+        setDraftStatus("saved");
+      }
+    }).catch(() => { if (active) setDraftStatus("error"); });
+    return () => { active = false; };
+  }, [demo, draftLoadAttempt]);
+
+  React.useEffect(() => {
+    if (demo || !draftReady) return;
+    const generation = ++draftGeneration.current;
+    const timer = setTimeout(() => {
+      setDraftStatus("saving");
+      draftWriteChain.current = draftWriteChain.current.catch(() => {}).then(async () => {
+        const response = await fetch("/api/draft", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(draft) });
+        if (!response.ok) throw new Error("No se pudo guardar el borrador");
+        if (draftGeneration.current === generation) setDraftStatus("saved");
+      }).catch(() => { if (draftGeneration.current === generation) setDraftStatus("error"); });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [demo, draftReady, draft]);
+
   async function refresh() {
     if (demo) return;
     const response = await fetch("/api/state", { cache: "no-store" });
@@ -75,7 +107,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
     setState(await response.json());
   }
 
-  async function save(action: Record<string, unknown>) {
+  async function save(action: Record<string, unknown>, quiet = false) {
     if (demo) { toast.info("Demostración: los cambios no se guardan"); return false; }
     setBusy(true);
     try {
@@ -84,7 +116,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
       if (!response.ok) throw new Error(result.error ?? "No se pudo guardar");
       await refresh();
       setReview(null);
-      toast.success("Cambio confirmado");
+      if (!quiet) toast.success("Cambio confirmado");
       return true;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "No se pudo guardar");
@@ -98,7 +130,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
     if (!demo) {
       setBusy(true);
       try {
-        const response = await fetch("/api/changes", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "bulk-prices", materials: changedMaterials.map((item) => ({ id: item.id, priceMinor: draft.materials[item.id] })), expenses: changedExpenses.map((item) => ({ id: item.id, amountMinor: draft.expenses[item.id] })), source: source || "Pendiente de fuente", effectiveDate, expectedRevision: state.revision, idempotencyKey: crypto.randomUUID() }) });
+        const response = await fetch("/api/changes", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "bulk-prices", materials: changedMaterials.map((item) => ({ id: item.id, priceMinor: draft.materials[item.id] })), expenses: changedExpenses.map((item) => ({ id: item.id, amountMinor: draft.expenses[item.id] })), source: draft.source || "Pendiente de fuente", effectiveDate: draft.effectiveDate, expectedRevision: state.revision, idempotencyKey: crypto.randomUUID() }) });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error ?? "No se pudo calcular");
         setReview(result.after);
@@ -109,9 +141,24 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
   }
 
   async function confirmChanges() {
-    if (!source.trim() || source.trim().length < 2) { toast.error("Indica la fuente del cambio"); return; }
-    const saved = await save({ action: "bulk-prices", materials: changedMaterials.map((item) => ({ id: item.id, priceMinor: draft.materials[item.id] })), expenses: changedExpenses.map((item) => ({ id: item.id, amountMinor: draft.expenses[item.id] })), source: source.trim(), effectiveDate });
-    if (saved) { setDraft({ materials: {}, expenses: {} }); setView("dashboard"); }
+    if (!draft.source.trim() || draft.source.trim().length < 2) { toast.error("Indica la fuente del cambio"); return; }
+    const saved = await save({ action: "bulk-prices", materials: changedMaterials.map((item) => ({ id: item.id, priceMinor: draft.materials[item.id] })), expenses: changedExpenses.map((item) => ({ id: item.id, amountMinor: draft.expenses[item.id] })), source: draft.source.trim(), effectiveDate: draft.effectiveDate });
+    if (saved) { setDraftStatus("saving"); setDraft(emptyDraft()); setView("dashboard"); }
+  }
+
+  function editMetadata(action: { action: "update-material-meta" | "update-expense-meta"; id: string; field: string; value: string }) {
+    if (action.field === "purchaseUnit") {
+      const affected = [...new Set(state.components.filter((item) => item.materialId === action.id).map((item) => item.productId))];
+      if (affected.length) {
+        setPendingMeta({ action, affected: state.products.filter((item) => affected.includes(item.id)).map((item) => item.name), description: "Cambiar la unidad puede alterar cómo interpretas el consumo del insumo en estos productos. Revisa sus cantidades después de aplicar." });
+        return;
+      }
+    }
+    if (action.field === "allocationBasis" && state.products.length) {
+      setPendingMeta({ action, affected: state.products.map((item) => item.name), description: "Cambiar la base de reparto redistribuye este gasto entre los productos." });
+      return;
+    }
+    void save(action, true);
   }
 
   async function loadHistory() {
@@ -142,6 +189,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
       if (!response.ok) throw new Error(data.error ?? "El asistente no respondió");
       setChat((items) => [...items, { role: "assistant", text: data.reply }]);
       if (data.proposal?.kind === "material-price" && data.proposal.materialId && Number.isSafeInteger(data.proposal.priceMinor)) {
+        setDraftStatus("saving");
         setDraft((current) => ({ ...current, materials: { ...current.materials, [data.proposal.materialId]: data.proposal.priceMinor } }));
         toast.info("Propuesta agregada al borrador. Revísala antes de confirmar.");
       }
@@ -154,7 +202,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
       <Sidebar collapsible="icon">
         <SidebarHeader><div className="flex items-center gap-3 px-2 py-3"><div className="flex size-9 items-center justify-center rounded-lg bg-primary text-xl font-bold text-primary-foreground" aria-hidden="true">C</div><div className="group-data-[collapsible=icon]:hidden"><strong className="block text-lg tracking-tight">Cozte</strong><span className="text-xs text-muted-foreground">Costeo vivo</span></div></div></SidebarHeader>
         <SidebarContent><SidebarGroup><SidebarGroupLabel>Espacio de trabajo</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>
-          {nav.map((item) => <SidebarMenuItem key={item.id}><SidebarMenuButton isActive={view === item.id} tooltip={item.label} onClick={() => navigate(item.id)}><item.icon /><span>{item.label}</span>{item.id === "revision" && changeCount > 0 ? <Badge variant="secondary">{changeCount}</Badge> : null}</SidebarMenuButton></SidebarMenuItem>)}
+          {nav.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id} badge={item.id === "revision" ? changeCount : 0} onNavigate={() => navigate(item.id)} />)}
         </SidebarMenu></SidebarGroupContent></SidebarGroup></SidebarContent>
         <SidebarFooter><div className="flex items-center gap-2 px-2 pb-2">{demo ? <Badge variant="outline">Demostración</Badge> : <><OrganizationSwitcher hidePersonal /><UserButton /></>}</div></SidebarFooter>
       </Sidebar>
@@ -180,19 +228,22 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
           </> : null}
 
           {view === "planilla" ? <>
-            <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm text-muted-foreground">Planilla de costos</p><h1 className="text-3xl font-semibold tracking-tight">Insumos y gastos</h1><p className="text-sm text-muted-foreground">Edita la columna «Nuevo». El valor vigente no cambia hasta confirmar.</p></div><div className="flex gap-2"><Button variant="outline" onClick={() => setDialog("material")}><Plus data-icon="inline-start" />Insumo</Button><Button variant="outline" onClick={() => setDialog("expense")}><Plus data-icon="inline-start" />Gasto</Button></div></div>
-            <Card><CardHeader><CardTitle>Insumos</CardTitle><CardDescription>Una fila por insumo, aunque lo usen varios productos.</CardDescription></CardHeader><CardContent><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Insumo</TableHead><TableHead>Proveedor</TableHead><TableHead>Unidad</TableHead><TableHead className="text-right">Vigente</TableHead><TableHead>Nuevo</TableHead><TableHead className="text-right">Productos</TableHead></TableRow></TableHeader><TableBody>{state.materials.map((item) => <TableRow key={item.id}><TableCell><strong>{item.name}</strong><div className="text-xs text-muted-foreground">{item.source ?? "Sin fuente"}</div></TableCell><TableCell>{item.supplier || "—"}</TableCell><TableCell>{item.purchaseUnit}</TableCell><TableCell className="text-right tabular-nums">{formatMoney(item.priceMinor, currency)}</TableCell><TableCell><Input aria-label={`Nuevo precio de ${item.name}`} className="min-w-28" type="number" min="0" step="1" value={draft.materials[item.id] ?? item.priceMinor ?? ""} onChange={(event) => { const value = event.target.value; setDraft((current) => ({ ...current, materials: { ...current.materials, [item.id]: value === "" ? 0 : formNumber(value) } })); setReview(null); }} /></TableCell><TableCell className="text-right"><Badge variant="secondary">{state.components.filter((component) => component.materialId === item.id).length}</Badge></TableCell></TableRow>)}</TableBody></Table></div></CardContent></Card>
-            <Card><CardHeader><CardTitle>Gastos compartidos · {state.activePeriod}</CardTitle><CardDescription>Electricidad, gas y taller se registran una vez por período y se reparten por actividad.</CardDescription></CardHeader><CardContent><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Gasto</TableHead><TableHead>Período</TableHead><TableHead>Reparto</TableHead><TableHead className="text-right">Vigente</TableHead><TableHead>Nuevo</TableHead></TableRow></TableHeader><TableBody>{state.expenses.filter((item) => item.period === state.activePeriod).map((item) => <TableRow key={item.id}><TableCell><strong>{item.name}</strong></TableCell><TableCell>{item.period}</TableCell><TableCell>{item.allocationBasis === "hours" ? "Horas de producción" : "Unidades"}</TableCell><TableCell className="text-right tabular-nums">{formatMoney(item.amountMinor, currency)}</TableCell><TableCell><Input aria-label={`Nuevo monto de ${item.name}`} className="min-w-28" type="number" min="0" step="1" value={draft.expenses[item.id] ?? item.amountMinor} onChange={(event) => { setDraft((current) => ({ ...current, expenses: { ...current.expenses, [item.id]: formNumber(event.target.value) } })); setReview(null); }} /></TableCell></TableRow>)}</TableBody></Table></div></CardContent></Card>
-            <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-muted-foreground">{changeCount} cambio{changeCount === 1 ? "" : "s"} sin confirmar</span><div className="flex gap-2"><Button variant="outline" onClick={() => { setDraft({ materials: {}, expenses: {} }); setReview(null); }}><RotateCcw data-icon="inline-start" />Descartar borrador</Button><Button disabled={!changeCount || busy || !clientPreview} onClick={reviewChanges}>Revisar impacto<ArrowRight data-icon="inline-end" /></Button></div></div>
-            <EvidencePanel demo={demo} />
+            <CostSheet state={state} draft={draft} draftReady={draftReady} draftStatus={draftStatus} canReview={clientPreview !== null} busy={busy} demo={demo}
+              onRetryDraft={() => { if (draftReady) { setDraftStatus("saving"); setDraft((current) => ({ ...current })); } else { setDraftStatus("loading"); setDraftLoadAttempt((current) => current + 1); } }}
+              onMaterialPrice={(id, value) => { if (!demo) setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [id]: value } })); setReview(null); }}
+              onExpenseAmount={(id, value) => { if (!demo) setDraftStatus("saving"); setDraft((current) => ({ ...current, expenses: { ...current.expenses, [id]: value } })); setReview(null); }}
+              onMetaChange={editMetadata} onAddMaterial={() => setDialog("material")} onAddExpense={() => setDialog("expense")}
+              onReview={reviewChanges} onDiscard={() => { if (!demo) setDraftStatus("saving"); setDraft(emptyDraft()); setReview(null); }} />
           </> : null}
+
+          {view === "comprobantes" ? <><div><p className="text-sm text-muted-foreground">Evidencia</p><h1 className="text-3xl font-semibold tracking-tight">Comprobantes</h1></div><EvidencePanel demo={demo} /></> : null}
 
           {view === "revision" ? <>
             <div><p className="text-sm text-muted-foreground">Revisión</p><h1 className="text-3xl font-semibold tracking-tight">Antes de confirmar</h1><p className="text-sm text-muted-foreground">Ningún cambio se aplica hasta que lo apruebes.</p></div>
             {!changeCount ? <Empty><EmptyHeader><EmptyMedia variant="icon"><ClipboardCheck /></EmptyMedia><EmptyTitle>No hay cambios</EmptyTitle><EmptyDescription>Edita un precio o un gasto en la planilla.</EmptyDescription></EmptyHeader><EmptyContent><Button onClick={() => setView("planilla")}>Abrir planilla</Button></EmptyContent></Empty> : <>
               <Card><CardHeader><CardTitle>{changeCount} cambio{changeCount === 1 ? "" : "s"} en borrador</CardTitle><CardDescription>Valores vigentes frente a nuevos valores</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead>Tipo</TableHead><TableHead className="text-right">Vigente</TableHead><TableHead className="text-right">Nuevo</TableHead></TableRow></TableHeader><TableBody>{changedMaterials.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Insumo</TableCell><TableCell className="text-right">{formatMoney(item.priceMinor, currency)}</TableCell><TableCell className="text-right">{formatMoney(draft.materials[item.id], currency)}</TableCell></TableRow>)}{changedExpenses.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Gasto compartido</TableCell><TableCell className="text-right">{formatMoney(item.amountMinor, currency)}</TableCell><TableCell className="text-right">{formatMoney(draft.expenses[item.id], currency)}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
               <Card><CardHeader><CardTitle>Impacto en productos</CardTitle><CardDescription>Fabricación por unidad, calculada con las mismas reglas que el costo vigente.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Producto</TableHead><TableHead className="text-right">Vigente</TableHead><TableHead className="text-right">Nuevo</TableHead><TableHead className="text-right">Diferencia</TableHead></TableRow></TableHeader><TableBody>{state.products.map((item) => { const oldCost = state.costs.find((entry) => entry.productId === item.id); const newCost = preview?.find((entry) => entry.productId === item.id); const delta = oldCost?.unitMinor != null && newCost?.unitMinor != null ? newCost.unitMinor - oldCost.unitMinor : null; return <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell className="text-right">{formatMoney(oldCost?.unitMinor ?? null, currency)}</TableCell><TableCell className="text-right">{formatMoney(newCost?.unitMinor ?? null, currency)}</TableCell><TableCell className="text-right"><Badge variant={delta && delta > 0 ? "destructive" : "secondary"}>{delta == null ? "—" : `${delta > 0 ? "+" : ""}${formatMoney(delta, currency)}`}</Badge></TableCell></TableRow>; })}</TableBody></Table></CardContent></Card>
-              <Card><CardHeader><CardTitle>Fuente y fecha</CardTitle><CardDescription>Estos datos quedarán en el historial de la actualización.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-2"><label className="flex flex-col gap-1 text-sm">Fuente<Input value={source} onChange={(event) => setSource(event.target.value)} placeholder="Factura, cotización o verificación manual" /></label><label className="flex flex-col gap-1 text-sm">Fecha efectiva<Input type="date" value={effectiveDate} onChange={(event) => setEffectiveDate(event.target.value)} /></label></CardContent><CardFooter className="flex gap-2"><Button variant="outline" onClick={() => setView("planilla")}>Seguir editando</Button><Button disabled={busy || demo} onClick={confirmChanges}>Confirmar cambios</Button></CardFooter></Card>
+              <Card><CardHeader><CardTitle>Fuente y fecha</CardTitle><CardDescription>Estos datos quedarán en el historial de la actualización.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-2"><label className="flex flex-col gap-1 text-sm">Fuente<Input value={draft.source} onChange={(event) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, source: event.target.value })); }} placeholder="Factura, cotización o verificación manual" /></label><label className="flex flex-col gap-1 text-sm">Fecha efectiva<Input type="date" value={draft.effectiveDate} onChange={(event) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, effectiveDate: event.target.value })); }} /></label></CardContent><CardFooter className="flex gap-2"><Button variant="outline" onClick={() => setView("planilla")}>Seguir editando</Button><Button disabled={busy || demo} onClick={confirmChanges}>Confirmar cambios</Button></CardFooter></Card>
             </>}
           </> : null}
 
@@ -205,12 +256,18 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
         </main>
       </SidebarInset>
       <EntityDialog kind={dialog} product={dialog === "edit-product" ? product : undefined} products={state.products} onClose={() => setDialog(null)} onSave={save} currency={currency} busy={busy} demo={demo} />
+      <Dialog open={pendingMeta !== null} onOpenChange={(open) => { if (!open) setPendingMeta(null); }}><DialogContent><DialogHeader><DialogTitle>Este cambio afecta otros productos</DialogTitle><DialogDescription>{pendingMeta?.description}</DialogDescription></DialogHeader><div className="flex flex-wrap gap-2">{pendingMeta?.affected.map((name) => <Badge key={name} variant="secondary">{name}</Badge>)}</div><DialogFooter><Button variant="outline" onClick={() => setPendingMeta(null)}>Cancelar</Button><Button disabled={busy} onClick={async () => { if (pendingMeta && await save({ ...pendingMeta.action, acknowledgeImpact: true }, true)) setPendingMeta(null); }}>Aplicar cambio</Button></DialogFooter></DialogContent></Dialog>
     </SidebarProvider>
   );
 }
 
 function Metric({ label, value, note }: { label: string; value: string; note: string }) {
   return <Card><CardHeader><CardDescription>{label}</CardDescription><CardTitle className="text-3xl tabular-nums">{value}</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">{note}</CardContent></Card>;
+}
+
+function NavigationItem({ item, active, badge, onNavigate }: { item: (typeof nav)[number]; active: boolean; badge: number; onNavigate: () => void }) {
+  const { setOpenMobile } = useSidebar();
+  return <SidebarMenuItem><SidebarMenuButton isActive={active} tooltip={item.label} onClick={() => { onNavigate(); setOpenMobile(false); }}><item.icon /><span>{item.label}</span>{badge > 0 ? <Badge variant="secondary">{badge}</Badge> : null}</SidebarMenuButton></SidebarMenuItem>;
 }
 
 function ProductComponents({ product, state, onSave, busy, demo }: { product: Product; state: Dashboard; onSave: (action: Record<string, unknown>) => Promise<boolean>; busy: boolean; demo: boolean }) {

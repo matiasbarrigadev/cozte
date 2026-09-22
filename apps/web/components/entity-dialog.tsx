@@ -29,12 +29,12 @@ export function EntityDialog({ kind, product, products, onClose, onSave, currenc
     let action: Record<string, unknown>;
     if (kind === "material") action = {
       action: "create-material", name: String(data.get("name") ?? "").trim(), supplier: String(data.get("supplier") ?? "").trim(),
-      purchaseUnit: String(data.get("purchaseUnit") ?? "").trim(), priceMinor: data.get("priceMinor") === "" ? undefined : integer("priceMinor"),
+      purchaseUnit: String(data.get("purchaseUnit") ?? "").trim(), category: String(data.get("category") ?? "Materia prima").trim(), priceMinor: data.get("priceMinor") === "" ? undefined : integer("priceMinor"),
       source: String(data.get("source") ?? "").trim(),
     };
     else if (kind === "expense") action = {
       action: "create-expense", name: String(data.get("name") ?? "").trim(), period: String(data.get("period") ?? ""),
-      amountMinor: integer("amountMinor"), allocationBasis: String(data.get("allocationBasis") ?? "hours"),
+      amountMinor: integer("amountMinor"), allocationBasis: String(data.get("allocationBasis") ?? "hours"), category: String(data.get("category") ?? "Gastos generales").trim(),
       source: String(data.get("source") ?? "").trim(),
     };
     else action = {
@@ -52,12 +52,14 @@ export function EntityDialog({ kind, product, products, onClose, onSave, currenc
       {kind === "material" ? <FieldGroup>
         <Field><FieldLabel htmlFor="material-name">Insumo</FieldLabel><Input id="material-name" name="name" required minLength={2} placeholder="Ej. Papel interior" /></Field>
         <Field><FieldLabel htmlFor="supplier">Proveedor</FieldLabel><Input id="supplier" name="supplier" placeholder="Opcional" /></Field>
+        <Field><FieldLabel htmlFor="material-category">Categoría</FieldLabel><Input id="material-category" name="category" defaultValue="Materia prima" minLength={2} maxLength={40} required /></Field>
         <Field><FieldLabel htmlFor="purchase-unit">Unidad de compra</FieldLabel><Input id="purchase-unit" name="purchaseUnit" required minLength={2} placeholder="Ej. resma, kg, unidad" /></Field>
         <Field><FieldLabel htmlFor="material-price">Precio vigente ({currency})</FieldLabel><Input id="material-price" name="priceMinor" type="number" min="0" step="1" placeholder="Puedes dejarlo vacío" /></Field>
         <Field><FieldLabel htmlFor="material-source">Fuente</FieldLabel><Input id="material-source" name="source" placeholder="Factura o cotización" /></Field>
       </FieldGroup> : null}
       {kind === "expense" ? <FieldGroup>
         <Field><FieldLabel htmlFor="expense-name">Gasto</FieldLabel><Input id="expense-name" name="name" required minLength={2} placeholder="Ej. Electricidad" /></Field>
+        <Field><FieldLabel htmlFor="expense-category">Categoría</FieldLabel><Input id="expense-category" name="category" defaultValue="Gastos generales" minLength={2} maxLength={40} required /></Field>
         <Field><FieldLabel htmlFor="expense-period">Período</FieldLabel><Input id="expense-period" name="period" type="month" required defaultValue={new Date().toISOString().slice(0, 7)} /></Field>
         <Field><FieldLabel htmlFor="expense-amount">Importe ({currency})</FieldLabel><Input id="expense-amount" name="amountMinor" type="number" min="0" step="1" required /></Field>
         <Field><FieldLabel htmlFor="allocation-basis">Base de reparto</FieldLabel><NativeSelect id="allocation-basis" name="allocationBasis" className="w-full"><NativeSelectOption value="hours">Horas de producción</NativeSelectOption><NativeSelectOption value="units">Unidades del lote</NativeSelectOption></NativeSelect></Field>

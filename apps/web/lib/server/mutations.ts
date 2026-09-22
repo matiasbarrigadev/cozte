@@ -9,6 +9,7 @@ const name = z.string().trim().min(2).max(120);
 const money = z.number().int().min(0).max(1_000_000_000_000);
 const positive = z.number().int().min(1).max(1_000_000_000);
 const id = z.string().min(1).max(120);
+const category = z.string().trim().min(2).max(40);
 const common = z.object({
   expectedRevision: z.number().int().min(0),
   idempotencyKey: z.uuid(),
@@ -25,7 +26,14 @@ export const mutationSchema = z.discriminatedUnion("action", [
   common.extend({
     action: z.literal("create-material"),
     name, supplier: z.string().trim().max(120), purchaseUnit: name,
+    category: category.optional(),
     priceMinor: money.optional(), source: z.string().trim().max(200).optional(),
+  }),
+  common.extend({
+    action: z.literal("update-material-meta"), id,
+    field: z.enum(["name", "supplier", "purchaseUnit", "category"]),
+    value: z.string().trim().max(120),
+    acknowledgeImpact: z.boolean().optional(),
   }),
   common.extend({
     action: z.literal("create-product"),
@@ -45,7 +53,13 @@ export const mutationSchema = z.discriminatedUnion("action", [
   }),
   common.extend({
     action: z.literal("create-expense"), name, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
-    amountMinor: money, allocationBasis: z.enum(["hours", "units"]), source: name,
+    amountMinor: money, allocationBasis: z.enum(["hours", "units"]), category: category.optional(), source: name,
+  }),
+  common.extend({
+    action: z.literal("update-expense-meta"), id,
+    field: z.enum(["name", "category", "allocationBasis"]),
+    value: z.string().trim().max(120),
+    acknowledgeImpact: z.boolean().optional(),
   }),
   common.extend({
     action: z.literal("record-decision"), productId: id,
@@ -84,9 +98,18 @@ function projection(state: DomainState, input: Mutation): DomainState {
       break;
     case "create-material":
       next.materials.push({ id: "new", name: input.name, supplier: input.supplier,
-        purchaseUnit: input.purchaseUnit, priceMinor: input.priceMinor ?? null,
+        purchaseUnit: input.purchaseUnit, category: input.category ?? "Materia prima", priceMinor: input.priceMinor ?? null,
         source: input.source ?? null, effectiveDate: input.priceMinor == null ? null : new Date().toISOString().slice(0, 10), version: 1 });
       break;
+    case "update-material-meta": {
+      const material = next.materials.find((item) => item.id === input.id);
+      if (!material) throw new ApiError(404, "Insumo no encontrado");
+      if (input.field !== "supplier" && input.value.length < 2) throw new ApiError(400, "Escribe al menos dos caracteres");
+      if (input.field === "category" && input.value.length > 40) throw new ApiError(400, "La categoría es demasiado larga");
+      if (input.field === "purchaseUnit" && input.value !== material.purchaseUnit && next.components.some((item) => item.materialId === input.id) && !input.acknowledgeImpact) throw new ApiError(400, "Confirma el cambio de unidad para los productos afectados");
+      material[input.field] = input.value;
+      break;
+    }
     case "create-product": {
       if (input.cloneProductId && !next.products.some((item) => item.id === input.cloneProductId)) throw new ApiError(404, "Producto base no encontrado");
       next.products.push({ id: "new", name: input.name, lotUnits: input.lotUnits,
@@ -115,8 +138,20 @@ function projection(state: DomainState, input: Mutation): DomainState {
       if (input.period < next.activePeriod) throw new ApiError(400, "El período es anterior al costeo activo");
       next.activePeriod = input.period;
       next.expenses.push({ id: "new", name: input.name, period: input.period,
-        amountMinor: input.amountMinor, allocationBasis: input.allocationBasis, version: 1 });
+        amountMinor: input.amountMinor, allocationBasis: input.allocationBasis, category: input.category ?? "Gastos generales", version: 1 });
       break;
+    case "update-expense-meta": {
+      const expense = next.expenses.find((item) => item.id === input.id);
+      if (!expense) throw new ApiError(404, "Gasto no encontrado");
+      if (expense.period !== next.activePeriod) throw new ApiError(400, "Solo puedes editar los gastos del período activo");
+      if (input.field !== "allocationBasis" && (input.value.length < 2 || (input.field === "category" && input.value.length > 40))) throw new ApiError(400, "Revisa el nombre o categoría");
+      if (input.field === "allocationBasis") {
+        if (input.value !== "hours" && input.value !== "units") throw new ApiError(400, "Base de reparto inválida");
+        if (input.value !== expense.allocationBasis && expense.amountMinor > 0 && next.products.length > 0 && !input.acknowledgeImpact) throw new ApiError(400, "Confirma el nuevo reparto antes de aplicar");
+        expense.allocationBasis = input.value;
+      } else expense[input.field] = input.value;
+      break;
+    }
     case "record-decision":
       if (!next.products.some((item) => item.id === input.productId)) throw new ApiError(404, "Producto no encontrado");
       break;
@@ -161,10 +196,15 @@ export async function commitMutation(principal: Principal, input: Mutation) {
       }
       break;
     case "create-material":
-      statements.push({ sql: "INSERT INTO materials (id, organization_id, name, supplier, purchase_unit) VALUES (?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.supplier, input.purchaseUnit] });
+      statements.push({ sql: "INSERT INTO materials (id, organization_id, name, supplier, purchase_unit, category) VALUES (?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.supplier, input.purchaseUnit, input.category ?? "Materia prima"] });
       if (input.priceMinor != null) statements.push({ sql: "INSERT INTO material_prices (id, organization_id, material_id, version, amount_minor, source, effective_date, actor_id) VALUES (?, ?, ?, 1, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, entityId, input.priceMinor, input.source || "Carga manual", new Date().toISOString().slice(0, 10), actorId] });
       next.materials.find((item) => item.id === "new")!.id = entityId;
       break;
+    case "update-material-meta": {
+      const column = { name: "name", supplier: "supplier", purchaseUnit: "purchase_unit", category: "category" }[input.field];
+      statements.push({ sql: `UPDATE materials SET ${column}=? WHERE id=? AND organization_id=?`, params: [input.value, input.id, organizationId] });
+      break;
+    }
     case "create-product":
       statements.push({ sql: "INSERT INTO products (id, organization_id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.lotUnits, input.salePriceMinor, input.salesVariableMinor, input.laborLotMinor, input.productionHoursMilli] });
       if (input.cloneProductId) {
@@ -182,11 +222,16 @@ export async function commitMutation(principal: Principal, input: Mutation) {
       break;
     case "create-expense":
       statements.push(
-        { sql: "INSERT INTO shared_expenses (id, organization_id, name, period, amount_minor, allocation_basis) VALUES (?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.period, input.amountMinor, input.allocationBasis] },
+        { sql: "INSERT INTO shared_expenses (id, organization_id, name, period, amount_minor, allocation_basis, category) VALUES (?, ?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.period, input.amountMinor, input.allocationBasis, input.category ?? "Gastos generales"] },
         { sql: "INSERT INTO shared_expense_versions (id, organization_id, expense_id, version, amount_minor, source, actor_id) VALUES (?, ?, ?, 1, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, entityId, input.amountMinor, input.source, actorId] },
       );
       next.expenses.find((item) => item.id === "new")!.id = entityId;
       break;
+    case "update-expense-meta": {
+      const column = { name: "name", category: "category", allocationBasis: "allocation_basis" }[input.field];
+      statements.push({ sql: `UPDATE shared_expenses SET ${column}=? WHERE id=? AND organization_id=?`, params: [input.value, input.id, organizationId] });
+      break;
+    }
     case "record-decision":
       statements.push({ sql: "INSERT INTO decisions (id, organization_id, product_id, kind, note, actor_id) VALUES (?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.productId, input.kind, input.note, actorId] });
       break;

@@ -14,6 +14,7 @@ export type Material = {
   name: string;
   supplier: string;
   purchaseUnit: string;
+  category: string;
   priceMinor: number | null;
   source: string | null;
   effectiveDate: string | null;
@@ -32,6 +33,7 @@ export type SharedExpense = {
   period: string;
   amountMinor: number;
   allocationBasis: "hours" | "units";
+  category: string;
   version: number;
 };
 

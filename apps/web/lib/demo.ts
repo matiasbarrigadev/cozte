@@ -10,12 +10,12 @@ export const demoState: DomainState = {
     { id: "bolsillo", name: "Libreta bolsillo", lotUnits: 100, salePriceMinor: 3200, salesVariableMinor: 280, laborLotMinor: 64000, productionHoursMilli: 12000, version: 1 },
   ],
   materials: [
-    { id: "papel", name: "Papel interior", supplier: "Papelería Sur", purchaseUnit: "resma", priceMinor: 9000, source: "Factura 1842", effectiveDate: "2026-09-18", version: 1 },
-    { id: "d", name: "Tapas rígidas", supplier: "Tapas Centro", purchaseUnit: "juego", priceMinor: 750, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
-    { id: "b", name: "Tapas blandas", supplier: "Tapas Centro", purchaseUnit: "juego", priceMinor: 520, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
-    { id: "p", name: "Tapas bolsillo", supplier: "Tapas Centro", purchaseUnit: "juego", priceMinor: 380, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
-    { id: "anillado", name: "Anillado", supplier: "Metal Sur", purchaseUnit: "unidad", priceMinor: 360, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
-    { id: "enc", name: "Encuadernación", supplier: "Taller", purchaseUnit: "unidad", priceMinor: 240, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "papel", name: "Papel interior", supplier: "Papelería Sur", purchaseUnit: "resma", category: "Papel", priceMinor: 9000, source: "Factura 1842", effectiveDate: "2026-09-18", version: 1 },
+    { id: "d", name: "Tapas rígidas", supplier: "Tapas Centro", purchaseUnit: "juego", category: "Tapas", priceMinor: 750, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "b", name: "Tapas blandas", supplier: "Tapas Centro", purchaseUnit: "juego", category: "Tapas", priceMinor: 520, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "p", name: "Tapas bolsillo", supplier: "Tapas Centro", purchaseUnit: "juego", category: "Tapas", priceMinor: 380, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "anillado", name: "Anillado", supplier: "Metal Sur", purchaseUnit: "unidad", category: "Terminaciones", priceMinor: 360, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "enc", name: "Encuadernación", supplier: "Taller", purchaseUnit: "unidad", category: "Terminaciones", priceMinor: 240, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
   ],
   components: [
     { productId: "dura", materialId: "papel", quantityMilli: 10000 },
@@ -29,9 +29,9 @@ export const demoState: DomainState = {
     { productId: "bolsillo", materialId: "enc", quantityMilli: 100000 },
   ],
   expenses: [
-    { id: "electricidad", name: "Electricidad", period: "2026-09", amountMinor: 45000, allocationBasis: "hours", version: 1 },
-    { id: "gas", name: "Gas", period: "2026-09", amountMinor: 24000, allocationBasis: "hours", version: 1 },
-    { id: "espacio", name: "Espacio", period: "2026-09", amountMinor: 25000, allocationBasis: "hours", version: 1 },
+    { id: "electricidad", name: "Electricidad", period: "2026-09", amountMinor: 45000, allocationBasis: "hours", category: "Servicios", version: 1 },
+    { id: "gas", name: "Gas", period: "2026-09", amountMinor: 24000, allocationBasis: "hours", category: "Servicios", version: 1 },
+    { id: "espacio", name: "Espacio", period: "2026-09", amountMinor: 25000, allocationBasis: "hours", category: "Instalaciones", version: 1 },
   ],
 };
 

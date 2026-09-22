@@ -11,12 +11,12 @@ const state: DomainState = {
     { id: "bolsillo", name: "Libreta bolsillo", lotUnits: 100, salePriceMinor: 3200, salesVariableMinor: 280, laborLotMinor: 64000, productionHoursMilli: 12000, version: 1 },
   ],
   materials: [
-    { id: "papel", name: "Papel interior", supplier: "Papelería Sur", purchaseUnit: "resma", priceMinor: 9000, source: "Factura 1842", effectiveDate: "2026-09-18", version: 1 },
-    { id: "d", name: "Tapas rígidas", supplier: "", purchaseUnit: "juego", priceMinor: 750, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
-    { id: "b", name: "Tapas blandas", supplier: "", purchaseUnit: "juego", priceMinor: 520, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
-    { id: "p", name: "Tapas bolsillo", supplier: "", purchaseUnit: "juego", priceMinor: 380, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
-    { id: "anillado", name: "Anillado", supplier: "", purchaseUnit: "unidad", priceMinor: 360, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
-    { id: "enc", name: "Encuadernación", supplier: "", purchaseUnit: "unidad", priceMinor: 240, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "papel", name: "Papel interior", supplier: "Papelería Sur", purchaseUnit: "resma", category: "Papel", priceMinor: 9000, source: "Factura 1842", effectiveDate: "2026-09-18", version: 1 },
+    { id: "d", name: "Tapas rígidas", supplier: "", purchaseUnit: "juego", category: "Tapas", priceMinor: 750, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "b", name: "Tapas blandas", supplier: "", purchaseUnit: "juego", category: "Tapas", priceMinor: 520, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "p", name: "Tapas bolsillo", supplier: "", purchaseUnit: "juego", category: "Tapas", priceMinor: 380, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "anillado", name: "Anillado", supplier: "", purchaseUnit: "unidad", category: "Terminaciones", priceMinor: 360, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
+    { id: "enc", name: "Encuadernación", supplier: "", purchaseUnit: "unidad", category: "Terminaciones", priceMinor: 240, source: "Compra", effectiveDate: "2026-09-18", version: 1 },
   ],
   components: [
     { productId: "dura", materialId: "papel", quantityMilli: 10000 },
@@ -30,9 +30,9 @@ const state: DomainState = {
     { productId: "bolsillo", materialId: "enc", quantityMilli: 100000 },
   ],
   expenses: [
-    { id: "electricidad", name: "Electricidad", period: "2026-09", amountMinor: 45000, allocationBasis: "hours", version: 1 },
-    { id: "gas", name: "Gas", period: "2026-09", amountMinor: 24000, allocationBasis: "hours", version: 1 },
-    { id: "espacio", name: "Espacio", period: "2026-09", amountMinor: 25000, allocationBasis: "hours", version: 1 },
+    { id: "electricidad", name: "Electricidad", period: "2026-09", amountMinor: 45000, allocationBasis: "hours", category: "Servicios", version: 1 },
+    { id: "gas", name: "Gas", period: "2026-09", amountMinor: 24000, allocationBasis: "hours", category: "Servicios", version: 1 },
+    { id: "espacio", name: "Espacio", period: "2026-09", amountMinor: 25000, allocationBasis: "hours", category: "Instalaciones", version: 1 },
   ],
 };
 
@@ -74,14 +74,14 @@ describe("motor de costos", () => {
 
   it("no suma gastos de dos meses distintos", () => {
     const withOldPeriod = structuredClone(state);
-    withOldPeriod.expenses.push({ id: "old", name: "Gas", period: "2026-08", amountMinor: 999999, allocationBasis: "hours", version: 1 });
+    withOldPeriod.expenses.push({ id: "old", name: "Gas", period: "2026-08", amountMinor: 999999, allocationBasis: "hours", category: "Servicios", version: 1 });
     expect(calculateCosts(withOldPeriod).map((item) => item.unitMinor)).toEqual([3010, 2440, 1860]);
   });
 
   it("al iniciar otro período no arrastra gastos del anterior", () => {
     const nextMonth = structuredClone(state);
     nextMonth.activePeriod = "2026-10";
-    nextMonth.expenses.push({ id: "oct-electricidad", name: "Electricidad", period: "2026-10", amountMinor: 47000, allocationBasis: "hours", version: 1 });
+    nextMonth.expenses.push({ id: "oct-electricidad", name: "Electricidad", period: "2026-10", amountMinor: 47000, allocationBasis: "hours", category: "Servicios", version: 1 });
     const totalShared = calculateCosts(nextMonth).reduce((sum, item) => sum + (item.lines.find((line) => line.kind === "shared_expense")?.amountMinor ?? 0), 0);
     expect(totalShared).toBe(47000);
   });
