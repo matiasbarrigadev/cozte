@@ -11,7 +11,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 export type CostSnapshotRow = { id: string; product_id: string; total_lot_minor: number | null; unit_minor: number | null; margin_percent: number | null; lines_json: string; warnings_json: string; context_json: string; cost_view: string; created_at: string };
-export type ProfileSnapshotRow = { id: string; revision: number; profile_json: string; costs_json: string; actor_id: string; created_at: string };
+export type ProfileSnapshotRow = { id: string; revision: number; profile_json: string; costs_json: string; fx_context_json?: string; actor_id: string; created_at: string };
 export type HistoryEntry = { id: string; action: string; entity_id: string | null; created_at: string; actor_id: string };
 
 type CostContext = { product?: { name?: string; lotUnits?: number }; materials?: { id: string; name: string; priceMinor: number | null; source: string | null }[]; activePeriod?: string };

@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { convertNativeMilli, supportedCurrencies, toNativeMilli, type Currency, type FxQuote } from "./currency";
 
 const name = z.string().trim().min(1).max(100);
 const evidence = z.object({ quality: z.enum(["measured", "estimated", "missing"]), source: z.string().trim().max(160).nullable(), asOf: z.iso.date().nullable() });
+const originalAmount = z.number().nonnegative().max(1_000_000_000).refine((value) => Math.round(value * 1000) / 1000 === value, "Usa hasta tres decimales");
 
 export const productionProfileSchema = z.object({
   businessSummary: z.string().trim().max(500),
@@ -21,6 +23,8 @@ export const productionProfileSchema = z.object({
     unitsPerPurchase: z.number().positive().nullable(),
     usage: z.array(z.object({ product: name, quantityPerBatch: z.number().nonnegative().nullable() })).max(30),
     pricePerPurchaseMinor: z.number().int().nonnegative().nullable(),
+    pricePerPurchase: originalAmount.optional(),
+    priceCurrency: z.enum(supportedCurrencies).optional(),
     evidence: evidence.optional(),
   })).max(80),
   recurringCosts: z.array(z.object({
@@ -28,6 +32,8 @@ export const productionProfileSchema = z.object({
     category: name,
     frequency: z.enum(["monthly", "quarterly", "annual"]),
     amountMinor: z.number().int().nonnegative().nullable(),
+    amount: originalAmount.optional(),
+    amountCurrency: z.enum(supportedCurrencies).optional(),
     allocation: z.enum(["production_hours", "finished_units", "manual_percentage"]),
     shares: z.array(z.object({ product: name, percent: z.number().min(0).max(100) })).max(30),
     evidence: evidence.optional(),
@@ -45,15 +51,25 @@ export function monthlyEquivalent(amountMinor: number, frequency: "monthly" | "q
   return frequency === "annual" ? amountMinor / 12 : frequency === "quarterly" ? amountMinor / 3 : amountMinor;
 }
 
-export function inputCostPerFinishedUnit(input: ProductionProfile["inputs"][number], product: ProductionProfile["products"][number]): number | null {
-  const quantity = input.usage.find((item) => item.product.toLocaleLowerCase() === product.name.toLocaleLowerCase())?.quantityPerBatch;
-  if (input.pricePerPurchaseMinor === null || input.unitsPerPurchase === null || quantity == null || product.goodUnitsPerBatch === null) return null;
-  return input.pricePerPurchaseMinor / input.unitsPerPurchase * quantity / product.goodUnitsPerBatch;
+function profileMoney(original: number | null, currency: Currency | undefined, base: Currency, quotes: Partial<Record<Currency, FxQuote>>): number | null {
+  if (original === null) return null;
+  const code = currency ?? base;
+  if (code === base) return Math.round(original);
+  const quote = quotes[code];
+  return quote?.to === base ? convertNativeMilli(toNativeMilli(original), quote) : null;
 }
 
-export function allocateRecurringCost(cost: ProductionProfile["recurringCosts"][number], products: ProductionProfile["products"]): Record<string, number> | null {
-  if (cost.amountMinor === null || !products.length) return null;
-  const monthly = monthlyEquivalent(cost.amountMinor, cost.frequency);
+export function inputCostPerFinishedUnit(input: ProductionProfile["inputs"][number], product: ProductionProfile["products"][number], base: Currency = "CLP", quotes: Partial<Record<Currency, FxQuote>> = {}): number | null {
+  const quantity = input.usage.find((item) => item.product.toLocaleLowerCase() === product.name.toLocaleLowerCase())?.quantityPerBatch;
+  const price = profileMoney(input.pricePerPurchase ?? input.pricePerPurchaseMinor, input.priceCurrency, base, quotes);
+  if (price === null || input.unitsPerPurchase === null || quantity == null || product.goodUnitsPerBatch === null) return null;
+  return price / input.unitsPerPurchase * quantity / product.goodUnitsPerBatch;
+}
+
+export function allocateRecurringCost(cost: ProductionProfile["recurringCosts"][number], products: ProductionProfile["products"], base: Currency = "CLP", quotes: Partial<Record<Currency, FxQuote>> = {}): Record<string, number> | null {
+  const amount = profileMoney(cost.amount ?? cost.amountMinor, cost.amountCurrency, base, quotes);
+  if (amount === null || !products.length) return null;
+  const monthly = monthlyEquivalent(amount, cost.frequency);
   const weights = products.map((product) => ({ name: product.name, weight: cost.allocation === "manual_percentage"
     ? cost.shares.find((share) => share.product.toLocaleLowerCase() === product.name.toLocaleLowerCase())?.percent ?? 0
     : cost.allocation === "production_hours" ? product.batchesPerMonth != null && product.hoursPerBatch != null ? product.batchesPerMonth * product.hoursPerBatch : null
@@ -66,8 +82,8 @@ export function allocateRecurringCost(cost: ProductionProfile["recurringCosts"][
 
 export type ProfileCost = { product: string; monthlyMinor: number | null; unitMinor: number | null; directMonthlyMinor: number | null; sharedMonthlyMinor: number | null; warnings: string[] };
 
-export function calculateProductionCosts(profile: ProductionProfile): ProfileCost[] {
-  const allocations = profile.recurringCosts.map((cost) => ({ cost, split: allocateRecurringCost(cost, profile.products) }));
+export function calculateProductionCosts(profile: ProductionProfile, base: Currency = "CLP", quotes: Partial<Record<Currency, FxQuote>> = {}): ProfileCost[] {
+  const allocations = profile.recurringCosts.map((cost) => ({ cost, split: allocateRecurringCost(cost, profile.products, base, quotes) }));
   return profile.products.map((product) => {
     const warnings: string[] = [];
     const monthlyGoodUnits = product.goodUnitsPerBatch != null && product.batchesPerMonth != null ? product.goodUnitsPerBatch * product.batchesPerMonth : null;
@@ -76,7 +92,7 @@ export function calculateProductionCosts(profile: ProductionProfile): ProfileCos
     for (const input of profile.inputs) {
       if (!input.usage.length) { warnings.push(`${input.name} no está asignado a productos`); continue; }
       if (!input.usage.some((usage) => usage.product.toLocaleLowerCase() === product.name.toLocaleLowerCase())) continue;
-      const perUnit = inputCostPerFinishedUnit(input, product);
+      const perUnit = inputCostPerFinishedUnit(input, product, base, quotes);
       if (perUnit === null || monthlyGoodUnits === null) { warnings.push(`Falta consumo, conversión, precio o rendimiento de ${input.name}`); continue; }
       directMonthlyMinor += perUnit * monthlyGoodUnits;
     }
@@ -109,11 +125,11 @@ export function profileGaps(profile: ProductionProfile): string[] {
     if (!input.usage.length) gaps.push(`Falta vincular ${input.name} con productos`);
     if (input.unitsPerPurchase === null) gaps.push(`Falta conversión de ${input.purchaseUnit} a ${input.consumptionUnit} para ${input.name}`);
     for (const usage of input.usage) if (usage.quantityPerBatch === null) gaps.push(`Falta consumo por lote de ${input.name} en ${usage.product}`);
-    if (input.pricePerPurchaseMinor === null) gaps.push(`Falta precio vigente de ${input.name}`);
+    if (input.pricePerPurchaseMinor === null && input.pricePerPurchase === undefined) gaps.push(`Falta precio vigente de ${input.name}`);
     if (!input.evidence || input.evidence.quality === "missing") gaps.push(`Falta calidad o fuente de ${input.name}`);
   }
   for (const cost of profile.recurringCosts) {
-    if (cost.amountMinor === null) gaps.push(`Falta importe de ${cost.name}`);
+    if (cost.amountMinor === null && cost.amount === undefined) gaps.push(`Falta importe de ${cost.name}`);
     if (!cost.evidence || cost.evidence.quality === "missing") gaps.push(`Falta calidad o fuente de ${cost.name}`);
     if (cost.allocation === "manual_percentage") {
       const total = cost.shares.reduce((sum, share) => sum + share.percent, 0);
