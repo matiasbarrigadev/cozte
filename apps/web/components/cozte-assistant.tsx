@@ -5,7 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, type UIMessage } from "ai";
-import { Check, Mic, Paperclip, Send, Sparkles, X } from "lucide-react";
+import { Check, Mic, Paperclip, Pause, Send, Sparkles, X } from "lucide-react";
 import { toast } from "sonner";
 import { z } from "zod";
 import { supportedCurrencies, type Currency } from "@/lib/currency";
@@ -20,6 +20,7 @@ import { PromptInput, PromptInputActions, PromptInputTextarea } from "@/componen
 import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { AssistantMarkdown } from "@/components/assistant-markdown";
+import { AudioWaveform, useVoiceDictation } from "@/components/use-voice-dictation";
 
 const priceProposalSchema = z.object({ kind: z.literal("material-price"), materialId: z.string(), materialName: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), converted: z.number().int().nonnegative(), baseCurrency: z.enum(supportedCurrencies), purchaseUnit: z.string(), affectedProducts: z.array(z.string()).optional() });
 const expenseProposalSchema = z.object({ kind: z.literal("expense-amount"), expenseId: z.string(), expenseName: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), converted: z.number().int().nonnegative(), baseCurrency: z.enum(supportedCurrencies), affectedProducts: z.array(z.string()).optional() });
@@ -37,9 +38,8 @@ export function CozteAssistant({ demo, onMaterialProposal, onExpenseProposal }: 
   const [input, setInput] = React.useState("");
   const [attachment, setAttachment] = React.useState<File | null>(null);
   const [preparing, setPreparing] = React.useState(false);
-  const [listening, setListening] = React.useState(false);
   const fileInput = React.useRef<HTMLInputElement>(null);
-  const recognition = React.useRef<{ stop: () => void } | null>(null);
+  const { voiceState, analyser, start: startDictation, pause: pauseDictation } = useVoiceDictation(setInput);
   const [profile, setProfile] = React.useState<ProfileResponse | null>(null);
   const [loading, setLoading] = React.useState(!demo);
   const [confirming, setConfirming] = React.useState(false);
@@ -74,7 +74,7 @@ export function CozteAssistant({ demo, onMaterialProposal, onExpenseProposal }: 
 
   async function send(text: string) {
     const value = text.trim();
-    if ((!value && !attachment) || demo || status !== "ready" || loading || preparing) return;
+    if ((!value && !attachment) || demo || status !== "ready" || loading || preparing || voiceState !== "idle") return;
     setPreparing(true);
     try {
       let message = value;
@@ -101,24 +101,6 @@ export function CozteAssistant({ demo, onMaterialProposal, onExpenseProposal }: 
       await sending;
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo leer el archivo"); }
     finally { setPreparing(false); }
-  }
-
-  function toggleMicrophone() {
-    if (listening) { recognition.current?.stop(); return; }
-    type SpeechResult = { results: ArrayLike<ArrayLike<{ transcript: string }>> };
-    type SpeechRecognition = { lang: string; interimResults: boolean; onresult: ((event: SpeechResult) => void) | null; onend: (() => void) | null; onerror: (() => void) | null; start: () => void; stop: () => void };
-    const browser = window as Window & { SpeechRecognition?: new () => SpeechRecognition; webkitSpeechRecognition?: new () => SpeechRecognition };
-    const Constructor = browser.SpeechRecognition ?? browser.webkitSpeechRecognition;
-    if (!Constructor) { toast.error("Tu navegador no ofrece dictado por voz. Puedes escribir el mensaje."); return; }
-    const session = new Constructor();
-    session.lang = "es-419";
-    session.interimResults = false;
-    session.onresult = (event) => setInput((current) => `${current}${current ? " " : ""}${event.results[0]?.[0]?.transcript ?? ""}`);
-    session.onend = () => { setListening(false); recognition.current = null; };
-    session.onerror = () => { setListening(false); toast.error("No se pudo transcribir. Revisa el permiso del micrófono."); };
-    recognition.current = session;
-    session.start();
-    setListening(true);
   }
 
   async function confirmProfile() {
@@ -168,7 +150,7 @@ export function CozteAssistant({ demo, onMaterialProposal, onExpenseProposal }: 
         <CardFooter className="flex flex-col items-stretch gap-3 border-t px-4 py-4 md:px-8">
           {error ? <Alert variant="destructive"><AlertTitle>No se pudo completar la respuesta</AlertTitle><AlertDescription>{error.message || "Intenta otra vez."}</AlertDescription></Alert> : null}
           {!messages.length ? <div className="flex flex-wrap gap-2">{suggestions.map((item) => <PromptSuggestion key={item} size="sm" disabled={demo || loading} onClick={() => send(item)}>{item}</PromptSuggestion>)}</div> : null}
-          {demo ? <Button render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta para conversar</Button> : <form className="mx-auto w-full max-w-4xl" onSubmit={(event) => { event.preventDefault(); void send(input); }}><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,.xlsx" className="sr-only" aria-label="Adjuntar imagen o Excel" onChange={(event) => { const file = event.target.files?.[0]; if (file) setAttachment(file); }} />{attachment ? <div className="mb-2 flex items-center gap-2 text-xs"><Badge variant="secondary">{attachment.name}</Badge><Button type="button" size="icon-xs" variant="ghost" aria-label="Quitar archivo" onClick={() => { setAttachment(null); if (fileInput.current) fileInput.current.value = ""; }}><X /></Button></div> : null}<PromptInput value={input} onValueChange={setInput} onSubmit={() => void send(input)} isLoading={status !== "ready" || preparing} disabled={loading}><PromptInputTextarea id="cozte-message" aria-label="Mensaje a Cozte" maxLength={2000} placeholder="Cuéntame qué producen o qué cambió…" /><PromptInputActions className="justify-end"><Button type="button" size="icon-sm" variant="ghost" aria-label="Adjuntar imagen o Excel" title="Adjuntar imagen o Excel" onClick={() => fileInput.current?.click()}><Paperclip /></Button><Button type="button" size="icon-sm" variant={listening ? "destructive" : "ghost"} aria-label={listening ? "Detener dictado" : "Dictar mensaje"} title={listening ? "Detener dictado" : "Dictar mensaje"} onClick={toggleMicrophone}><Mic /></Button>{status !== "ready" ? <Button type="button" variant="outline" onClick={stop}>Detener</Button> : null}<Button type="submit" disabled={loading || preparing || status !== "ready" || (!input.trim() && !attachment)}><Send data-icon="inline-start" />Enviar</Button></PromptInputActions></PromptInput></form>}
+          {demo ? <Button render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta para conversar</Button> : <form className="mx-auto w-full max-w-4xl" onSubmit={(event) => { event.preventDefault(); void send(input); }}><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,.xlsx" className="sr-only" aria-label="Adjuntar imagen o Excel" onChange={(event) => { const file = event.target.files?.[0]; if (file) setAttachment(file); }} />{attachment ? <div className="mb-2 flex items-center gap-2 text-xs"><Badge variant="secondary">{attachment.name}</Badge><Button type="button" size="icon-xs" variant="ghost" aria-label="Quitar archivo" onClick={() => { setAttachment(null); if (fileInput.current) fileInput.current.value = ""; }}><X /></Button></div> : null}<PromptInput value={input} onValueChange={setInput} onSubmit={() => void send(input)} isLoading={status !== "ready" || preparing} disabled={loading}><PromptInputTextarea id="cozte-message" aria-label="Mensaje a Cozte" maxLength={2000} placeholder="Cuéntame qué producen o qué cambió…" /><PromptInputActions className="justify-end"><Button type="button" size="icon-sm" variant="ghost" aria-label="Adjuntar imagen o Excel" title="Adjuntar imagen o Excel" onClick={() => fileInput.current?.click()}><Paperclip /></Button>{voiceState === "idle" ? <Button type="button" size="icon-sm" variant="ghost" aria-label="Dictar mensaje" title="Dictar mensaje" onClick={() => void startDictation()}><Mic /></Button> : <div className="flex items-center gap-2" role="status" aria-label={voiceState === "listening" ? "Escuchando el micrófono" : voiceState === "starting" ? "Activando micrófono" : "Pausando dictado"}>{voiceState === "listening" ? <AudioWaveform analyser={analyser} /> : null}<span className="hidden text-xs text-muted-foreground sm:inline">{voiceState === "starting" ? "Activando…" : voiceState === "pausing" ? "Pausando…" : "Escuchando"}</span><Button type="button" size="sm" variant="outline" disabled={voiceState === "pausing"} onClick={pauseDictation}><Pause data-icon="inline-start" />{voiceState === "starting" ? "Cancelar" : "Pausar"}</Button></div>}{status !== "ready" ? <Button type="button" variant="outline" onClick={stop}>Detener</Button> : null}<Button type="submit" disabled={loading || preparing || status !== "ready" || voiceState !== "idle" || (!input.trim() && !attachment)}><Send data-icon="inline-start" />Enviar</Button></PromptInputActions></PromptInput></form>}
         </CardFooter>
     </Card>
   </>;
