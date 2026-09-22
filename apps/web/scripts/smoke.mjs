@@ -22,6 +22,14 @@ try {
   await landing.getByText("+$100", { exact: true }).waitFor();
   assert.equal(await landing.getByRole("link", { name: /Explorar la demo/i }).count(), 1);
   assert.equal(await landing.getByRole("link", { name: /Crear cuenta/i }).count() > 0, true);
+  const featureCard = landing.getByRole("article").first();
+  const featureIcon = featureCard.locator(".cozte-animated-icon");
+  const featureIconBeforeHover = await featureIcon.innerHTML();
+  const featureBox = await featureCard.boundingBox();
+  assert.ok(featureBox, "feature card should be visible");
+  await featureCard.hover({ position: { x: featureBox.width - 12, y: featureBox.height - 12 } });
+  await landing.waitForTimeout(160);
+  assert.notEqual(await featureIcon.innerHTML(), featureIconBeforeHover, "hovering a reactive card should animate its icon");
   await landing.screenshot({ path: "../../tmp/cozte-landing.png", fullPage: true });
   const landingMobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   await landingMobile.goto(baseUrl, { waitUntil: "networkidle" });
@@ -34,6 +42,14 @@ try {
   await page.goto(`${baseUrl}/demo`, { waitUntil: "networkidle" });
   await page.getByRole("heading", { name: "Costos de tus productos" }).waitFor();
   assert.equal(await page.locator(".cozte-animated-icon").count() >= 8, true, "dashboard should use animated action icons");
+  const dashboardButton = page.getByRole("button", { name: "Dashboard" });
+  const dashboardIcon = dashboardButton.locator(".cozte-animated-icon");
+  const iconBeforeHover = await dashboardIcon.innerHTML();
+  const buttonBox = await dashboardButton.boundingBox();
+  assert.ok(buttonBox, "dashboard button should be visible");
+  await dashboardButton.hover({ position: { x: buttonBox.width - 8, y: buttonBox.height / 2 } });
+  await page.waitForTimeout(160);
+  assert.notEqual(await dashboardIcon.innerHTML(), iconBeforeHover, "hovering the button outside the icon should animate it");
   const sidebarStyle = await page.locator('[data-sidebar="sidebar"]').first().evaluate((element) => {
     const style = getComputedStyle(element);
     return { foreground: style.getPropertyValue("--sidebar-foreground").trim(), backgroundImage: style.backgroundImage, backdropFilter: style.backdropFilter };

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ComponentProps } from "react";
+import { useEffect, useRef, type ComponentProps, type ForwardRefExoticComponent, type RefAttributes } from "react";
 import {
   ArrowLeftIcon,
   ArrowDownRightIcon,
@@ -74,11 +74,43 @@ type Props = Omit<ComponentProps<"span">, "children"> & {
   size?: number;
 };
 
+type AnimatedIconHandle = {
+  startAnimation: () => void;
+  stopAnimation: () => void;
+};
+
+type IconComponent = ForwardRefExoticComponent<
+  Omit<ComponentProps<"div">, "ref"> & { size?: number; animateOnHover?: boolean } & RefAttributes<AnimatedIconHandle>
+>;
+
 export function AnimatedIcon({ name, size = 18, className, ...props }: Props) {
-  const Icon = icons[name];
+  const Icon = icons[name] as IconComponent;
+  const iconRef = useRef<AnimatedIconHandle>(null);
+  const wrapperRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const target = wrapper.closest<HTMLElement>('button, a, [role="button"], [data-animated-icon-container], article') ?? wrapper;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const start = () => { if (!reducedMotion.matches) iconRef.current?.startAnimation(); };
+    const stop = () => iconRef.current?.stopAnimation();
+
+    target.addEventListener("mouseenter", start);
+    target.addEventListener("mouseleave", stop);
+    target.addEventListener("focusin", start);
+    target.addEventListener("focusout", stop);
+    return () => {
+      target.removeEventListener("mouseenter", start);
+      target.removeEventListener("mouseleave", stop);
+      target.removeEventListener("focusin", start);
+      target.removeEventListener("focusout", stop);
+    };
+  }, []);
+
   return (
-    <span className={["cozte-animated-icon", className].filter(Boolean).join(" ")} aria-hidden="true" {...props}>
-      <Icon size={size} />
+    <span ref={wrapperRef} className={["cozte-animated-icon", className].filter(Boolean).join(" ")} aria-hidden="true" {...props}>
+      <Icon ref={iconRef} size={size} animateOnHover={false} />
     </span>
   );
 }
