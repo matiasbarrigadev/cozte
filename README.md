@@ -8,7 +8,7 @@ MVP de costeo continuo para PyMEs manufactureras con varios productos, insumos c
 | --- | --- | --- |
 | Web y API de producto | `apps/web`, Vercel | Next.js, Clerk, motor de costos, AI SDK 7, rutas privadas y cron. |
 | Persistencia | Cloudflare D1 | Empresas, productos, insumos, precios versionados, gastos, decisiones, auditoría y alertas. |
-| Archivos | Cloudflare R2 | Comprobantes privados por empresa. Pendiente de activación en la cuenta. |
+| Archivos | Cloudflare R2 | Comprobantes privados por empresa. |
 | Adaptador de datos | `apps/data-bridge`, Cloudflare Worker | Ejecuta consultas D1 firmadas con HMAC desde la API en Vercel; no expone endpoints de negocio. |
 
 El motor de costos es determinístico: un precio compartido se registra una vez y recalcula todos los productos que lo consumen. Los gastos se registran una vez por período activo; el reparto usa horas de producción o unidades de lote. Un dato esencial faltante impide mostrar un costo aparentemente exacto. La IA (Jev de TypeSafe para identificación/juicio y un modelo generativo para explicación) sugiere, pero no confirma, datos financieros. El consumo de modelos está centralizado en AI SDK 7.
@@ -16,10 +16,10 @@ El motor de costos es determinístico: un precio compartido se registra una vez 
 ## Estado de la infraestructura
 
 - Cloudflare **Lightning CloudWave** (`b16b057db473a7ca309e70724394acb6`): D1 `claro-costos-db` creado; migraciones `0001` y `0002` aplicadas local y remotamente.
-- Worker `cozte-d1-bridge` desplegado. No tiene configurado `DATA_BRIDGE_SECRET` todavía, por lo que rechaza llamadas a datos. Su URL se utiliza solo desde el servidor de Vercel.
-- R2 aún no está habilitado para esa cuenta. Los documentos funcionarán tras activarlo, crear el bucket `cozte-documents` y configurar credenciales restringidas.
-- Clerk tiene claves de desarrollo locales creadas con CLI, pendientes de reclamar/configurar por el propietario para el proyecto definitivo.
-- El proyecto Vercel `lightningteam/cozte` importa `main` con Root Directory `apps/web`. El propietario agregó `cozte.com`; la propagación/configuración DNS se verifica por separado. Aún faltan las claves de Clerk para habilitar acceso real.
+- Worker `cozte-d1-bridge` desplegado con `DATA_BRIDGE_SECRET`; la conexión firmada desde Vercel fue verificada. Su URL se utiliza solo desde el servidor de Vercel.
+- R2 está habilitado y el bucket privado `cozte-documents` fue creado. Faltan credenciales S3 restringidas al bucket en Vercel Production para que funcionen las cargas.
+- La aplicación Clerk **Cozte** (`app_3Jf9dlY7bLusslTQ1YTsxlPCbxG`) está vinculada al repositorio; su instancia de desarrollo tiene organizaciones habilitadas. La instancia de producción aún debe crearse con `clerk deploy`, configurar DNS y aportar claves `pk_live_`/`sk_live_` a Vercel Production.
+- El proyecto Vercel `lightningteam/cozte` importa `main` con Root Directory `apps/web`. `cozte.com` ya está conectado y responde; el acceso real espera Clerk Production.
 
 ## Desarrollo local
 
@@ -34,8 +34,8 @@ Comprobaciones: `npm run typecheck`, `npm run lint`, `npm run test`, `npm run bu
 
 1. El repositorio y **Root Directory `apps/web`** ya están enlazados. Las variables de `apps/web/.env.example` van en Vercel como secretos, nunca en código.
 2. El secreto `DATA_BRIDGE_SECRET` ya está instalado en Cloudflare y Vercel Production y la conexión firmada fue verificada. `DATA_BRIDGE_URL` también está configurada.
-3. Configurar Clerk para organizaciones e invitaciones; cargar las claves de producción en Vercel y volver a desplegar. Hasta entonces `/` muestra un aviso y `/demo` permite explorar sin iniciar sesión.
-4. Habilitar R2 en CloudWave; crear bucket `cozte-documents` y un API token limitado a ese bucket. Añadir `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` y `R2_SECRET_ACCESS_KEY` en Vercel.
+3. Ejecutar `clerk deploy` de forma interactiva para crear la instancia de producción de Cozte en `cozte.com`, completar los DNS indicados por Clerk y comprobar con `clerk deploy status --mode agent`. Habilitar organizaciones en esa instancia si no se copiaron los ajustes de desarrollo. Añadir `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` y `CLERK_SECRET_KEY` de producción a Vercel y volver a desplegar. Hasta entonces `/` muestra un aviso y `/demo` permite explorar sin iniciar sesión.
+4. Crear un token R2 con permiso **Object Read & Write** limitado a `cozte-documents` y añadir `R2_ACCESS_KEY_ID` y `R2_SECRET_ACCESS_KEY` en Vercel Production. `R2_ACCOUNT_ID` y `R2_BUCKET` ya están configurados.
 5. `CRON_SECRET` ya está configurado en Vercel Production. En Vercel, AI Gateway puede autenticarse con OIDC sin `AI_GATEWAY_API_KEY`; para desarrollo local sí se requiere una clave. El cron en `apps/web/vercel.json` revisa cada día los insumos sin precio o cuya fecha efectiva supera 30 días; esta cadencia es una hipótesis de piloto.
 6. Probar alta de empresa, carga de varios productos, actualización compartida, gastos, chat, archivos y revisión de permisos antes de invitar usuarios. El propietario gestiona el dominio y sus DNS.
 

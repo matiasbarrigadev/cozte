@@ -1,6 +1,6 @@
 # Cozte web
 
-Aplicación Next.js 16 alojable en Vercel. Toda la API de producto, autenticación, cálculo y consumo de modelos vive aquí. Cloudflare solo conserva los datos (D1 y, cuando esté habilitado, R2); el Worker `apps/data-bridge` es un adaptador privado y no una API de producto.
+Aplicación Next.js 16 alojable en Vercel. Toda la API de producto, autenticación, cálculo y consumo de modelos vive aquí. Cloudflare solo conserva los datos (D1 y R2); el Worker `apps/data-bridge` es un adaptador privado y no una API de producto.
 
 Para instalar y probar:
 
