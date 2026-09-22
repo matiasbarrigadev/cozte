@@ -19,6 +19,7 @@ import { ChatContainerContent, ChatContainerRoot, ChatContainerScrollAnchor } fr
 import { PromptInput, PromptInputActions, PromptInputTextarea } from "@/components/ui/prompt-input";
 import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
 import { TextShimmer } from "@/components/ui/text-shimmer";
+import { AssistantMarkdown } from "@/components/assistant-markdown";
 
 const priceProposalSchema = z.object({ kind: z.literal("material-price"), materialId: z.string(), materialName: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), converted: z.number().int().nonnegative(), baseCurrency: z.enum(supportedCurrencies), purchaseUnit: z.string(), affectedProducts: z.array(z.string()).optional() });
 const expenseProposalSchema = z.object({ kind: z.literal("expense-amount"), expenseId: z.string(), expenseName: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), converted: z.number().int().nonnegative(), baseCurrency: z.enum(supportedCurrencies), affectedProducts: z.array(z.string()).optional() });
@@ -93,10 +94,11 @@ export function CozteAssistant({ demo, onMaterialProposal, onExpenseProposal }: 
           message ||= "Analiza esta imagen como evidencia de costos; no hagas cambios sin mi aprobación.";
         }
       }
-      await sendMessage({ text: message, files });
+      const sending = sendMessage({ text: message, files });
       setInput("");
       setAttachment(null);
       if (fileInput.current) fileInput.current.value = "";
+      await sending;
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo leer el archivo"); }
     finally { setPreparing(false); }
   }
@@ -140,7 +142,7 @@ export function CozteAssistant({ demo, onMaterialProposal, onExpenseProposal }: 
           {messages.map((message) => <div key={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
             <span className="text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}</span>
             {message.parts.map((part, index) => {
-              if (part.type === "text") return <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
+              if (part.type === "text") return message.role === "assistant" ? <AssistantMarkdown key={index} text={part.text} /> : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
               if (isToolUIPart(part) && part.state === "output-available" && part.type === "tool-proposeMaterialPrice") {
                 const parsed = priceProposalSchema.safeParse(part.output);
                 if (parsed.success) return <div key={index} className="flex flex-col gap-2 rounded-lg border bg-background p-3 text-foreground"><strong>{parsed.data.materialName}: {new Intl.NumberFormat("es-CL", { style: "currency", currency: parsed.data.currency, maximumFractionDigits: 3 }).format(parsed.data.amount)} por {parsed.data.purchaseUnit}</strong><span className="text-xs text-muted-foreground">Equivale a {new Intl.NumberFormat("es-CL", { style: "currency", currency: parsed.data.baseCurrency, maximumFractionDigits: 0 }).format(parsed.data.converted)} · Afecta: {parsed.data.affectedProducts?.join(", ") || "sin productos vinculados"}</span><Button size="sm" variant="outline" onClick={() => onMaterialProposal(parsed.data.materialId, parsed.data.amount, parsed.data.currency)}>Agregar al borrador</Button></div>;
