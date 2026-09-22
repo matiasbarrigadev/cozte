@@ -43,7 +43,13 @@ export function CozteAssistant({ demo, onMaterialProposal, onExpenseProposal }: 
   const [loading, setLoading] = React.useState(!demo);
   const [confirming, setConfirming] = React.useState(false);
   const transport = React.useMemo(() => new DefaultChatTransport({ api: "/api/assistant", prepareSendMessagesRequest: ({ messages }) => ({ body: { message: messages.at(-1) } }) }), []);
-  const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport, onFinish: () => { void loadProfile(); } });
+  const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport,
+    onFinish: ({ message, isError, isAbort }) => {
+      void loadProfile();
+      if (!isAbort && (isError || !message.parts.some((part) => part.type === "text" && part.text.trim()))) toast.error("Cozte no pudo completar esta respuesta. Tu mensaje quedó guardado; puedes reintentarlo.");
+    },
+    onError: () => toast.error("No se pudo conectar con Cozte. Revisa tu conexión y vuelve a intentar."),
+  });
 
   async function loadProfile() {
     if (demo) return;
