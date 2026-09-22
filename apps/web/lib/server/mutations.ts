@@ -206,7 +206,10 @@ export async function commitMutation(principal: Principal, input: Mutation) {
       expense.fxMissing = false;
     }
   }
-  if (input.action === "bulk-prices") for (const code of inputCurrencies) if (code !== state.organization.currency && state.fxQuotes?.[code]?.ratePpm !== input.expectedFxRates[code]) throw new ApiError(409, "La cotización cambió. Revisa el impacto otra vez");
+  if (input.action === "bulk-prices") {
+    const reviewedCurrencies = new Set<Currency>([...inputCurrencies, ...state.materials.map((item) => item.currency ?? state.organization.currency), ...state.expenses.map((item) => item.currency ?? state.organization.currency)]);
+    for (const code of reviewedCurrencies) if (code !== state.organization.currency && state.fxQuotes?.[code]?.ratePpm !== input.expectedFxRates[code]) throw new ApiError(409, "La cotización cambió. Revisa el impacto otra vez");
+  }
   const { next, before } = previewMutation(state, input);
   const organizationId = principal.organizationId;
   const actorId = principal.userId;
