@@ -24,7 +24,7 @@ import { TextShimmer } from "@/components/ui/text-shimmer";
 import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { AudioWaveform, useVoiceDictation } from "@/components/use-voice-dictation";
 import { AnimatedIcon } from "@/components/animated-icon";
-import { COZTE_IMAGE_MEDIA_TYPES, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_TOTAL_IMAGE_BYTES, getCozteImageMediaType } from "@/lib/cozte-image-attachments";
+import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, getCozteAttachmentKind, getCozteAttachmentMaxBytes, getCozteAttachmentMediaType } from "@/lib/cozte-assistant-attachments";
 import { cn } from "cn";
 
 type ProfileResponse = { confirmed: ProductionProfile | null; draft: ProductionProfile | null; revision: number; organizationRevision: number; catalog?: { actions: { key: string; label: string; details: string; action: Record<string, unknown> }[]; missingProducts: string[]; issues: string[] } };
@@ -38,9 +38,8 @@ const suggestions = [
 export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataChanged: () => Promise<void> }) {
   const [input, setInput] = React.useState("");
   const [attachments, setAttachments] = React.useState<File[]>([]);
-  const [spreadsheet, setSpreadsheet] = React.useState<File | null>(null);
   const [preparing, setPreparing] = React.useState(false);
-  const [draggingImages, setDraggingImages] = React.useState(false);
+  const [draggingFiles, setDraggingFiles] = React.useState(false);
   const fileInput = React.useRef<HTMLInputElement>(null);
   const { voiceState, analyser, start: startDictation, pause: pauseDictation } = useVoiceDictation(setInput);
   const [profile, setProfile] = React.useState<ProfileResponse | null>(null);
@@ -64,39 +63,56 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
     onError: () => toast.error("No se pudo conectar con Cozte. Revisa tu conexión y vuelve a intentar."),
   });
 
-  function addImages(files: File[]) {
+  function addAttachments(files: File[]) {
     const next = [...attachments];
     const keys = new Set(next.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
     let totalBytes = next.reduce((total, file) => total + file.size, 0);
     let unsupported = false;
-    let oversized = false;
+    let oversizedImage = false;
+    let oversizedPdf = false;
+    let oversizedSpreadsheet = false;
+    let overImageLimit = false;
+    let overSpreadsheetLimit = false;
     let overLimit = false;
     for (const file of files) {
-      if (!getCozteImageMediaType(file)) { unsupported = true; continue; }
-      if (file.size > COZTE_MAX_IMAGE_BYTES) { oversized = true; continue; }
+      const kind = getCozteAttachmentKind(file);
+      if (!kind) { unsupported = true; continue; }
+      if (file.size > getCozteAttachmentMaxBytes(kind)) {
+        if (kind === "image") oversizedImage = true;
+        else if (kind === "pdf") oversizedPdf = true;
+        else oversizedSpreadsheet = true;
+        continue;
+      }
       const key = `${file.name}:${file.size}:${file.lastModified}`;
       if (keys.has(key)) continue;
-      if (next.length >= COZTE_MAX_IMAGE_COUNT || totalBytes + file.size > COZTE_MAX_TOTAL_IMAGE_BYTES) { overLimit = true; continue; }
+      if (next.length >= COZTE_MAX_ATTACHMENT_COUNT || totalBytes + file.size > COZTE_MAX_TOTAL_ATTACHMENT_BYTES) { overLimit = true; continue; }
+      if (kind === "image" && next.filter((item) => getCozteAttachmentKind(item) === "image").length >= COZTE_MAX_IMAGE_COUNT) { overImageLimit = true; continue; }
+      if (kind === "image" && next.filter((item) => getCozteAttachmentKind(item) === "image").reduce((total, item) => total + item.size, 0) + file.size > COZTE_MAX_TOTAL_IMAGE_BYTES) { overImageLimit = true; continue; }
+      if (kind === "spreadsheet" && next.filter((item) => getCozteAttachmentKind(item) === "spreadsheet").length >= COZTE_MAX_SPREADSHEET_COUNT) { overSpreadsheetLimit = true; continue; }
       next.push(file);
       keys.add(key);
       totalBytes += file.size;
     }
     setAttachments(next);
     const reasons = [
-      unsupported ? "Solo se admiten imágenes PNG, JPG o WebP por ahora." : "",
-      oversized ? "Cada imagen debe pesar menos de 2 MB." : "",
-      overLimit ? `Puedes adjuntar hasta ${COZTE_MAX_IMAGE_COUNT} imágenes y 8 MB en total.` : "",
+      unsupported ? "Se admiten imágenes PNG/JPG/WebP, PDF y Excel .xlsx." : "",
+      oversizedImage ? "Cada imagen debe pesar hasta 2 MB." : "",
+      oversizedPdf ? `Cada PDF debe pesar hasta ${COZTE_MAX_PDF_BYTES / 1_000_000} MB.` : "",
+      oversizedSpreadsheet ? "Cada Excel debe pesar hasta 1 MB." : "",
+      overImageLimit ? `Puedes adjuntar hasta ${COZTE_MAX_IMAGE_COUNT} imágenes y 8 MB de imágenes en total.` : "",
+      overSpreadsheetLimit ? `Puedes adjuntar hasta ${COZTE_MAX_SPREADSHEET_COUNT} planillas Excel por mensaje.` : "",
+      overLimit ? `Puedes adjuntar hasta ${COZTE_MAX_ATTACHMENT_COUNT} archivos y 12 MB en total.` : "",
     ].filter(Boolean);
     if (reasons.length) toast.error(reasons.join(" "));
   }
 
-  function handleImagePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+  function handleAttachmentPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = Array.from(event.clipboardData.items);
     const files = Array.from(event.clipboardData.files);
-    const clipboardImages = files.length ? files : items.filter((item) => item.kind === "file").map((item) => item.getAsFile()).filter((file): file is File => file !== null);
-    if (!clipboardImages.length) return;
+    const clipboardFiles = files.length ? files : items.filter((item) => item.kind === "file").map((item) => item.getAsFile()).filter((file): file is File => file !== null);
+    if (!clipboardFiles.length) return;
     event.preventDefault();
-    addImages(clipboardImages);
+    addAttachments(clipboardFiles);
   }
 
   async function loadProfile() {
@@ -134,24 +150,33 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
 
   async function send(text: string) {
     const value = text.trim();
-    if ((!value && !attachments.length && !spreadsheet) || demo || status !== "ready" || loading || preparing || voiceState !== "idle") return;
+    if ((!value && !attachments.length) || demo || status !== "ready" || loading || preparing || voiceState !== "idle") return;
     setPreparing(true);
     try {
-      let message = value || (spreadsheet ? "Analiza esta planilla de costos y pregúntame lo que falte." : attachments.length ? "Analiza estas imágenes como evidencia de costos; no hagas cambios sin mi aprobación." : "");
+      let message = value || (attachments.length ? "Revisa los archivos adjuntos como evidencia de costos de producción. Pregúntame por los datos que falten y no hagas cambios sin mi aprobación." : "");
       let files: FileList | undefined;
-      if (spreadsheet) {
-        if (spreadsheet.size > 1_000_000) throw new Error("El Excel debe pesar menos de 1 MB");
+      const spreadsheets = attachments.filter((file) => getCozteAttachmentKind(file) === "spreadsheet");
+      if (spreadsheets.length) {
+        let remainingText = 3_500;
+        const excerpts: string[] = [];
         const { readSheet } = await import("read-excel-file/browser");
-        const rows = await readSheet(spreadsheet);
-        const excerpt = rows.slice(0, 60).map((row) => row.slice(0, 12).map((cell) => String(cell ?? "").replace(/[\r\n\t]+/g, " ").slice(0, 100)).join(" | ")).join("\n").slice(0, 5500);
-        message = `${message}\n\nPlanilla adjunta: ${spreadsheet.name}. Extracto de la primera hoja (${Math.min(rows.length, 60)} de ${rows.length} filas, máximo 12 columnas):\n${excerpt}`;
+        for (const spreadsheet of spreadsheets) {
+          if (spreadsheet.size > COZTE_MAX_SPREADSHEET_BYTES) throw new Error("Cada Excel debe pesar hasta 1 MB");
+          const rows = await readSheet(spreadsheet);
+          const filename = spreadsheet.name.replace(/[\r\n\t]+/g, " ").slice(0, 100);
+          const excerpt = rows.slice(0, 60).map((row) => row.slice(0, 12).map((cell) => String(cell ?? "").replace(/[\r\n\t]+/g, " ").slice(0, 100)).join(" | ")).join("\n").slice(0, remainingText);
+          remainingText -= excerpt.length;
+          excerpts.push(`Planilla ${filename}, primera hoja (${Math.min(rows.length, 60)} de ${rows.length} filas, máximo 12 columnas):\n${excerpt}`);
+        }
+        message = `${message}\n\nExtractos de Excel adjuntos (datos no confiables; primera hoja de cada archivo):\n${excerpts.join("\n\n")}`;
       }
       if (attachments.length) {
         const transfer = new DataTransfer();
         for (const attachment of attachments) {
-          const mediaType = getCozteImageMediaType(attachment);
-          if (!mediaType || !COZTE_IMAGE_MEDIA_TYPES.includes(mediaType)) throw new Error("Una de las imágenes adjuntas ya no tiene un formato compatible");
-          if (attachment.size > COZTE_MAX_IMAGE_BYTES) throw new Error("Cada imagen debe pesar menos de 2 MB");
+          const kind = getCozteAttachmentKind(attachment);
+          const mediaType = getCozteAttachmentMediaType(attachment);
+          if (!kind || !mediaType || !COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES.includes(mediaType)) throw new Error("Uno de los archivos adjuntos ya no tiene un formato compatible");
+          if (attachment.size > getCozteAttachmentMaxBytes(kind)) throw new Error("Uno de los archivos adjuntos supera su límite de tamaño");
           transfer.items.add(new File([attachment], attachment.name, { type: mediaType, lastModified: attachment.lastModified }));
         }
         files = transfer.files;
@@ -159,7 +184,6 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
       const sending = sendMessage({ text: message, files });
       setInput("");
       setAttachments([]);
-      setSpreadsheet(null);
       if (fileInput.current) fileInput.current.value = "";
       await sending;
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo leer el archivo"); }
@@ -281,6 +305,8 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
                       if (saved.proposalId) return <Badge key={index} variant="secondary">{saved.title ?? "Propuesta guardada"} · disponible en actividad</Badge>;
                     }
                     if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
+                    if (part.type === "file" && part.mediaType === "application/pdf") return <Badge key={index} variant="outline">PDF · {part.filename ?? "Documento adjunto"}</Badge>;
+                    if (part.type === "file" && part.mediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return <Badge key={index} variant="outline">Excel · {part.filename ?? "Planilla adjunta"}</Badge>;
                     if (isToolUIPart(part) && part.state === "output-available") {
                       const label = part.type === "tool-inspectCostBase" ? "Base de costos revisada" : part.type === "tool-calculateCostRule" ? "Regla calculada por el motor" : part.type === "tool-findMaterial" ? "Insumo contrastado" : "Herramienta utilizada";
                       return <Badge key={index} variant="outline">{label}</Badge>;
@@ -298,41 +324,31 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
               {error ? <Alert variant="destructive"><AlertTitle>No se pudo completar la respuesta</AlertTitle><AlertDescription>{error.message || "Intenta otra vez."}</AlertDescription></Alert> : null}
               {!messages.length ? <div className="flex flex-wrap gap-2">{suggestions.map((item) => <PromptSuggestion key={item} size="sm" disabled={demo || loading} onClick={() => send(item)}>{item}</PromptSuggestion>)}</div> : null}
               {demo ? <Button render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta para conversar</Button> : <form className="mx-auto w-full max-w-4xl" onSubmit={(event) => { event.preventDefault(); void send(input); }}>
-                <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,.xlsx" multiple className="sr-only" aria-label="Adjuntar imágenes o Excel" onChange={(event) => {
-                  const selected = Array.from(event.target.files ?? []);
-                  const images = selected.filter((file) => getCozteImageMediaType(file));
-                  const spreadsheets = selected.filter((file) => file.name.toLowerCase().endsWith(".xlsx"));
-                  const unsupported = selected.length - images.length - spreadsheets.length;
-                  if (spreadsheets.length) {
-                    setSpreadsheet(spreadsheets[0]!);
-                    if (spreadsheets.length > 1) toast.error("Por ahora puedes adjuntar una planilla Excel por mensaje.");
-                  }
-                  if (unsupported) toast.error("En esta etapa puedes adjuntar imágenes y Excel; PDF estará disponible después.");
-                  if (images.length) addImages(images);
+                <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,application/pdf,.pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.xlsx" multiple className="sr-only" aria-label="Adjuntar imágenes, PDF o Excel" onChange={(event) => {
+                  if (event.target.files?.length) addAttachments(Array.from(event.target.files));
                   event.target.value = "";
                 }} />
-                {spreadsheet ? <div className="mb-2 flex items-center gap-2 text-xs"><Badge variant="secondary">Excel · {spreadsheet.name}</Badge><Button type="button" size="icon-xs" variant="ghost" aria-label={`Quitar ${spreadsheet.name}`} onClick={() => setSpreadsheet(null)}><AnimatedIcon name="close" size={14} /></Button></div> : null}
-                {attachments.length ? <div className="mb-2 flex flex-wrap gap-2" aria-label="Imágenes adjuntas">
+                {attachments.length ? <div className="mb-2 flex flex-wrap gap-2" aria-label="Archivos adjuntos">
                   {attachments.map((attachment) => <span key={`${attachment.name}:${attachment.size}:${attachment.lastModified}`} className="inline-flex max-w-full items-center gap-1 rounded-full border bg-muted/40 py-0.5 pl-2 text-xs">
-                    <span className="max-w-56 truncate">{attachment.name}</span><span className="shrink-0 text-muted-foreground">{Math.max(1, Math.round(attachment.size / 1024))} KB</span>
+                    <Badge variant="secondary" className="px-1.5">{getCozteAttachmentKind(attachment) === "image" ? "Imagen" : getCozteAttachmentKind(attachment) === "pdf" ? "PDF" : "Excel"}</Badge><span className="max-w-56 truncate">{attachment.name}</span><span className="shrink-0 text-muted-foreground">{Math.max(1, Math.round(attachment.size / 1024))} KB</span>
                     <Button type="button" size="icon-xs" variant="ghost" aria-label={`Quitar ${attachment.name}`} onClick={() => setAttachments((current) => current.filter((file) => file !== attachment))}><AnimatedIcon name="close" size={14} /></Button>
                   </span>)}
                 </div> : null}
                 <PromptInput value={input} onValueChange={setInput} onSubmit={() => void send(input)} isLoading={status !== "ready" || preparing} disabled={loading}
-                  className={cn("relative transition-colors", draggingImages && "border-primary bg-primary/5 ring-2 ring-primary/20")}
-                  onDragEnter={(event) => { if (!Array.from(event.dataTransfer.types).includes("Files")) return; event.preventDefault(); setDraggingImages(true); }}
-                  onDragOver={(event) => { if (!Array.from(event.dataTransfer.types).includes("Files")) return; event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDraggingImages(true); }}
-                  onDragLeave={(event) => { if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return; setDraggingImages(false); }}
-                  onDrop={(event) => { if (!Array.from(event.dataTransfer.types).includes("Files")) return; event.preventDefault(); setDraggingImages(false); addImages(Array.from(event.dataTransfer.files)); }}>
-                  {draggingImages ? <div className="pointer-events-none absolute inset-x-3 top-2 z-10 rounded-lg border border-dashed border-primary bg-background/95 px-3 py-2 text-center text-sm font-medium text-primary">Suelta las imágenes para adjuntarlas</div> : null}
-                  <PromptInputTextarea id="cozte-message" aria-label="Mensaje a Cozte" maxLength={2000} placeholder="Cuéntame qué producen o qué cambió…" onPaste={handleImagePaste} />
+                  className={cn("relative transition-colors", draggingFiles && "border-primary bg-primary/5 ring-2 ring-primary/20")}
+                  onDragEnter={(event) => { if (!Array.from(event.dataTransfer.types).includes("Files")) return; event.preventDefault(); setDraggingFiles(true); }}
+                  onDragOver={(event) => { if (!Array.from(event.dataTransfer.types).includes("Files")) return; event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDraggingFiles(true); }}
+                  onDragLeave={(event) => { if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return; setDraggingFiles(false); }}
+                  onDrop={(event) => { if (!Array.from(event.dataTransfer.types).includes("Files")) return; event.preventDefault(); setDraggingFiles(false); addAttachments(Array.from(event.dataTransfer.files)); }}>
+                  {draggingFiles ? <div className="pointer-events-none absolute inset-x-3 top-2 z-10 rounded-lg border border-dashed border-primary bg-background/95 px-3 py-2 text-center text-sm font-medium text-primary">Suelta los archivos para adjuntarlos</div> : null}
+                  <PromptInputTextarea id="cozte-message" aria-label="Mensaje a Cozte" maxLength={2000} placeholder="Cuéntame qué producen o qué cambió…" onPaste={handleAttachmentPaste} />
                   <PromptInputActions className="justify-between">
-                    <span className="px-2 text-xs text-muted-foreground">Pega o arrastra imágenes · hasta {COZTE_MAX_IMAGE_COUNT}</span>
+                    <span className="px-2 text-xs text-muted-foreground">Pega o arrastra imágenes, PDF o Excel · hasta {COZTE_MAX_ATTACHMENT_COUNT} archivos</span>
                     <div className="flex items-center gap-2">
-                      <Button type="button" size="icon-sm" variant="ghost" aria-label="Adjuntar imágenes" title="Adjuntar imágenes" onClick={() => fileInput.current?.click()}><AnimatedIcon name="attach" /></Button>
+                      <Button type="button" size="icon-sm" variant="ghost" aria-label="Adjuntar imágenes, PDF o Excel" title="Adjuntar archivos" onClick={() => fileInput.current?.click()}><AnimatedIcon name="attach" /></Button>
                       {voiceState === "idle" ? <Button type="button" size="icon-sm" variant="ghost" aria-label="Dictar mensaje" title="Dictar mensaje" onClick={() => void startDictation()}><AnimatedIcon name="mic" /></Button> : <div className="flex items-center gap-2" role="status" aria-label={voiceState === "listening" ? "Escuchando el micrófono" : voiceState === "starting" ? "Activando micrófono" : "Pausando dictado"}>{voiceState === "listening" ? <AudioWaveform analyser={analyser} /> : null}<span className="hidden text-xs text-muted-foreground sm:inline">{voiceState === "starting" ? "Activando…" : voiceState === "pausing" ? "Pausando…" : "Escuchando"}</span><Button type="button" size="sm" variant="outline" disabled={voiceState === "pausing"} onClick={pauseDictation}><AnimatedIcon name="pause" data-icon="inline-start" />{voiceState === "starting" ? "Cancelar" : "Pausar"}</Button></div>}
                       {status !== "ready" ? <Button type="button" variant="outline" onClick={stop}>Detener</Button> : null}
-                      <Button type="submit" disabled={loading || preparing || status !== "ready" || voiceState !== "idle" || (!input.trim() && !attachments.length && !spreadsheet)}><AnimatedIcon name="send" data-icon="inline-start" />Enviar</Button>
+                      <Button type="submit" disabled={loading || preparing || status !== "ready" || voiceState !== "idle" || (!input.trim() && !attachments.length)}><AnimatedIcon name="send" data-icon="inline-start" />Enviar</Button>
                     </div>
                   </PromptInputActions>
                 </PromptInput>
@@ -367,7 +383,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
 
               <section aria-labelledby="cozte-sources-title" className="flex flex-col gap-3 border-t pt-4">
                 <div><h2 id="cozte-sources-title" className="text-sm font-semibold">Fuentes de datos</h2><p className="mt-1 text-xs text-muted-foreground">Archivos adjuntos y el turno donde se usaron.</p></div>
-                {!dataSources.length ? <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">Las imágenes y planillas que compartas con Cozte aparecerán aquí como referencia. No se conserva el archivo binario; en planillas, el extracto leído queda en la conversación.</p> : null}
+                {!dataSources.length ? <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">Las imágenes, PDF y planillas que compartas aparecerán aquí como referencia. No se guarda el archivo original; el texto leído de Excel queda en la conversación.</p> : null}
                 <ol className="flex flex-col gap-2">
                   {dataSources.map((source) => <li key={source.id} className="rounded-lg border p-3">
                     <div className="flex min-w-0 flex-col gap-1"><span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{dataSourceKindLabel(source.kind)}</span><strong className="break-all text-sm">{source.label}</strong><span className="text-xs text-muted-foreground"><time dateTime={source.createdAt}>{formatProposalDate(source.createdAt)}</time>{source.mediaType ? ` · ${source.mediaType}` : ""}</span></div>
@@ -432,6 +448,7 @@ function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; o
 
 function dataSourceKindLabel(kind: AssistantDataSource["kind"]) {
   if (kind === "image") return "Imagen adjunta";
+  if (kind === "pdf") return "PDF adjunto";
   if (kind === "spreadsheet") return "Planilla Excel";
   return "Archivo adjunto";
 }

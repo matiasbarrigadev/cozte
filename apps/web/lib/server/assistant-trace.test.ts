@@ -25,10 +25,12 @@ describe("trazas de Cozte", () => {
     expect(errorDetails(new Error("falló"))).toBe("Error: falló");
   });
 
-  it("expone metadatos de Excel e imágenes sin devolver el contenido auditado", async () => {
+  it("expone metadatos de imágenes, PDF y Excel sin duplicar ni devolver el contenido auditado", async () => {
     dbQueryMock.mockResolvedValueOnce([{ id: "run-1", message_id: "message-1", started_at: "2026-09-22 10:00:00" }]);
     dbQueryMock.mockResolvedValueOnce([{ run_id: "run-1", payload_json: JSON.stringify({ parts: [
       { type: "file", filename: "factura.jpg", mediaType: "image/jpeg", bytesApprox: 4096 },
+      { type: "file", filename: "report.pdf", mediaType: "application/pdf", bytesApprox: 8192 },
+      { type: "file", filename: "costos.septiembre.xlsx", mediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytesApprox: 2048 },
       { type: "text", text: "Planilla adjunta: costos.septiembre.xlsx. Extracto de la primera hoja (2 de 2 filas): datos privados" },
     ] }) }]);
     const principal = { organizationId: "org-1", userId: "user-1" } as Principal;
@@ -37,6 +39,7 @@ describe("trazas de Cozte", () => {
 
     expect(sources.map(({ kind, label, messageId }) => ({ kind, label, messageId }))).toEqual([
       { kind: "image", label: "factura.jpg", messageId: "message-1" },
+      { kind: "pdf", label: "report.pdf", messageId: "message-1" },
       { kind: "spreadsheet", label: "costos.septiembre.xlsx", messageId: "message-1" },
     ]);
     expect(JSON.stringify(sources)).not.toContain("datos privados");

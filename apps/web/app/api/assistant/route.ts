@@ -9,22 +9,30 @@ import { loadState } from "@/lib/server/state";
 import { reserveAssistantRequest } from "@/lib/server/assistant-limits";
 import { addAssistantEvent, errorDetails, finishAssistantRun, startAssistantRun } from "@/lib/server/assistant-trace";
 import { mutationSchema } from "@/lib/server/mutations";
-import { COZTE_IMAGE_MEDIA_TYPES, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_TOTAL_IMAGE_BYTES } from "@/lib/cozte-image-attachments";
+import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, COZTE_SPREADSHEET_MEDIA_TYPE, prepareCozteModelMessages } from "@/lib/cozte-assistant-attachments";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const incomingImageSchema = z.object({
+const incomingAttachmentSchema = z.object({
   type: z.literal("file"),
   filename: z.string().max(200).optional(),
-  mediaType: z.enum(COZTE_IMAGE_MEDIA_TYPES),
-  url: z.string().max(3_000_000).regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/),
+  mediaType: z.enum(COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES),
+  url: z.string().max(7_000_000).regex(/^data:(?:image\/(?:png|jpeg|webp)|application\/pdf|application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet);base64,[A-Za-z0-9+/=]+$/),
 }).superRefine((part, context) => {
+  if (!part.url.startsWith(`data:${part.mediaType};base64,`)) context.addIssue({ code: "custom", message: "El tipo del archivo no coincide con su contenido", path: ["url"] });
   const payload = part.url.slice(part.url.indexOf(",") + 1);
   const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
   const bytes = Math.floor(payload.length * 3 / 4) - padding;
-  if (bytes > COZTE_MAX_IMAGE_BYTES) context.addIssue({ code: "custom", message: "Cada imagen debe pesar menos de 2 MB", path: ["url"] });
+  const maxBytes = part.mediaType === "application/pdf" ? COZTE_MAX_PDF_BYTES : part.mediaType === COZTE_SPREADSHEET_MEDIA_TYPE ? COZTE_MAX_SPREADSHEET_BYTES : COZTE_MAX_IMAGE_BYTES;
+  if (bytes > maxBytes) context.addIssue({ code: "custom", message: "El archivo supera el límite de tamaño permitido", path: ["url"] });
 });
+
+function attachmentBytes(url: string): number {
+  const payload = url.slice(url.indexOf(",") + 1);
+  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+  return Math.floor(payload.length * 3 / 4) - padding;
+}
 
 const incomingSchema = z.object({
   message: z.object({
@@ -32,16 +40,18 @@ const incomingSchema = z.object({
     role: z.literal("user"),
     parts: z.array(z.union([
       z.object({ type: z.literal("text"), text: z.string().trim().min(1).max(8000) }),
-      incomingImageSchema,
-    ])).min(1).max(COZTE_MAX_IMAGE_COUNT + 1).superRefine((parts, context) => {
-      const images = parts.filter((part) => part.type === "file");
+      incomingAttachmentSchema,
+    ])).min(1).max(COZTE_MAX_ATTACHMENT_COUNT + 1).superRefine((parts, context) => {
+      const attachments = parts.filter((part) => part.type === "file");
+      const images = attachments.filter((part) => part.mediaType.startsWith("image/"));
+      const spreadsheets = attachments.filter((part) => part.mediaType === COZTE_SPREADSHEET_MEDIA_TYPE);
+      if (attachments.length > COZTE_MAX_ATTACHMENT_COUNT) context.addIssue({ code: "custom", message: "Puedes adjuntar hasta ocho archivos", path: [] });
       if (images.length > COZTE_MAX_IMAGE_COUNT) context.addIssue({ code: "custom", message: "Puedes adjuntar hasta seis imágenes", path: [] });
-      const totalBytes = images.reduce((total, part) => {
-        const payload = part.url.slice(part.url.indexOf(",") + 1);
-        const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
-        return total + Math.floor(payload.length * 3 / 4) - padding;
-      }, 0);
-      if (totalBytes > COZTE_MAX_TOTAL_IMAGE_BYTES) context.addIssue({ code: "custom", message: "Las imágenes adjuntas superan 8 MB en total", path: [] });
+      if (spreadsheets.length > COZTE_MAX_SPREADSHEET_COUNT) context.addIssue({ code: "custom", message: "Puedes adjuntar hasta tres planillas Excel", path: [] });
+      const totalBytes = attachments.reduce((total, part) => total + attachmentBytes(part.url), 0);
+      const totalImageBytes = images.reduce((total, part) => total + attachmentBytes(part.url), 0);
+      if (totalBytes > COZTE_MAX_TOTAL_ATTACHMENT_BYTES) context.addIssue({ code: "custom", message: "Los archivos adjuntos superan 12 MB en total", path: [] });
+      if (totalImageBytes > COZTE_MAX_TOTAL_IMAGE_BYTES) context.addIssue({ code: "custom", message: "Las imágenes adjuntas superan 8 MB en total", path: [] });
     }),
   }),
 });
@@ -72,7 +82,7 @@ export async function POST(request: Request) {
   try {
     const principal = await requirePrincipal();
     if (!process.env.AI_GATEWAY_API_KEY) throw new ApiError(503, "Cozte AI aún no tiene configurada su clave de AI Gateway");
-    if (Number(request.headers.get("content-length") ?? 0) > 11_500_000) throw new ApiError(413, "El mensaje o las imágenes adjuntas superan el límite de tamaño");
+    if (Number(request.headers.get("content-length") ?? 0) > 17_000_000) throw new ApiError(413, "El mensaje o los archivos adjuntos superan el límite de tamaño");
     const { message } = incomingSchema.parse(await request.json());
     if (!message.parts.some((part) => part.type === "text") && !message.parts.some((part) => part.type === "file")) throw new ApiError(400, "Escribe un mensaje o adjunta una imagen");
     const [state, profileState, previous] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadConversation(principal)]);
@@ -195,7 +205,10 @@ export async function POST(request: Request) {
     const record = async (kind: string, payload: unknown) => { try { await addAssistantEvent(traceId, kind, payload); } catch (error) { console.error("Assistant trace write failed", traceId, kind, errorDetails(error)); } };
     let streamError: string | null = null;
     const agent = new ToolLoopAgent({ model: "minimax/minimax-m3", instructions, tools, stopWhen: isStepCount(6), maxOutputTokens: 2500, providerOptions: { gateway: { only: ["minimax"] } } });
-    const result = await agent.stream({ messages: await convertToModelMessages(validated), timeout: { totalMs: 50_000 },
+    const convertedMessages = await convertToModelMessages(validated);
+    // The client adds bounded, untrusted cell text to the prompt; the provider receives PDFs but not XLSX binaries.
+    const modelMessages = prepareCozteModelMessages(convertedMessages);
+    const result = await agent.stream({ messages: modelMessages, timeout: { totalMs: 50_000 },
       onStart: async ({ callId, modelId, provider }) => record("model_started", { callId, modelId, provider, messageCount: validated.length }),
       onStepStart: async ({ stepNumber, modelId }) => record("step_started", { stepNumber, modelId }),
       onToolExecutionStart: async ({ toolCall }) => record("tool_started", { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, input: toolCall.input }),

@@ -8,7 +8,7 @@ export type AssistantDataSource = {
   id: string;
   runId: string;
   messageId: string;
-  kind: "image" | "spreadsheet" | "file";
+  kind: "image" | "pdf" | "spreadsheet" | "file";
   label: string;
   mediaType: string | null;
   createdAt: string;
@@ -82,6 +82,7 @@ export async function listAssistantDataSources(principal: Principal, runIds?: st
     runs.map((run) => run.id),
   );
   const sources: AssistantDataSource[] = [];
+  const sourceKeys = new Set<string>();
   for (const event of events) {
     const run = runById.get(event.run_id);
     if (!run) continue;
@@ -93,6 +94,9 @@ export async function listAssistantDataSources(principal: Principal, runIds?: st
     const addSource = (kind: AssistantDataSource["kind"], label: string, mediaType: string | null, index: number) => {
       const safeLabel = label.trim().slice(0, 160);
       if (!safeLabel) return;
+      const key = `${run.id}:${kind}:${safeLabel.toLocaleLowerCase()}`;
+      if (sourceKeys.has(key)) return;
+      sourceKeys.add(key);
       sources.push({ id: `${run.id}:${index}`, runId: run.id, messageId: run.message_id, kind, label: safeLabel, mediaType, createdAt: run.started_at });
     };
     for (const [index, part] of parts.entries()) {
@@ -100,7 +104,7 @@ export async function listAssistantDataSources(principal: Principal, runIds?: st
       const item = part as { type?: unknown; filename?: unknown; mediaType?: unknown; text?: unknown };
       if (item.type === "file" && typeof item.filename === "string") {
         const mediaType = typeof item.mediaType === "string" ? item.mediaType.slice(0, 120) : null;
-        const kind = mediaType?.startsWith("image/") ? "image" : /\.xlsx$/i.test(item.filename) ? "spreadsheet" : "file";
+        const kind = mediaType?.startsWith("image/") ? "image" : mediaType === "application/pdf" ? "pdf" : /\.xlsx$/i.test(item.filename) ? "spreadsheet" : "file";
         addSource(kind, item.filename, mediaType, index);
       }
       if (item.type === "text" && typeof item.text === "string") {
