@@ -7,6 +7,7 @@ import { dbBatch, type SqlStatement } from "./db";
 import { loadState } from "./state";
 import { loadProductionProfile } from "./production-profile";
 import { officialFxTable, quotesFor } from "./fx";
+import { calculateProductionCosts, type ProductionProfile } from "@/lib/production-profile";
 
 const name = z.string().trim().min(2).max(120);
 const money = z.number().int().min(0).max(1_000_000_000_000);
@@ -18,6 +19,12 @@ const currency = z.enum(supportedCurrencies);
 const common = z.object({
   expectedRevision: z.number().int().min(0),
   idempotencyKey: z.uuid(),
+});
+const newProduct = z.object({
+  name, lotUnits: positive, salePriceMinor: money,
+  salesVariableMinor: money, laborLotMinor: money,
+  productionHoursMilli: z.number().int().min(0).max(1_000_000_000),
+  cloneProductId: id.optional(),
 });
 
 export const mutationSchema = z.discriminatedUnion("action", [
@@ -43,10 +50,11 @@ export const mutationSchema = z.discriminatedUnion("action", [
   }),
   common.extend({
     action: z.literal("create-product"),
-    name, lotUnits: positive, salePriceMinor: money,
-    salesVariableMinor: money, laborLotMinor: money,
-    productionHoursMilli: z.number().int().min(0).max(1_000_000_000),
-    cloneProductId: id.optional(),
+    ...newProduct.shape,
+  }),
+  common.extend({
+    action: z.literal("create-products"),
+    products: z.array(newProduct).min(2).max(10).refine((items) => new Set(items.map((item) => item.name.toLocaleLowerCase())).size === items.length, "Los productos deben tener nombres únicos"),
   }),
   common.extend({
     action: z.literal("update-product"), id, name,
@@ -59,14 +67,17 @@ export const mutationSchema = z.discriminatedUnion("action", [
   }),
   common.extend({
     action: z.literal("create-expense"), name, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
-    amount: sourceAmount, currency, allocationBasis: z.enum(["hours", "units"]), category: category.optional(), source: name,
+    amount: sourceAmount, currency, allocationBasis: z.enum(["hours", "units", "manual"]), shares: z.record(z.string(), z.number().int().min(0).max(10000)).default({}), category: category.optional(), source: name,
   }),
   common.extend({
     action: z.literal("update-expense-meta"), id,
-    field: z.enum(["name", "category", "allocationBasis"]),
+    field: z.enum(["name", "category", "allocationBasis", "period"]),
     value: z.string().trim().max(120),
     acknowledgeImpact: z.boolean().optional(),
   }),
+  common.extend({ action: z.literal("create-category"), name: category }),
+  common.extend({ action: z.literal("rename-category"), id, name: category }),
+  common.extend({ action: z.literal("update-expense-allocation"), id, basis: z.enum(["hours", "units", "manual"]), shares: z.record(z.string(), z.number().int().min(0).max(10000)).default({}), acknowledgeImpact: z.boolean().optional() }),
   common.extend({
     action: z.literal("record-decision"), productId: id,
     kind: z.enum(["price", "supplier", "production", "other"]),
@@ -114,6 +125,7 @@ function projection(state: DomainState, input: Mutation): DomainState {
       }
       break;
     case "create-material":
+      if (!next.categories?.some((item) => item.name.toLocaleLowerCase() === (input.category ?? "Materia prima").toLocaleLowerCase())) next.categories = [...next.categories ?? [], { id: "new-category", name: input.category ?? "Materia prima" }];
       next.materials.push({ id: "new", name: input.name, supplier: input.supplier,
         purchaseUnit: input.purchaseUnit, category: input.category ?? "Materia prima",
         priceMinor: input.price === undefined ? null : convertToOrganizationCurrency(next, toNativeMilli(input.price), input.currency ?? next.organization.currency),
@@ -126,17 +138,34 @@ function projection(state: DomainState, input: Mutation): DomainState {
       if (!material) throw new ApiError(404, "Insumo no encontrado");
       if (input.field !== "supplier" && input.value.length < 2) throw new ApiError(400, "Escribe al menos dos caracteres");
       if (input.field === "category" && input.value.length > 40) throw new ApiError(400, "La categoría es demasiado larga");
+      if (input.field === "category" && !next.categories?.some((item) => item.name.toLocaleLowerCase() === input.value.toLocaleLowerCase())) next.categories = [...next.categories ?? [], { id: "new-category", name: input.value }];
       if (input.field === "purchaseUnit" && input.value !== material.purchaseUnit && next.components.some((item) => item.materialId === input.id) && !input.acknowledgeImpact) throw new ApiError(400, "Confirma el cambio de unidad para los productos afectados");
       material[input.field] = input.value;
       break;
     }
     case "create-product": {
+      if (next.products.some((item) => item.name.toLocaleLowerCase() === input.name.toLocaleLowerCase())) throw new ApiError(400, `El producto ${input.name} ya existe`);
       if (input.cloneProductId && !next.products.some((item) => item.id === input.cloneProductId)) throw new ApiError(404, "Producto base no encontrado");
       next.products.push({ id: "new", name: input.name, lotUnits: input.lotUnits,
         salePriceMinor: input.salePriceMinor, salesVariableMinor: input.salesVariableMinor,
         laborLotMinor: input.laborLotMinor, productionHoursMilli: input.productionHoursMilli, version: 1 });
       if (input.cloneProductId) {
         next.components.push(...next.components.filter((item) => item.productId === input.cloneProductId).map((item) => ({ ...item, productId: "new" })));
+      }
+      break;
+    }
+    case "create-products": {
+      const existing = new Set(next.products.map((item) => item.name.toLocaleLowerCase()));
+      for (const [index, product] of input.products.entries()) {
+        if (existing.has(product.name.toLocaleLowerCase())) throw new ApiError(400, `El producto ${product.name} ya existe`);
+        if (product.cloneProductId && !next.products.some((item) => item.id === product.cloneProductId)) throw new ApiError(404, `No encontramos el producto base de ${product.name}`);
+        existing.add(product.name.toLocaleLowerCase());
+        next.products.push({ id: `new:${index}`, name: product.name, lotUnits: product.lotUnits,
+          salePriceMinor: product.salePriceMinor, salesVariableMinor: product.salesVariableMinor,
+          laborLotMinor: product.laborLotMinor, productionHoursMilli: product.productionHoursMilli, version: 1 });
+        if (product.cloneProductId) {
+          next.components.push(...next.components.filter((item) => item.productId === product.cloneProductId).map((item) => ({ ...item, productId: `new:${index}` })));
+        }
       }
       break;
     }
@@ -155,24 +184,58 @@ function projection(state: DomainState, input: Mutation): DomainState {
       if (input.quantityMilli > 0) next.components.push({ productId: input.productId, materialId: input.materialId, quantityMilli: input.quantityMilli });
       break;
     case "create-expense":
+      if (!next.categories?.some((item) => item.name.toLocaleLowerCase() === (input.category ?? "Gastos generales").toLocaleLowerCase())) next.categories = [...next.categories ?? [], { id: "new-category", name: input.category ?? "Gastos generales" }];
       if (input.period < next.activePeriod) throw new ApiError(400, "El período es anterior al costeo activo");
       next.activePeriod = input.period;
       const converted = convertToOrganizationCurrency(next, toNativeMilli(input.amount), input.currency);
       if (converted === null) throw new ApiError(503, "Falta cotización vigente para el nuevo gasto");
+      if (input.allocationBasis === "manual" && (Object.keys(input.shares).some((key) => !next.products.some((item) => item.id === key)) || next.products.reduce((sum, item) => sum + (input.shares[item.id] ?? 0), 0) !== 10000)) throw new ApiError(400, "Los porcentajes deben sumar 100 % entre los productos actuales");
       next.expenses.push({ id: "new", name: input.name, period: input.period,
         amountMinor: converted, currency: input.currency, nativeAmountMilli: toNativeMilli(input.amount),
-        allocationBasis: input.allocationBasis, category: input.category ?? "Gastos generales", version: 1 });
+        allocationBasis: input.allocationBasis, allocationShares: input.allocationBasis === "manual" ? input.shares : {}, category: input.category ?? "Gastos generales", version: 1 });
       break;
     case "update-expense-meta": {
       const expense = next.expenses.find((item) => item.id === input.id);
       if (!expense) throw new ApiError(404, "Gasto no encontrado");
       if (expense.period !== next.activePeriod) throw new ApiError(400, "Solo puedes editar los gastos del período activo");
-      if (input.field !== "allocationBasis" && (input.value.length < 2 || (input.field === "category" && input.value.length > 40))) throw new ApiError(400, "Revisa el nombre o categoría");
+      if (input.field === "period" && !/^\d{4}-(0[1-9]|1[0-2])$/.test(input.value)) throw new ApiError(400, "Elige un período válido");
+      if (input.field !== "allocationBasis" && input.field !== "period" && (input.value.length < 2 || (input.field === "category" && input.value.length > 40))) throw new ApiError(400, "Revisa el nombre o categoría");
+      if (input.field === "category" && !next.categories?.some((item) => item.name.toLocaleLowerCase() === input.value.toLocaleLowerCase())) next.categories = [...next.categories ?? [], { id: "new-category", name: input.value }];
       if (input.field === "allocationBasis") {
         if (input.value !== "hours" && input.value !== "units") throw new ApiError(400, "Base de reparto inválida");
         if (input.value !== expense.allocationBasis && expense.amountMinor > 0 && next.products.length > 0 && !input.acknowledgeImpact) throw new ApiError(400, "Confirma el nuevo reparto antes de aplicar");
         expense.allocationBasis = input.value;
+      } else if (input.field === "period") {
+        if (input.value !== expense.period && expense.amountMinor > 0 && next.products.length > 0 && !input.acknowledgeImpact) throw new ApiError(400, "Confirma el cambio de período y su impacto antes de aplicar");
+        expense.period = input.value;
+        next.activePeriod = next.expenses.map((item) => item.period).sort().at(-1) ?? next.activePeriod;
       } else expense[input.field] = input.value;
+      break;
+    }
+    case "create-category":
+      if (next.categories?.some((item) => item.name.toLocaleLowerCase() === input.name.toLocaleLowerCase())) throw new ApiError(400, "La categoría ya existe");
+      next.categories = [...next.categories ?? [], { id: "new", name: input.name }];
+      break;
+    case "rename-category": {
+      const current = next.categories?.find((item) => item.id === input.id);
+      if (!current) throw new ApiError(404, "Categoría no encontrada");
+      if (next.categories?.some((item) => item.id !== input.id && item.name.toLocaleLowerCase() === input.name.toLocaleLowerCase())) throw new ApiError(400, "La categoría ya existe");
+      next.materials.forEach((item) => { if (item.category.toLocaleLowerCase() === current.name.toLocaleLowerCase()) item.category = input.name; });
+      next.expenses.forEach((item) => { if (item.category.toLocaleLowerCase() === current.name.toLocaleLowerCase()) item.category = input.name; });
+      current.name = input.name;
+      break;
+    }
+    case "update-expense-allocation": {
+      const expense = next.expenses.find((item) => item.id === input.id);
+      if (!expense) throw new ApiError(404, "Gasto no encontrado");
+      if (expense.period !== next.activePeriod) throw new ApiError(400, "Solo puedes editar los gastos del período activo");
+      if (input.basis === "manual") {
+        const productIds = new Set(next.products.map((item) => item.id));
+        if (Object.keys(input.shares).some((key) => !productIds.has(key)) || next.products.reduce((sum, item) => sum + (input.shares[item.id] ?? 0), 0) !== 10000) throw new ApiError(400, "Los porcentajes deben sumar 100 % entre los productos actuales");
+      }
+      if (!input.acknowledgeImpact && expense.amountMinor > 0 && next.products.length) throw new ApiError(400, "Confirma el reparto antes de aplicar");
+      expense.allocationBasis = input.basis;
+      expense.allocationShares = input.basis === "manual" ? input.shares : {};
       break;
     }
     case "record-decision":
@@ -189,7 +252,7 @@ export function previewMutation(state: DomainState, input: Mutation) {
   return { next, before: calculateCosts(state), after: calculateCosts(next) };
 }
 
-export async function commitMutation(principal: Principal, input: Mutation) {
+export async function commitMutation(principal: Principal, input: Mutation, options: { assistantProposalId?: string } = {}) {
   const [state, profile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
   const inputCurrencies: Currency[] = input.action === "bulk-prices" ? [...input.materials, ...input.expenses].map((item) => item.currency) : input.action === "create-material" ? [input.currency ?? state.organization.currency] : input.action === "create-expense" ? [input.currency] : [];
   const existingForeign = [...state.materials, ...state.expenses].some((item) => item.currency && item.currency !== state.organization.currency);
@@ -215,7 +278,10 @@ export async function commitMutation(principal: Principal, input: Mutation) {
   const actorId = principal.userId;
   const changeSetId = crypto.randomUUID();
   const entityId = crypto.randomUUID();
+  const proposalAssertionId = options.assistantProposalId ? crypto.randomUUID() : null;
+  const productEntityIds = input.action === "create-products" ? input.products.map((_, index) => index === 0 ? entityId : crypto.randomUUID()) : [entityId];
   const statements: SqlStatement[] = [
+    ...(options.assistantProposalId ? [{ sql: "INSERT INTO assistant_proposal_assertions (id, valid) VALUES (?, (SELECT CASE WHEN status='pending' AND kind='cost-mutation' AND organization_id=? THEN 1 ELSE 0 END FROM assistant_proposals WHERE id=?))", params: [proposalAssertionId, organizationId, options.assistantProposalId] }] : []),
     { sql: "INSERT INTO change_sets (id, organization_id, idempotency_key, actor_id, expected_revision, payload_json) VALUES (?, ?, ?, ?, ?, ?)", params: [changeSetId, organizationId, input.idempotencyKey, actorId, input.expectedRevision, JSON.stringify(input)] },
     { sql: "INSERT INTO commit_assertions (change_set_id, valid) VALUES (?, (SELECT CASE WHEN revision=? THEN 1 ELSE 0 END FROM organizations WHERE id=?))", params: [changeSetId, input.expectedRevision, organizationId] },
   ];
@@ -230,6 +296,8 @@ export async function commitMutation(principal: Principal, input: Mutation) {
     const quote = code === next.organization.currency ? null : next.fxQuotes?.[code];
     return [code, nativeMilli, quote?.ratePpm ?? 1_000_000, quote?.asOf ?? null, quote?.source ?? null];
   };
+  const newCategory = next.categories?.find((item) => item.id === "new-category");
+  if (newCategory) statements.push({ sql: "INSERT OR IGNORE INTO cost_categories (id, organization_id, name) VALUES (?, ?, ?)", params: [crypto.randomUUID(), organizationId, newCategory.name] });
   switch (input.action) {
     case "bulk-prices":
       for (const item of input.materials) {
@@ -275,16 +343,52 @@ export async function commitMutation(principal: Principal, input: Mutation) {
       break;
     case "create-expense":
       statements.push(
-        { sql: "INSERT INTO shared_expenses (id, organization_id, name, period, amount_minor, allocation_basis, category, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.period, next.expenses.find((item) => item.id === "new")!.amountMinor, input.allocationBasis, input.category ?? "Gastos generales", ...fxFields(input.currency, toNativeMilli(input.amount))] },
+        { sql: "INSERT INTO shared_expenses (id, organization_id, name, period, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.period, next.expenses.find((item) => item.id === "new")!.amountMinor, input.allocationBasis === "manual" ? "units" : input.allocationBasis, input.allocationBasis === "manual" ? "manual" : "automatic", JSON.stringify(input.allocationBasis === "manual" ? input.shares : {}), input.category ?? "Gastos generales", ...fxFields(input.currency, toNativeMilli(input.amount))] },
         { sql: "INSERT INTO shared_expense_versions (id, organization_id, expense_id, version, amount_minor, source, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, entityId, next.expenses.find((item) => item.id === "new")!.amountMinor, input.source, actorId, ...fxFields(input.currency, toNativeMilli(input.amount))] },
       );
       next.expenses.find((item) => item.id === "new")!.id = entityId;
       break;
     case "update-expense-meta": {
-      const column = { name: "name", category: "category", allocationBasis: "allocation_basis" }[input.field];
+      const column = { name: "name", category: "category", allocationBasis: "allocation_basis", period: "period" }[input.field];
       statements.push({ sql: `UPDATE shared_expenses SET ${column}=? WHERE id=? AND organization_id=?`, params: [input.value, input.id, organizationId] });
       break;
     }
+    case "create-category":
+      statements.push({ sql: "INSERT INTO cost_categories (id, organization_id, name) VALUES (?, ?, ?)", params: [entityId, organizationId, input.name] });
+      next.categories!.find((item) => item.id === "new")!.id = entityId;
+      break;
+    case "rename-category": {
+      const previous = state.categories?.find((item) => item.id === input.id);
+      if (!previous) throw new ApiError(404, "Categoría no encontrada");
+      statements.push(
+        { sql: "UPDATE cost_categories SET name=? WHERE id=? AND organization_id=?", params: [input.name, input.id, organizationId] },
+        { sql: "UPDATE materials SET category=? WHERE organization_id=? AND lower(category)=lower(?)", params: [input.name, organizationId, previous.name] },
+        { sql: "UPDATE shared_expenses SET category=? WHERE organization_id=? AND lower(category)=lower(?)", params: [input.name, organizationId, previous.name] },
+      );
+      if (profile.confirmed || profile.draft) {
+        const renamed = (data: ProductionProfile | null) => data ? { ...data, categories: data.categories.map((item) => item.name.toLocaleLowerCase() === previous.name.toLocaleLowerCase() ? { ...item, name: input.name } : item), inputs: data.inputs.map((item) => item.category.toLocaleLowerCase() === previous.name.toLocaleLowerCase() ? { ...item, category: input.name } : item), recurringCosts: data.recurringCosts.map((item) => item.category.toLocaleLowerCase() === previous.name.toLocaleLowerCase() ? { ...item, category: input.name } : item) } : null;
+        const confirmed = renamed(profile.confirmed);
+        const draft = renamed(profile.draft);
+        statements.push(
+          { sql: "INSERT INTO production_profile_commit_assertions (id, valid) VALUES (?, (SELECT CASE WHEN revision=? THEN 1 ELSE 0 END FROM production_profiles WHERE organization_id=?))", params: [crypto.randomUUID(), profile.revision, organizationId] },
+          { sql: "UPDATE production_profiles SET confirmed_json=?, draft_json=?, revision=revision+1, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE organization_id=?", params: [confirmed ? JSON.stringify(confirmed) : null, draft ? JSON.stringify(draft) : null, actorId, organizationId] },
+        );
+        if (confirmed) statements.push({ sql: "INSERT INTO production_profile_snapshots (id, organization_id, revision, profile_json, costs_json, fx_context_json, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, profile.revision + 1, JSON.stringify(confirmed), JSON.stringify(calculateProductionCosts(confirmed, state.organization.currency, state.fxQuotes)), JSON.stringify(state.fxQuotes ?? {}), actorId] });
+      }
+      break;
+    }
+    case "create-products":
+      for (const [index, product] of input.products.entries()) {
+        const productId = productEntityIds[index];
+        statements.push({ sql: "INSERT INTO products (id, organization_id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params: [productId, organizationId, product.name, product.lotUnits, product.salePriceMinor, product.salesVariableMinor, product.laborLotMinor, product.productionHoursMilli] });
+        if (product.cloneProductId) {
+          for (const component of next.components.filter((item) => item.productId === product.cloneProductId)) statements.push({ sql: "INSERT INTO product_materials (product_id, material_id, quantity_milli) VALUES (?, ?, ?)", params: [productId, component.materialId, component.quantityMilli] });
+        }
+      }
+      break;
+    case "update-expense-allocation":
+      statements.push({ sql: "UPDATE shared_expenses SET allocation_basis=?, allocation_mode=?, allocation_shares_json=? WHERE id=? AND organization_id=?", params: [input.basis === "manual" ? "units" : input.basis, input.basis === "manual" ? "manual" : "automatic", JSON.stringify(input.basis === "manual" ? input.shares : {}), input.id, organizationId] });
+      break;
     case "record-decision":
       statements.push({ sql: "INSERT INTO decisions (id, organization_id, product_id, kind, note, actor_id) VALUES (?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.productId, input.kind, input.note, actorId] });
       break;
@@ -306,9 +410,18 @@ export async function commitMutation(principal: Principal, input: Mutation) {
       organizationRevision: next.revision,
       productionProfileRevision: profile.confirmedRevision,
     };
-    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, cost.productId === "new" ? entityId : cost.productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent, JSON.stringify(cost.lines), JSON.stringify(cost.warnings), JSON.stringify(snapshotContext)] });
+    const productId = cost.productId === "new" ? entityId : cost.productId.startsWith("new:") ? productEntityIds[Number(cost.productId.slice(4))] ?? entityId : cost.productId;
+    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent, JSON.stringify(cost.lines), JSON.stringify(snapshotContext)] });
+  }
+  const result = { revision: next.revision, entityId, ...(input.action === "create-products" ? { entityIds: productEntityIds } : {}), before, after: calculateCosts(next) };
+  if (options.assistantProposalId) {
+    statements.push(
+      { sql: "UPDATE assistant_proposals SET status='approved', decision_by=?, decision_note=NULL, decided_at=CURRENT_TIMESTAMP, result_json=? WHERE id=? AND organization_id=? AND kind='cost-mutation' AND status='pending'", params: [actorId, JSON.stringify(result), options.assistantProposalId, organizationId] },
+      { sql: "INSERT INTO assistant_proposal_events (id, organization_id, proposal_id, actor_id, event_type, payload_json) VALUES (?, ?, ?, ?, 'approved', ?)", params: [crypto.randomUUID(), organizationId, options.assistantProposalId, actorId, JSON.stringify({ changeSetId, entityId, baseRevision: input.expectedRevision, revision: next.revision })] },
+      { sql: "DELETE FROM assistant_proposal_assertions WHERE id=?", params: [proposalAssertionId] },
+    );
   }
   if (statements.length > 100) throw new ApiError(400, "Demasiados cambios en una confirmación");
   await dbBatch(statements);
-  return { revision: next.revision, entityId, before, after: calculateCosts(next) };
+  return result;
 }

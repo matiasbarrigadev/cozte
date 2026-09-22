@@ -172,6 +172,10 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
   }
 
   function editMetadata(action: { action: "update-material-meta" | "update-expense-meta"; id: string; field: string; value: string }) {
+    if (action.field === "period") {
+      setPendingMeta({ action, affected: state.products.map((item) => item.name), description: `Cambiar el período a ${action.value} puede cambiar el mes activo y qué gastos entran en el costo de cada producto.` });
+      return;
+    }
     if (action.field === "purchaseUnit") {
       const affected = [...new Set(state.components.filter((item) => item.materialId === action.id).map((item) => item.productId))];
       if (affected.length) {
@@ -237,6 +241,10 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
               onMaterialCurrency={(id, value) => { setDraftStatus("saving"); setDraft((current) => { const materials = { ...current.materials }; delete materials[id]; const materialCurrencies = { ...current.materialCurrencies }; if (value === (state.materials.find((item) => item.id === id)?.currency ?? currency)) delete materialCurrencies[id]; else materialCurrencies[id] = value; return { ...current, materials, materialCurrencies }; }); setReview(null); }}
               onExpenseCurrency={(id, value) => { setDraftStatus("saving"); setDraft((current) => { const expenses = { ...current.expenses }; delete expenses[id]; const expenseCurrencies = { ...current.expenseCurrencies }; if (value === (state.expenses.find((item) => item.id === id)?.currency ?? currency)) delete expenseCurrencies[id]; else expenseCurrencies[id] = value; return { ...current, expenses, expenseCurrencies }; }); setReview(null); }}
               onMetaChange={editMetadata} onAddMaterial={() => setDialog("material")} onAddExpense={() => setDialog("expense")}
+              onCategoryCreate={(name) => save({ action: "create-category", name }, true)}
+              onCategoryRename={(id, name) => save({ action: "rename-category", id, name }, true)}
+              onAllocationChange={(id, basis, shares) => setPendingMeta({ action: { action: "update-expense-allocation", id, basis, shares }, affected: state.products.map((item) => item.name), description: "Este reparto cambia la porción asignada a cada producto. Confirma para recalcular los costos." })}
+              onUsageChange={(productId, materialId, quantityMilli) => save({ action: "set-component", productId, materialId, quantityMilli }, true)}
               onReview={reviewChanges} onDiscard={() => { if (!demo) setDraftStatus("saving"); setDraft(emptyDraft()); setReview(null); }} />
           </> : null}
 
@@ -251,12 +259,12 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
             </>}
           </> : null}
 
-          {view === "asistente" ? <CozteAssistant demo={demo} onMaterialProposal={(materialId, amount, proposalCurrency) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [materialId]: amount }, materialCurrencies: { ...current.materialCurrencies, [materialId]: proposalCurrency } })); toast.info("Precio agregado al borrador. Revísalo antes de confirmar."); setView("planilla"); }} onExpenseProposal={(expenseId, amount, proposalCurrency) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, expenses: { ...current.expenses, [expenseId]: amount }, expenseCurrencies: { ...current.expenseCurrencies, [expenseId]: proposalCurrency } })); toast.info("Gasto agregado al borrador. Revísalo antes de confirmar."); setView("planilla"); }} /> : null}
+          {view === "asistente" ? <CozteAssistant demo={demo} onDataChanged={refresh} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
         </main>
       </SidebarInset>
-      <EntityDialog kind={dialog} product={dialog === "edit-product" ? product : undefined} products={state.products} onClose={() => setDialog(null)} onSave={save} currency={currency} busy={busy} demo={demo} />
+      <EntityDialog kind={dialog} product={dialog === "edit-product" ? product : undefined} products={state.products} categories={state.categories ?? [...new Set([...state.materials.map((item) => item.category), ...state.expenses.map((item) => item.category)])].map((name) => ({ id: name, name }))} onClose={() => setDialog(null)} onSave={save} currency={currency} busy={busy} demo={demo} />
       <Dialog open={pendingMeta !== null} onOpenChange={(open) => { if (!open) setPendingMeta(null); }}><DialogContent><DialogHeader><DialogTitle>Este cambio afecta otros productos</DialogTitle><DialogDescription>{pendingMeta?.description}</DialogDescription></DialogHeader><div className="flex flex-wrap gap-2">{pendingMeta?.affected.map((name) => <Badge key={name} variant="secondary">{name}</Badge>)}</div><DialogFooter><Button variant="outline" onClick={() => setPendingMeta(null)}>Cancelar</Button><Button disabled={busy} onClick={async () => { if (pendingMeta && await save({ ...pendingMeta.action, acknowledgeImpact: true }, true)) setPendingMeta(null); }}>Aplicar cambio</Button></DialogFooter></DialogContent></Dialog>
     </SidebarProvider>
   );

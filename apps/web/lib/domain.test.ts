@@ -45,6 +45,16 @@ describe("motor de costos", () => {
     ])).toEqual({ dura: 40000, blanda: 30000, bolsillo: 24000 });
   });
 
+  it("reparte un costo por porcentajes acordados y conserva el total", () => {
+    const manual = structuredClone(state);
+    manual.expenses = [{ id: "energia", name: "Energía", period: "2026-09", amountMinor: 10001, allocationBasis: "manual", allocationShares: { dura: 5000, blanda: 3000, bolsillo: 2000 }, category: "Servicios", version: 1 }];
+    const lines = calculateCosts(manual).map((item) => item.lines.find((line) => line.kind === "shared_expense")!.amountMinor);
+    expect(lines.reduce((sum, amount) => sum + amount, 0)).toBe(10001);
+    expect(lines).toEqual([5001, 3000, 2000]);
+    manual.expenses[0].allocationShares = { dura: 5000, blanda: 3000 };
+    expect(calculateCosts(manual).every((item) => item.unitMinor === null)).toBe(true);
+  });
+
   it("actualiza los tres productos cuando cambia el papel", () => {
     const current = calculateCosts(state);
     const next = calculateCosts(state, { papel: 10000 });

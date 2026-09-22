@@ -36,7 +36,8 @@ export type SharedExpense = {
   name: string;
   period: string;
   amountMinor: number;
-  allocationBasis: "hours" | "units";
+  allocationBasis: "hours" | "units" | "manual";
+  allocationShares?: Record<string, number>;
   category: string;
   version: number;
   currency?: Currency;
@@ -53,6 +54,7 @@ export type DomainState = {
   materials: Material[];
   components: Component[];
   expenses: SharedExpense[];
+  categories?: { id: string; name: string }[];
 };
 
 export type CostLine = {
@@ -133,32 +135,21 @@ export function calculateCosts(
   }
 
   // Pilot assumption: one lot of each active product in the selected period.
-  // Expenses sharing a basis are allocated together, avoiding rounding drift
-  // between expense rows and the product-level total.
   const expenseAllocation: Record<string, number> = Object.fromEntries(
     state.products.map((product) => [product.id, 0]),
   );
   const unallocatedExpenseBases: string[] = [];
   const missingExpenseFx = state.expenses.some((expense) => expense.period === state.activePeriod && expense.fxMissing);
-  for (const basis of ["hours", "units"] as const) {
-    const total = state.expenses
-      .filter((expense) => expense.period === state.activePeriod && expense.allocationBasis === basis)
-      .reduce((sum, expense) => sum + (proposedExpenses[expense.id] ?? expense.amountMinor), 0);
-    if (total === 0) continue;
-    const totalActivity = state.products.reduce(
-      (sum, product) => sum + (basis === "hours" ? product.productionHoursMilli : product.lotUnits), 0,
-    );
-    if (totalActivity === 0) {
-      unallocatedExpenseBases.push(basis === "hours" ? "horas de producción" : "unidades producidas");
+  for (const expense of state.expenses.filter((item) => item.period === state.activePeriod)) {
+    const amount = proposedExpenses[expense.id] ?? expense.amountMinor;
+    if (amount === 0) continue;
+    const activities = state.products.map((product) => ({ id: product.id, weight: expense.allocationBasis === "hours" ? product.productionHoursMilli : expense.allocationBasis === "units" ? product.lotUnits : expense.allocationShares?.[product.id] ?? 0 }));
+    const totalActivity = activities.reduce((sum, item) => sum + item.weight, 0);
+    if (totalActivity <= 0 || (expense.allocationBasis === "manual" && totalActivity !== 10000)) {
+      unallocatedExpenseBases.push(expense.name);
       continue;
     }
-    const split = allocateMinor(
-      total,
-      state.products.map((product) => ({
-        id: product.id,
-        weight: basis === "hours" ? product.productionHoursMilli : product.lotUnits,
-      })),
-    );
+    const split = allocateMinor(amount, activities);
     for (const product of state.products) expenseAllocation[product.id] += split[product.id];
   }
 

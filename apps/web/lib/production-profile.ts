@@ -2,6 +2,7 @@ import { z } from "zod";
 import { convertNativeMilli, supportedCurrencies, toNativeMilli, type Currency, type FxQuote } from "./currency";
 
 const name = z.string().trim().min(1).max(100);
+const categoryName = z.string().trim().min(2).max(40);
 const evidence = z.object({ quality: z.enum(["measured", "estimated", "missing"]), source: z.string().trim().max(160).nullable(), asOf: z.iso.date().nullable() });
 const originalAmount = z.number().nonnegative().max(1_000_000_000).refine((value) => Math.round(value * 1000) / 1000 === value, "Usa hasta tres decimales");
 
@@ -11,13 +12,13 @@ export const productionProfileSchema = z.object({
   stages: z.array(z.object({ name, notes: z.string().trim().max(240) })).max(20),
   products: z.array(z.object({ name, finishedUnit: name, goodUnitsPerBatch: z.number().int().positive().nullable(), startedUnitsPerBatch: z.number().int().positive().nullable(), normalScrapUnitsPerBatch: z.number().int().nonnegative().nullable(), batchesPerMonth: z.number().positive().nullable(), hoursPerBatch: z.number().positive().nullable() })).max(30),
   categories: z.array(z.object({
-    name,
-    kind: z.enum(["raw_material", "packaging", "direct_labor", "utilities", "overhead", "outsourced"]),
-    behavior: z.enum(["direct", "shared"]),
+    name: categoryName,
+    kind: z.enum(["raw_material", "packaging", "direct_labor", "utilities", "overhead", "outsourced"]).optional(),
+    behavior: z.enum(["direct", "shared"]).optional(),
   })).max(30),
   inputs: z.array(z.object({
     name,
-    category: name,
+    category: categoryName,
     purchaseUnit: name,
     consumptionUnit: name,
     unitsPerPurchase: z.number().positive().nullable(),
@@ -29,7 +30,7 @@ export const productionProfileSchema = z.object({
   })).max(80),
   recurringCosts: z.array(z.object({
     name,
-    category: name,
+    category: categoryName,
     frequency: z.enum(["monthly", "quarterly", "annual"]),
     amountMinor: z.number().int().nonnegative().nullable(),
     amount: originalAmount.optional(),
@@ -150,13 +151,11 @@ export function validateProfileReferences(profile: ProductionProfile): string[] 
   for (const input of profile.inputs) {
     const category = categories.get(input.category.toLocaleLowerCase());
     if (!category) errors.push(`Categoría inexistente: ${input.category}`);
-    else if (category.behavior !== "direct") errors.push(`${input.name} necesita una categoría directa`);
     for (const usage of input.usage) if (!products.has(usage.product.toLocaleLowerCase())) errors.push(`Producto inexistente: ${usage.product}`);
   }
   for (const cost of profile.recurringCosts) {
     const category = categories.get(cost.category.toLocaleLowerCase());
     if (!category) errors.push(`Categoría inexistente: ${cost.category}`);
-    else if (category.behavior !== "shared") errors.push(`${cost.name} necesita una categoría compartida`);
     for (const share of cost.shares) if (!products.has(share.product.toLocaleLowerCase())) errors.push(`Producto inexistente: ${share.product}`);
     if (new Set(cost.shares.map((share) => share.product.toLocaleLowerCase())).size !== cost.shares.length) errors.push(`Reparto duplicado en ${cost.name}`);
   }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { apiFailure, requirePrincipal } from "@/lib/server/auth";
-import { confirmProductionProfile, loadProductionProfile } from "@/lib/server/production-profile";
+import { loadProductionProfile } from "@/lib/server/production-profile";
+import { decideAssistantProposal } from "@/lib/server/assistant-proposals";
 
 export const runtime = "nodejs";
 
@@ -12,8 +13,8 @@ export async function GET() {
 export async function PUT(request: Request) {
   try {
     const principal = await requirePrincipal(true);
-    const { expectedRevision } = z.object({ expectedRevision: z.number().int().nonnegative() }).parse(await request.json());
-    return Response.json(await confirmProductionProfile(principal, expectedRevision));
+    const { proposalId } = z.object({ proposalId: z.uuid() }).parse(await request.json());
+    return Response.json(await decideAssistantProposal(principal, proposalId, { decision: "approve" }));
   } catch (error) {
     if (error instanceof z.ZodError) return Response.json({ error: "Solicitud inválida" }, { status: 400 });
     return apiFailure(error);

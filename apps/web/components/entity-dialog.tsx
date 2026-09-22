@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import type { Product } from "@/lib/domain";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,16 +11,19 @@ import { supportedCurrencies } from "@/lib/currency";
 
 type Kind = "product" | "material" | "expense" | "edit-product" | null;
 
-export function EntityDialog({ kind, product, products, onClose, onSave, currency, busy, demo }: {
+export function EntityDialog({ kind, product, products, categories, onClose, onSave, currency, busy, demo }: {
   kind: Kind;
   product?: Product;
   products: Product[];
+  categories: { id: string; name: string }[];
   onClose: () => void;
   onSave: (action: Record<string, unknown>) => Promise<boolean>;
   currency: string;
   busy: boolean;
   demo: boolean;
 }) {
+  const [expenseBasis, setExpenseBasis] = React.useState<"hours" | "units" | "manual">("hours");
+  const [expenseShares, setExpenseShares] = React.useState<Record<string, string>>({});
   if (!kind) return null;
   const title = kind === "material" ? "Nuevo insumo" : kind === "expense" ? "Nuevo gasto compartido" : kind === "edit-product" ? "Editar producto" : "Nuevo producto";
 
@@ -35,7 +39,7 @@ export function EntityDialog({ kind, product, products, onClose, onSave, currenc
     };
     else if (kind === "expense") action = {
       action: "create-expense", name: String(data.get("name") ?? "").trim(), period: String(data.get("period") ?? ""),
-      amount: Number(data.get("amount")), currency: String(data.get("currency") ?? currency), allocationBasis: String(data.get("allocationBasis") ?? "hours"), category: String(data.get("category") ?? "Gastos generales").trim(),
+      amount: Number(data.get("amount")), currency: String(data.get("currency") ?? currency), allocationBasis: expenseBasis, shares: expenseBasis === "manual" ? Object.fromEntries(products.map((item) => [item.id, Math.round(Number(expenseShares[item.id] || 0) * 100)])) : {}, category: String(data.get("category") ?? "Gastos generales").trim(),
       source: String(data.get("source") ?? "").trim(),
     };
     else action = {
@@ -53,17 +57,18 @@ export function EntityDialog({ kind, product, products, onClose, onSave, currenc
       {kind === "material" ? <FieldGroup>
         <Field><FieldLabel htmlFor="material-name">Insumo</FieldLabel><Input id="material-name" name="name" required minLength={2} placeholder="Ej. Papel interior" /></Field>
         <Field><FieldLabel htmlFor="supplier">Proveedor</FieldLabel><Input id="supplier" name="supplier" placeholder="Opcional" /></Field>
-        <Field><FieldLabel htmlFor="material-category">Categoría</FieldLabel><Input id="material-category" name="category" defaultValue="Materia prima" minLength={2} maxLength={40} required /></Field>
+        <Field><FieldLabel htmlFor="material-category">Categoría</FieldLabel><NativeSelect id="material-category" name="category" className="w-full" defaultValue={categories.find((item) => item.name === "Materia prima")?.name ?? categories[0]?.name}>{categories.map((item) => <NativeSelectOption key={item.id} value={item.name}>{item.name}</NativeSelectOption>)}</NativeSelect></Field>
         <Field><FieldLabel htmlFor="purchase-unit">Unidad de compra</FieldLabel><Input id="purchase-unit" name="purchaseUnit" required minLength={2} placeholder="Ej. resma, kg, unidad" /></Field>
         <div className="grid grid-cols-[1fr_auto] gap-3"><Field><FieldLabel htmlFor="material-price">Precio vigente</FieldLabel><Input id="material-price" name="price" type="number" min="0" step="0.001" placeholder="Puedes dejarlo vacío" /></Field><Field><FieldLabel htmlFor="material-currency">Moneda</FieldLabel><NativeSelect id="material-currency" name="currency" defaultValue={currency}>{supportedCurrencies.map((code) => <NativeSelectOption key={code} value={code}>{code}</NativeSelectOption>)}</NativeSelect></Field></div>
         <Field><FieldLabel htmlFor="material-source">Fuente</FieldLabel><Input id="material-source" name="source" placeholder="Factura o cotización" /></Field>
       </FieldGroup> : null}
       {kind === "expense" ? <FieldGroup>
         <Field><FieldLabel htmlFor="expense-name">Gasto</FieldLabel><Input id="expense-name" name="name" required minLength={2} placeholder="Ej. Electricidad" /></Field>
-        <Field><FieldLabel htmlFor="expense-category">Categoría</FieldLabel><Input id="expense-category" name="category" defaultValue="Gastos generales" minLength={2} maxLength={40} required /></Field>
+        <Field><FieldLabel htmlFor="expense-category">Categoría</FieldLabel><NativeSelect id="expense-category" name="category" className="w-full" defaultValue={categories.find((item) => item.name === "Gastos generales")?.name ?? categories[0]?.name}>{categories.map((item) => <NativeSelectOption key={item.id} value={item.name}>{item.name}</NativeSelectOption>)}</NativeSelect></Field>
         <Field><FieldLabel htmlFor="expense-period">Período</FieldLabel><Input id="expense-period" name="period" type="month" required defaultValue={new Date().toISOString().slice(0, 7)} /></Field>
         <div className="grid grid-cols-[1fr_auto] gap-3"><Field><FieldLabel htmlFor="expense-amount">Importe</FieldLabel><Input id="expense-amount" name="amount" type="number" min="0" step="0.001" required /></Field><Field><FieldLabel htmlFor="expense-currency">Moneda</FieldLabel><NativeSelect id="expense-currency" name="currency" defaultValue={currency}>{supportedCurrencies.map((code) => <NativeSelectOption key={code} value={code}>{code}</NativeSelectOption>)}</NativeSelect></Field></div>
-        <Field><FieldLabel htmlFor="allocation-basis">Base de reparto</FieldLabel><NativeSelect id="allocation-basis" name="allocationBasis" className="w-full"><NativeSelectOption value="hours">Horas de producción</NativeSelectOption><NativeSelectOption value="units">Unidades del lote</NativeSelectOption></NativeSelect></Field>
+        <Field><FieldLabel htmlFor="allocation-basis">Base de reparto</FieldLabel><NativeSelect id="allocation-basis" name="allocationBasis" className="w-full" value={expenseBasis} onChange={(event) => setExpenseBasis(event.target.value as "hours" | "units" | "manual")}><NativeSelectOption value="hours">Horas de producción</NativeSelectOption><NativeSelectOption value="units">Unidades del lote</NativeSelectOption><NativeSelectOption value="manual" disabled={!products.length}>Porcentajes acordados</NativeSelectOption></NativeSelect></Field>
+        {expenseBasis === "manual" ? <div className="space-y-2">{products.map((item) => <label key={item.id} className="flex items-center justify-between gap-3 text-sm"><span>{item.name}</span><div className="flex items-center gap-1"><Input className="w-24 text-right" type="number" min="0" max="100" step="0.01" value={expenseShares[item.id] ?? ""} onChange={(event) => setExpenseShares((current) => ({ ...current, [item.id]: event.target.value }))} /><span>%</span></div></label>)}<p className="text-xs text-muted-foreground">Total: {products.reduce((sum, item) => sum + Number(expenseShares[item.id] || 0), 0).toFixed(2)} %</p></div> : null}
         <Field><FieldLabel htmlFor="expense-source">Fuente</FieldLabel><Input id="expense-source" name="source" required minLength={2} placeholder="Ej. Factura de septiembre" /></Field>
       </FieldGroup> : null}
       {kind === "product" || kind === "edit-product" ? <FieldGroup>
@@ -73,7 +78,7 @@ export function EntityDialog({ kind, product, products, onClose, onSave, currenc
         <div className="grid gap-4 sm:grid-cols-2"><Field><FieldLabel htmlFor="sales-variable">Venta variable por unidad</FieldLabel><Input id="sales-variable" name="salesVariableMinor" type="number" min="0" defaultValue={product?.salesVariableMinor ?? 0} /></Field><Field><FieldLabel htmlFor="labor-lot">Trabajo directo por lote</FieldLabel><Input id="labor-lot" name="laborLotMinor" type="number" min="0" defaultValue={product?.laborLotMinor ?? 0} /></Field></div>
         <Field><FieldLabel htmlFor="production-hours">Horas de producción por lote</FieldLabel><Input id="production-hours" name="productionHours" type="number" min="0" step="0.001" defaultValue={(product?.productionHoursMilli ?? 0) / 1000} /></Field>
       </FieldGroup> : null}
-      <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancelar</Button><Button type="submit" disabled={busy || demo}>{kind === "edit-product" ? "Guardar producto" : "Crear"}</Button></DialogFooter>
+      <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancelar</Button><Button type="submit" disabled={busy || demo || (kind === "expense" && expenseBasis === "manual" && Math.round(products.reduce((sum, item) => sum + Number(expenseShares[item.id] || 0), 0) * 100) !== 10000)}>{kind === "edit-product" ? "Guardar producto" : "Crear"}</Button></DialogFooter>
     </form>
   </DialogContent></Dialog>;
 }

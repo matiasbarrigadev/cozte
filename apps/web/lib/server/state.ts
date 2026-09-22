@@ -18,14 +18,16 @@ type ProductRow = {
 type ComponentRow = { product_id: string; material_id: string; quantity_milli: number };
 type ExpenseRow = {
   id: string; name: string; period: string; amount_minor: number;
-  allocation_basis: "hours" | "units"; category: string; version: number;
+  allocation_basis: "hours" | "units"; allocation_mode: "automatic" | "manual"; allocation_shares_json: string; category: string; version: number;
   currency: string | null; native_amount_milli: number | null;
 };
+type CategoryRow = { id: string; name: string };
 
 export async function ensureOrganization(principal: Principal): Promise<void> {
   await dbBatch([
     { sql: "INSERT OR IGNORE INTO organizations (id) VALUES (?)", params: [principal.organizationId] },
     { sql: "INSERT INTO memberships (organization_id, user_id, role) VALUES (?, ?, ?) ON CONFLICT (organization_id, user_id) DO UPDATE SET role=excluded.role", params: [principal.organizationId, principal.userId, principal.role] },
+    { sql: "INSERT OR IGNORE INTO cost_categories (id, organization_id, name) SELECT ?, ?, 'Materia prima' WHERE NOT EXISTS (SELECT 1 FROM cost_categories WHERE organization_id=?) UNION ALL SELECT ?, ?, 'Gastos generales' WHERE NOT EXISTS (SELECT 1 FROM cost_categories WHERE organization_id=?)", params: [crypto.randomUUID(), principal.organizationId, principal.organizationId, crypto.randomUUID(), principal.organizationId, principal.organizationId] },
   ]);
 }
 
@@ -35,12 +37,13 @@ export async function loadState(principal: Principal): Promise<DomainState> {
 }
 
 export async function loadStateForOrganization(org: string): Promise<DomainState> {
-  const [organizations, materials, products, components, expenses] = await dbBatch<OrganizationRow | MaterialRow | ProductRow | ComponentRow | ExpenseRow>([
+  const [organizations, materials, products, components, expenses, categories] = await dbBatch<OrganizationRow | MaterialRow | ProductRow | ComponentRow | ExpenseRow | CategoryRow>([
     { sql: "SELECT id, name, currency, revision FROM organizations WHERE id=?", params: [org] },
     { sql: "SELECT m.id, m.name, m.supplier, m.purchase_unit, m.category, m.version, p.amount_minor AS price_minor, p.source, p.effective_date, p.currency, p.native_amount_milli FROM materials m LEFT JOIN material_prices p ON p.material_id=m.id AND p.version=m.version WHERE m.organization_id=? ORDER BY m.name", params: [org] },
     { sql: "SELECT id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli, version FROM products WHERE organization_id=? ORDER BY name", params: [org] },
     { sql: "SELECT pm.product_id, pm.material_id, pm.quantity_milli FROM product_materials pm JOIN products p ON p.id=pm.product_id WHERE p.organization_id=?", params: [org] },
-    { sql: "SELECT id, name, period, amount_minor, allocation_basis, category, version, currency, native_amount_milli FROM shared_expenses WHERE organization_id=? ORDER BY name", params: [org] },
+    { sql: "SELECT id, name, period, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, version, currency, native_amount_milli FROM shared_expenses WHERE organization_id=? ORDER BY name", params: [org] },
+    { sql: "SELECT id, name FROM cost_categories WHERE organization_id=? ORDER BY name", params: [org] },
   ]);
   const organization = organizations[0] as OrganizationRow | undefined;
   if (!organization) throw new Error("Organization was not provisioned");
@@ -53,6 +56,7 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
     activePeriod: (expenses as ExpenseRow[]).map((row) => row.period).sort().at(-1) ?? new Date().toISOString().slice(0, 7),
     organization: { id: organization.id, name: organization.name, currency: base },
     fxQuotes,
+    categories: categories as CategoryRow[],
     materials: (materials as MaterialRow[]).map((row) => ({
       id: row.id, name: row.name, supplier: row.supplier, purchaseUnit: row.purchase_unit, category: row.category,
       version: row.version, priceMinor: row.price_minor === null ? null : normalize(row.native_amount_milli ?? row.price_minor * 1000, isCurrency(row.currency ?? "") ? row.currency as Currency : base), source: row.source, effectiveDate: row.effective_date,
@@ -68,7 +72,7 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
     })),
     expenses: (expenses as ExpenseRow[]).map((row) => ({
       id: row.id, name: row.name, period: row.period, amountMinor: normalize(row.native_amount_milli ?? row.amount_minor * 1000, isCurrency(row.currency ?? "") ? row.currency as Currency : base) ?? row.amount_minor,
-      allocationBasis: row.allocation_basis, category: row.category, version: row.version,
+      allocationBasis: row.allocation_mode === "manual" ? "manual" : row.allocation_basis, allocationShares: JSON.parse(row.allocation_shares_json), category: row.category, version: row.version,
       currency: isCurrency(row.currency ?? "") ? row.currency as Currency : base, nativeAmountMilli: row.native_amount_milli ?? row.amount_minor * 1000,
       fxMissing: isCurrency(row.currency ?? "") && row.currency !== base && !fxQuotes[row.currency as Currency],
     })),

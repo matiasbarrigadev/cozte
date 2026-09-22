@@ -60,7 +60,11 @@ try {
   assert.equal(await page.getByRole("row").count(), 4);
   await page.screenshot({ path: "../../tmp/cozte-dashboard.png", fullPage: true });
   await page.getByRole("button", { name: "Costos de producción" }).click();
-  await page.getByRole("heading", { name: "Tu hoja de costos" }).waitFor();
+  await page.getByRole("heading", { name: "Costos de producción" }).waitFor();
+  await page.getByRole("button", { name: "Tablero" }).click();
+  await page.getByRole("heading", { name: "Papel", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Lista" }).click();
+  await page.getByRole("button", { name: "Tabla" }).click();
   await page.getByRole("button", { name: "Papel", exact: true }).click();
   assert.equal(await page.getByRole("row").count(), 2, "category filter should keep only the matching material");
   await page.getByRole("button", { name: "Todas", exact: true }).click();
@@ -92,7 +96,7 @@ try {
   await mobile.screenshot({ path: "../../tmp/cozte-mobile.png", fullPage: true });
   await mobile.getByRole("button", { name: "Toggle Sidebar" }).click();
   await mobile.getByRole("button", { name: "Costos de producción" }).click();
-  await mobile.getByRole("heading", { name: "Tu hoja de costos" }).waitFor();
+  await mobile.getByRole("heading", { name: "Costos de producción" }).waitFor();
   await mobile.waitForTimeout(400);
   assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "mobile page should not overflow horizontally");
   await mobile.screenshot({ path: "../../tmp/cozte-sheet-mobile.png", fullPage: true });
