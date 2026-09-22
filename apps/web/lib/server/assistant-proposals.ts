@@ -9,6 +9,7 @@ import { dbBatch, dbQuery } from "./db";
 import { loadState } from "./state";
 import { loadProductionProfile, confirmProductionProfile } from "./production-profile";
 import { mutationProposalPresentation, productionProfilePresentation, type ProposalDetails } from "@/lib/proposal-presentation";
+import { getAssistantRunMessageIds, listAssistantDataSources, type AssistantDataSource } from "./assistant-trace";
 
 const MAX_PROPOSAL_BYTES = 100_000;
 const sourceSchema = z.object({ runId: z.string().min(1).max(100), toolCallId: z.string().min(1).max(200) }).optional();
@@ -26,7 +27,8 @@ type ProposalEventRow = { id: string; event_type: string; actor_id: string; payl
 export type AssistantProposal = {
   id: string; kind: ProposalKind; status: ProposalStatus; title: string; summary: string; details: ProposalDetails;
   baseOrganizationRevision: number; baseProfileRevision: number | null; createdAt: string;
-  decidedAt: string | null; decisionNote: string | null; result: unknown; history: Array<{ id: string; type: string; actor: string; createdAt: string; details: unknown }>;
+  decidedAt: string | null; decisionNote: string | null; changeRequest: string | null; result: unknown; sourceMessageId: string | null; sources: AssistantDataSource[];
+  history: Array<{ id: string; type: string; actor: string; createdAt: string; details: unknown }>;
 };
 
 type ProposalSource = { runId: string; toolCallId: string } | undefined;
@@ -56,11 +58,22 @@ async function byPendingDedupeKey(principal: Principal, dedupeKey: string): Prom
   return rows[0] ?? null;
 }
 
-function toPublic(row: ProposalRow, details: ProposalDetails, history: ProposalEventRow[] = []): AssistantProposal {
+function toPublic(row: ProposalRow, details: ProposalDetails, history: ProposalEventRow[] = [], sourceMessageId: string | null = null, sources: AssistantDataSource[] = []): AssistantProposal {
+  const changeRequestEvent = [...history].reverse().find((event) => {
+    if (event.event_type !== "stale") return false;
+    try { return (JSON.parse(event.payload_json) as { origin?: string }).origin === "user-requested-changes"; } catch { return false; }
+  });
+  let changeRequest: string | null = null;
+  if (changeRequestEvent) {
+    try {
+      const payload = JSON.parse(changeRequestEvent.payload_json) as { note?: unknown };
+      if (typeof payload.note === "string") changeRequest = payload.note;
+    } catch { /* malformed legacy audit data is omitted */ }
+  }
   return {
     id: row.id, kind: row.kind, status: row.status, title: row.title, summary: row.summary, details,
     baseOrganizationRevision: row.base_organization_revision, baseProfileRevision: row.base_profile_revision,
-    createdAt: row.created_at, decidedAt: row.decided_at, decisionNote: row.decision_note, result: proposalResult(row),
+    createdAt: row.created_at, decidedAt: row.decided_at, decisionNote: row.decision_note, changeRequest, result: proposalResult(row), sourceMessageId, sources,
     history: history.map((event) => ({ id: event.id, type: event.event_type, actor: event.actor_id, createdAt: event.created_at, details: JSON.parse(event.payload_json) as unknown })),
   };
 }
@@ -96,8 +109,12 @@ async function getRow(principal: Principal, proposalId: string): Promise<Proposa
 export async function getAssistantProposal(principal: Principal, proposalId: string): Promise<AssistantProposal | null> {
   const row = await getRow(principal, proposalId);
   if (!row) return null;
-  const history = await dbQuery<ProposalEventRow>("SELECT id, event_type, actor_id, payload_json, created_at FROM assistant_proposal_events WHERE organization_id=? AND proposal_id=? ORDER BY created_at, id LIMIT 100", [principal.organizationId, proposalId]);
-  return toPublic(row, proposalDetails(row), history);
+  const [history, messageIds, sources] = await Promise.all([
+    dbQuery<ProposalEventRow>("SELECT id, event_type, actor_id, payload_json, created_at FROM assistant_proposal_events WHERE organization_id=? AND proposal_id=? ORDER BY created_at, id LIMIT 100", [principal.organizationId, proposalId]),
+    row.source_run_id ? getAssistantRunMessageIds(principal, [row.source_run_id]) : Promise.resolve(new Map<string, string>()),
+    row.source_run_id ? listAssistantDataSources(principal, [row.source_run_id]) : Promise.resolve([]),
+  ]);
+  return toPublic(row, proposalDetails(row), history, row.source_run_id ? messageIds.get(row.source_run_id) ?? null : null, sources);
 }
 
 export async function listAssistantProposals(principal: Principal): Promise<AssistantProposal[]> {
@@ -110,9 +127,13 @@ export async function listAssistantProposals(principal: Principal): Promise<Assi
     `SELECT id, proposal_id, event_type, actor_id, payload_json, created_at FROM assistant_proposal_events WHERE organization_id=? AND proposal_id IN (${rows.map(() => "?").join(",")}) ORDER BY created_at, id`,
     [principal.organizationId, ...rows.map((row) => row.id)],
   );
+  const sourceRunIds = [...new Set(rows.flatMap((row) => row.source_run_id ? [row.source_run_id] : []))];
+  const [messageIds, sources] = await Promise.all([getAssistantRunMessageIds(principal, sourceRunIds), listAssistantDataSources(principal, sourceRunIds)]);
+  const byRun = new Map<string, AssistantDataSource[]>();
+  for (const source of sources) byRun.set(source.runId, [...byRun.get(source.runId) ?? [], source]);
   const byProposal = new Map<string, ProposalEventRow[]>();
   for (const event of events) byProposal.set(event.proposal_id, [...byProposal.get(event.proposal_id) ?? [], event]);
-  return rows.map((row) => toPublic(row, proposalDetails(row), byProposal.get(row.id) ?? []));
+  return rows.map((row) => toPublic(row, proposalDetails(row), byProposal.get(row.id) ?? [], row.source_run_id ? messageIds.get(row.source_run_id) ?? null : null, row.source_run_id ? byRun.get(row.source_run_id) ?? [] : []));
 }
 
 function toolResult(row: ProposalRow): Record<string, unknown> {
@@ -234,6 +255,21 @@ async function markProposalStale(principal: Principal, proposalId: string, reaso
   } catch { /* A concurrent approval/rejection owns the final status. */ }
 }
 
+async function requestProposalChanges(principal: Principal, row: ProposalRow, note: string): Promise<AssistantProposal> {
+  if (row.status !== "pending") throw new ApiError(409, "Esta propuesta ya no está pendiente. Actualiza la lista.");
+  const assertionId = crypto.randomUUID();
+  await dbBatch([
+    { sql: "INSERT INTO assistant_proposal_assertions (id, valid) VALUES (?, (SELECT CASE WHEN status='pending' AND organization_id=? THEN 1 ELSE 0 END FROM assistant_proposals WHERE id=?))", params: [assertionId, principal.organizationId, row.id] },
+    ...(row.kind === "production-profile" ? [{ sql: "UPDATE production_profiles SET draft_json=NULL, revision=revision+1, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE organization_id=? AND revision=? AND draft_json=(SELECT payload_json FROM assistant_proposals WHERE id=? AND status='pending' AND applied_profile_revision=?)", params: [principal.userId, principal.organizationId, row.applied_profile_revision ?? -1, row.id, row.applied_profile_revision ?? -1] }] : []),
+    { sql: "UPDATE assistant_proposals SET status='stale', decision_by=?, decision_note=?, decided_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND status='pending'", params: [principal.userId, note, row.id, principal.organizationId] },
+    { sql: "INSERT INTO assistant_proposal_events (id, organization_id, proposal_id, actor_id, event_type, payload_json) VALUES (?, ?, ?, ?, 'stale', ?)", params: [crypto.randomUUID(), principal.organizationId, row.id, principal.userId, eventPayload({ origin: "user-requested-changes", note })] },
+    { sql: "DELETE FROM assistant_proposal_assertions WHERE id=?", params: [assertionId] },
+  ]);
+  const updated = await getAssistantProposal(principal, row.id);
+  if (!updated) throw new ApiError(404, "La propuesta ya no está disponible");
+  return updated;
+}
+
 async function recordApprovalFailure(principal: Principal, proposalId: string, error: unknown) {
   const reason = error instanceof ApiError ? error.message.slice(0, 500) : "No se pudo aplicar por un error del sistema. La propuesta sigue pendiente.";
   try {
@@ -264,13 +300,17 @@ async function rejectProposal(principal: Principal, row: ProposalRow, note: stri
 export async function decideAssistantProposal(
   principal: Principal,
   proposalId: string,
-  input: { decision: "approve" | "reject"; note?: string | null },
+  input: { decision: "approve" | "reject" | "request-changes"; note?: string | null },
 ): Promise<{ proposal: AssistantProposal; result?: unknown }> {
   if (principal.role === "viewer") throw new ApiError(403, "No tienes permiso para decidir propuestas");
   const note = input.note?.trim() || null;
   if (note && note.length > 500) throw new ApiError(400, "La nota es demasiado larga");
   const row = await getRow(principal, proposalId);
   if (!row) throw new ApiError(404, "No encontramos esta propuesta para tu empresa");
+  if (input.decision === "request-changes") {
+    if (!note || note.length < 3) throw new ApiError(400, "Describe los ajustes que necesitas en al menos 3 caracteres");
+    return { proposal: await requestProposalChanges(principal, row, note) };
+  }
   if (input.decision === "reject") return { proposal: await rejectProposal(principal, row, note) };
   if (row.status === "approved") return { proposal: (await getAssistantProposal(principal, row.id))!, result: proposalResult(row) };
   if (row.status !== "pending") throw new ApiError(409, "Esta propuesta requiere una revisión nueva antes de aprobarla.");

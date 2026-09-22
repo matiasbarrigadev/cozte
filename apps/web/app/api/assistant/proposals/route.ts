@@ -1,14 +1,19 @@
 import { z, ZodError } from "zod";
 import { apiFailure, requirePrincipal } from "@/lib/server/auth";
 import { createMutationProposal, decideAssistantProposal, listAssistantProposals } from "@/lib/server/assistant-proposals";
+import { listAssistantDataSources } from "@/lib/server/assistant-trace";
 import { mutationSchema } from "@/lib/server/mutations";
 
 export const runtime = "nodejs";
 
 const decisionSchema = z.object({
   proposalId: z.uuid(),
-  decision: z.enum(["approve", "reject"]),
+  decision: z.enum(["approve", "reject", "request-changes"]),
   note: z.string().trim().max(500).optional(),
+}).superRefine((input, context) => {
+  if (input.decision === "request-changes" && (!input.note || input.note.length < 3)) {
+    context.addIssue({ code: "custom", path: ["note"], message: "Describe los ajustes necesarios" });
+  }
 });
 
 const createSchema = z.object({ mutation: mutationSchema });
@@ -16,7 +21,8 @@ const createSchema = z.object({ mutation: mutationSchema });
 export async function GET() {
   try {
     const principal = await requirePrincipal();
-    return Response.json({ proposals: await listAssistantProposals(principal) }, { headers: { "cache-control": "no-store" } });
+    const [proposals, sources] = await Promise.all([listAssistantProposals(principal), listAssistantDataSources(principal)]);
+    return Response.json({ proposals, sources }, { headers: { "cache-control": "no-store" } });
   } catch (error) { return apiFailure(error); }
 }
 

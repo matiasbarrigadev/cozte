@@ -85,6 +85,10 @@ try {
   await page.getByRole("button", { name: "Cozte AI" }).click();
   await page.getByRole("heading", { name: "Cozte AI", exact: true }).waitFor();
   await page.getByText("¿Qué productos terminados y empacados fabrican, dónde y cómo?").waitFor();
+  await page.getByRole("heading", { name: "Actividad de Cozte" }).waitFor();
+  const chatPanel = await page.locator("#cozte-chat-panel").boundingBox();
+  const activityPanel = await page.locator("#cozte-activity-panel").boundingBox();
+  assert.ok(chatPanel && activityPanel && chatPanel.width > activityPanel.width, "desktop chat should remain wider than the activity column");
   assert.equal(await page.getByRole("heading", { name: "Mapa de producción" }).count(), 0);
   assert.equal(await page.getByRole("heading", { name: "Reglas descubiertas" }).count(), 0);
   await page.screenshot({ path: "../../tmp/cozte-chat.png", fullPage: true });
@@ -103,6 +107,14 @@ try {
   await mobile.getByRole("button", { name: "Toggle Sidebar" }).click();
   await mobile.getByRole("button", { name: "Cozte AI" }).click();
   await mobile.getByRole("heading", { name: "Cozte AI", exact: true }).waitFor();
+  await mobile.getByRole("tab", { name: "Propuestas y actividad" }).click();
+  await mobile.getByRole("heading", { name: "Fuentes de datos" }).waitFor();
+  assert.equal(await mobile.locator("#cozte-chat-panel").isVisible(), false, "mobile activity tab should replace the chat panel");
+  assert.equal(await mobile.locator("#cozte-activity-panel").isVisible(), true, "mobile activity panel should be visible");
+  assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "mobile activity panel should not overflow horizontally");
+  await mobile.screenshot({ path: "../../tmp/cozte-activity-mobile.png", fullPage: true });
+  await mobile.getByRole("tab", { name: "Chat" }).click();
+  assert.equal(await mobile.locator("#cozte-chat-panel").isVisible(), true, "mobile chat tab should return to the conversation");
   await mobile.keyboard.press("Escape");
   await mobile.waitForTimeout(400);
   assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "mobile chat should not overflow horizontally");
