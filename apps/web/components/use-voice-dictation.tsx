@@ -51,7 +51,7 @@ export function useVoiceDictation(setInput: React.Dispatch<React.SetStateAction<
     }
   }, [releaseAudio]);
 
-  const startRecognition = React.useCallback((Constructor: RecognitionConstructor) => {
+  const startRecognition = React.useCallback(function runRecognition(Constructor: RecognitionConstructor) {
     if (!active.current) return;
     const session = new Constructor();
     const accepted = new Set<number>();
@@ -85,7 +85,7 @@ export function useVoiceDictation(setInput: React.Dispatch<React.SetStateAction<
       if (!active.current) { finish(); return; }
       shortEnds.current = Date.now() - sessionStartedAt.current < 1500 ? shortEnds.current + 1 : 0;
       if (shortEnds.current >= 5) { finish("El navegador detuvo repetidamente el dictado. Puedes volver a intentarlo."); return; }
-      restartTimer.current = window.setTimeout(() => { restartTimer.current = null; startRecognition(Constructor); }, 250);
+      restartTimer.current = window.setTimeout(() => { restartTimer.current = null; runRecognition(Constructor); }, 250);
     };
     try {
       sessionStartedAt.current = Date.now();

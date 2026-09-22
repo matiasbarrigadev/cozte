@@ -16,8 +16,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Cozte | Costeo vivo para manufactura",
-  description: "Conoce el costo de cada producto y mantén tus decisiones al día.",
+  metadataBase: new URL("https://cozte.com"),
+  title: "Cozte | Entiende cuánto te cuesta producir",
+  description: "Costos de producción claros para emprendimientos y PyMEs manufactureras. Organiza tus productos, entiende tus números y decide con más información.",
+  openGraph: {
+    title: "Cozte | Entiende cuánto te cuesta producir",
+    description: "Una forma más clara de conocer, actualizar y entender tus costos de producción.",
+    url: "https://cozte.com",
+    siteName: "Cozte",
+    locale: "es_LA",
+    type: "website",
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -28,7 +37,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        {clerkReady ? <ClerkProvider appearance={{ theme: shadcn }}>{children}<Toaster richColors position="bottom-right" /></ClerkProvider>
+        {clerkReady ? <ClerkProvider appearance={{ theme: shadcn }} signInFallbackRedirectUrl="/app" signUpFallbackRedirectUrl="/app">{children}<Toaster richColors position="bottom-right" /></ClerkProvider>
           : <>{children}<Toaster richColors position="bottom-right" /></>}
       </body>
     </html>

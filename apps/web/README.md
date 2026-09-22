@@ -13,7 +13,7 @@ npm run build
 npm run dev
 ```
 
-Abre `/demo` para explorar un conjunto de tres productos sin credenciales de datos. La demostración es de solo lectura; sus cambios se simulan localmente.
+La ruta `/` es la landing pública. `/sign-in` y `/sign-up` llevan a la aplicación autenticada en `/app`; `/demo` permite explorar tres productos sin credenciales de datos. La demostración es de solo lectura; sus cambios se simulan localmente.
 
 Para usar datos reales, copia `.env.example` a `.env.local` y configura Clerk, la URL y secreto compartido del puente D1, `AI_GATEWAY_API_KEY` para MiniMax M3 y las credenciales R2 para documentos. No subas `.env.local` al repositorio. Cozte exige una clave explícita de AI Gateway tanto local como en Vercel; no depende de OIDC. El secreto `DATA_BRIDGE_SECRET` debe coincidir con el secreto del Worker; `CRON_SECRET` protege las tareas programadas. El asistente nunca confirma cambios: deja propuestas para revisión humana. El historial conserva fotos inmutables de cada cambio confirmado.
 

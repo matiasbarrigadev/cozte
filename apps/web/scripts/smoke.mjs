@@ -10,6 +10,20 @@ const browser = await chromium.launch({
   ...(executablePath ? { executablePath } : {}),
 });
 try {
+  const landing = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const landingResponse = await landing.goto(baseUrl, { waitUntil: "networkidle" });
+  assert.equal(landingResponse?.status(), 200, "public landing should be available without signing in");
+  await landing.getByRole("heading", { name: /Lo que produces tiene un costo/i }).waitFor();
+  assert.equal(await landing.getByRole("link", { name: /Explorar la demo/i }).count(), 1);
+  assert.equal(await landing.getByRole("link", { name: /Crear cuenta/i }).count() > 0, true);
+  await landing.screenshot({ path: "../../tmp/cozte-landing.png", fullPage: true });
+  const landingMobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await landingMobile.goto(baseUrl, { waitUntil: "networkidle" });
+  await landingMobile.getByRole("heading", { name: /Lo que produces tiene un costo/i }).waitFor();
+  assert.equal(await landingMobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "landing must not overflow horizontally on mobile");
+  await landingMobile.screenshot({ path: "../../tmp/cozte-landing-mobile.png", fullPage: true });
+  await landingMobile.close();
+  await landing.close();
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(`${baseUrl}/demo`, { waitUntil: "networkidle" });
   await page.getByRole("heading", { name: "Costos de tus productos" }).waitFor();

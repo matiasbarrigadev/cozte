@@ -1,51 +1,69 @@
-import { auth } from "@clerk/nextjs/server";
-import { CreateOrganization, OrganizationSwitcher } from "@clerk/nextjs";
-import { redirect } from "next/navigation";
 import Link from "next/link";
-import { CostosApp } from "@/components/costos-app";
-import { loadDashboard } from "@/lib/server/state";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, Boxes, ChartNoAxesCombined, Check, Clock3, Layers3, MessageCircleMore, Sparkles } from "lucide-react";
+import { demoDashboard } from "@/lib/demo";
 
-export default async function Home() {
-  if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || !process.env.CLERK_SECRET_KEY) return (
-    <main className="mx-auto flex min-h-screen w-full max-w-xl items-center p-6">
-      <Card className="w-full">
-        <CardHeader><CardTitle>Cozte está preparando el acceso</CardTitle><CardDescription>Mientras activamos el ingreso de empresas, puedes explorar cómo funciona el costeo multiproducto.</CardDescription></CardHeader>
-        <CardContent><Link href="/demo" className={buttonVariants()}>Explorar demostración</Link></CardContent>
-      </Card>
+const formatMoney = (value: number | null) => value === null ? "—" : new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(value);
+const previewProducts = demoDashboard.products.map((product) => ({
+  name: product.name,
+  unitCost: demoDashboard.costs.find((cost) => cost.productId === product.id)?.unitMinor ?? null,
+}));
+const maxPreviewCost = Math.max(...previewProducts.map((product) => product.unitCost ?? 0), 1);
+
+const features = [
+  { icon: Boxes, number: "01", title: "Cada producto, en foco", text: "Mira el costo de cada variante sin perder de vista lo que comparten entre sí." },
+  { icon: Layers3, number: "02", title: "Lo compartido, bien repartido", text: "Insumos, electricidad, gas y trabajo se asignan con criterios visibles, no por intuición." },
+  { icon: MessageCircleMore, number: "03", title: "Una conversación que ordena", text: "Cuéntale a Cozte qué produces, dónde y cómo. El asistente ayuda a detectar datos que faltan y prepara propuestas para revisar." },
+  { icon: Clock3, number: "04", title: "Los cambios tienen memoria", text: "Actualiza precios en una tabla familiar y conserva una foto de cada cambio confirmado para comparar en el tiempo." },
+];
+
+function CozteMark({ inverse = false }: { inverse?: boolean }) {
+  return <span className={`flex size-9 items-center justify-center rounded-xl text-xl font-semibold tracking-tighter ${inverse ? "bg-landing-paper text-landing-ink" : "bg-landing-ink text-landing-paper"}`} aria-hidden="true">c</span>;
+}
+
+function LandingPreview() {
+  return <div className="landing-float relative mx-auto w-full max-w-[590px]" aria-label="Vista ilustrativa del panel de costos de Cozte">
+    <div className="absolute -left-5 top-16 hidden rounded-2xl border border-landing-line bg-landing-surface px-4 py-3 shadow-xl shadow-landing-ink/10 xl:block">
+      <span className="flex items-center gap-2 text-xs font-medium text-landing-muted"><span className="size-2 rounded-full bg-landing-highlight" />Un insumo, varios productos</span>
+      <p className="mt-1 text-sm font-semibold text-landing-ink">Papel interior <span className="font-normal text-landing-muted">· 3 variantes</span></p>
+    </div>
+    <div className="overflow-hidden rounded-[28px] border border-landing-ink/10 bg-landing-surface shadow-[0_30px_90px_-30px_rgba(15,24,19,0.35)]">
+      <div className="flex items-center justify-between border-b border-landing-line px-5 py-4 sm:px-7">
+        <div className="flex items-center gap-3"><CozteMark /><div><p className="text-sm font-semibold leading-tight text-landing-ink">Taller Norte</p><p className="text-xs text-landing-muted">Resumen de producción</p></div></div>
+        <div className="rounded-full border border-landing-line px-3 py-1 text-[11px] font-medium text-landing-muted">CLP</div>
+      </div>
+      <div className="grid gap-5 p-5 sm:p-7">
+        <div className="flex items-end justify-between gap-4"><div><p className="text-xs font-medium uppercase tracking-[0.18em] text-landing-muted">Tus productos</p><p className="mt-1 text-2xl font-semibold tracking-tight text-landing-ink">Costos a la vista<span className="text-landing-muted">.</span></p></div><span className="rounded-full bg-landing-highlight px-3 py-1.5 text-xs font-semibold text-landing-ink">3 productos</span></div>
+        <div className="overflow-hidden rounded-2xl border border-landing-line">
+          <div className="grid grid-cols-[1fr_auto] gap-2 border-b border-landing-line bg-landing-paper px-4 py-2.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-landing-muted"><span>Producto terminado</span><span>Costo unitario</span></div>
+          {previewProducts.map((product) => <div key={product.name} className="grid grid-cols-[1fr_auto] items-center gap-3 border-b border-landing-line px-4 py-3.5 last:border-b-0"><div className="min-w-0"><p className="truncate text-xs font-medium text-landing-ink sm:text-sm">{product.name}</p><div className="mt-2 h-1 w-24 overflow-hidden rounded-full bg-landing-line sm:w-32"><div className="h-full rounded-full bg-landing-ink" style={{ width: `${Math.round(((product.unitCost ?? 0) / maxPreviewCost) * 100)}%` }} /></div></div><span className="font-mono text-xs font-semibold tabular-nums text-landing-ink sm:text-sm">{formatMoney(product.unitCost)}</span></div>)}
+        </div>
+        <div className="grid grid-cols-[1fr_auto] items-center rounded-2xl bg-landing-ink px-4 py-4 text-landing-paper sm:px-5"><div><p className="flex items-center gap-1.5 text-xs font-semibold"><Sparkles className="size-3.5 text-landing-highlight" /> Cozte AI</p><p className="mt-1 text-xs leading-relaxed text-landing-dark-muted">“¿Comparten electricidad y materiales?”</p></div><span className="rounded-full bg-landing-highlight p-2 text-landing-ink"><ArrowUpRight className="size-4" /></span></div>
+      </div>
+    </div>
+    <div className="landing-float-delayed absolute -bottom-7 -right-3 hidden w-48 rounded-2xl border border-landing-line bg-landing-surface p-4 shadow-xl shadow-landing-ink/10 sm:block"><div className="flex items-center justify-between text-[11px] text-landing-muted"><span>Historial</span><ChartNoAxesCombined className="size-4 text-landing-ink" /></div><svg viewBox="0 0 160 38" role="img" aria-label="Ejemplo ilustrativo de evolución de costos" className="mt-2 h-10 w-full overflow-visible"><path d="M0 30 C18 29 22 13 41 18 S68 32 83 21 S110 11 124 17 S144 11 160 7" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="text-landing-ink" /><circle cx="160" cy="7" r="4" className="fill-landing-highlight stroke-landing-ink" strokeWidth="2" /></svg></div>
+    <p className="mt-11 text-center text-[11px] text-landing-muted sm:mt-12">Vista de ejemplo · datos ilustrativos de Taller Norte</p>
+  </div>;
+}
+
+export default function LandingPage() {
+  return <div className="landing min-h-dvh bg-landing-paper text-landing-ink">
+    <a href="#contenido" className="sr-only rounded-lg bg-landing-ink px-4 py-2 text-landing-paper focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50">Ir al contenido</a>
+    <header className="sticky top-0 z-30 border-b border-landing-line/70 bg-landing-paper/90 backdrop-blur-xl">
+      <nav aria-label="Navegación principal" className="mx-auto flex h-19 w-full max-w-7xl items-center justify-between gap-4 px-5 sm:px-8 lg:px-10"><Link href="/" className="flex items-center gap-2.5 text-xl font-semibold tracking-tight" aria-label="Cozte, inicio"><CozteMark />Cozte</Link><div className="hidden items-center gap-8 text-sm font-medium text-landing-muted md:flex"><a href="#como-funciona" className="transition-colors hover:text-landing-ink">Cómo funciona</a><a href="#funciones" className="transition-colors hover:text-landing-ink">Funciones</a><a href="#aprender" className="transition-colors hover:text-landing-ink">Nuestra mirada</a></div><div className="flex items-center gap-2 sm:gap-3"><Link href="/sign-in" className="rounded-lg px-2 py-3 text-sm font-medium transition-colors hover:bg-landing-line/50 sm:px-3">Ingresar</Link><Link href="/sign-up" className="inline-flex h-11 items-center gap-1.5 rounded-full bg-landing-ink px-4 text-sm font-semibold text-landing-paper transition-transform hover:-translate-y-0.5 sm:px-5">Crear cuenta <ArrowUpRight className="size-4" /></Link></div></nav>
+    </header>
+
+    <main id="contenido">
+      <section className="landing-hero-grid relative overflow-hidden"><div className="mx-auto grid w-full max-w-7xl gap-14 px-5 pb-20 pt-18 sm:px-8 sm:pt-24 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:items-center lg:gap-10 lg:px-10 lg:pb-28 lg:pt-28"><div className="max-w-[660px]"><p className="inline-flex items-center gap-2 rounded-full border border-landing-line bg-landing-surface px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-landing-muted"><span className="size-1.5 rounded-full bg-landing-ink" /> Para quienes hacen cosas reales</p><h1 className="mt-7 text-balance text-[clamp(3.25rem,6.8vw,6.4rem)] font-semibold leading-[0.97] tracking-[-0.065em]">Lo que produces tiene un costo. <span className="text-landing-muted">Entenderlo cambia todo.</span></h1><p className="mt-7 max-w-[34rem] text-pretty text-base leading-relaxed text-landing-muted sm:text-lg">Cozte te ayuda a conocer cuánto cuesta cada producto terminado, mantener tus datos al día y tomar decisiones con los números sobre la mesa.</p><div className="mt-9 flex flex-wrap items-center gap-3"><Link href="/sign-up" className="inline-flex h-12 items-center gap-2 rounded-full bg-landing-ink px-6 text-sm font-semibold text-landing-paper transition-transform hover:-translate-y-0.5">Empezar con Cozte <ArrowUpRight className="size-4" /></Link><Link href="/demo" className="inline-flex h-12 items-center gap-2 rounded-full border border-landing-line bg-landing-surface px-6 text-sm font-semibold transition-colors hover:bg-landing-highlight">Explorar la demo <ArrowRight className="size-4" /></Link></div><p className="mt-8 flex items-center gap-2 text-xs text-landing-muted"><Check className="size-4 text-landing-ink" /> Hecho para emprendimientos y PyMEs manufactureras</p></div><LandingPreview /></div></section>
+
+      <section id="como-funciona" className="scroll-mt-24 border-y border-landing-line bg-landing-surface"><div className="mx-auto grid w-full max-w-7xl gap-10 px-5 py-20 sm:px-8 lg:grid-cols-[0.8fr_1.2fr] lg:gap-20 lg:px-10 lg:py-28"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-landing-muted">Cómo funciona</p><h2 className="mt-4 max-w-md text-balance text-4xl font-semibold leading-tight tracking-[-0.05em] sm:text-5xl">Del proceso real a un costo que puedas explicar.</h2><p className="mt-5 max-w-md text-base leading-relaxed text-landing-muted">No necesitas tener todo resuelto al empezar. Cozte te ayuda a ordenar lo que sabes y a ver lo que todavía falta medir.</p></div><div className="divide-y divide-landing-line border-t border-landing-line"><div className="grid grid-cols-[2.5rem_1fr] gap-4 py-6 sm:grid-cols-[3rem_1fr]"><span className="font-mono text-xs text-landing-muted">01</span><div><h3 className="text-lg font-semibold">Cuéntale qué produces, dónde y cómo</h3><p className="mt-2 max-w-xl text-sm leading-relaxed text-landing-muted">El asistente te hace preguntas concretas sobre productos, planta, lotes, insumos y trabajo.</p></div></div><div className="grid grid-cols-[2.5rem_1fr] gap-4 py-6 sm:grid-cols-[3rem_1fr]"><span className="font-mono text-xs text-landing-muted">02</span><div><h3 className="text-lg font-semibold">Revisa tu base de costos</h3><p className="mt-2 max-w-xl text-sm leading-relaxed text-landing-muted">Organiza materiales y gastos en una tabla editable. Tú confirmas las propuestas y el criterio para repartir costos compartidos.</p></div></div><div className="grid grid-cols-[2.5rem_1fr] gap-4 py-6 sm:grid-cols-[3rem_1fr]"><span className="font-mono text-xs text-landing-muted">03</span><div><h3 className="text-lg font-semibold">Actualiza y mira la evolución</h3><p className="mt-2 max-w-xl text-sm leading-relaxed text-landing-muted">Cuando cambia un precio o un proceso, Cozte conserva el histórico y te muestra qué productos pueden verse afectados.</p></div></div></div></div></section>
+
+      <section id="funciones" className="scroll-mt-24 mx-auto w-full max-w-7xl px-5 py-20 sm:px-8 lg:px-10 lg:py-28"><div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-landing-muted">Dentro de Cozte</p><h2 className="mt-4 max-w-xl text-balance text-4xl font-semibold tracking-[-0.05em] sm:text-5xl">Menos tareas sueltas. Más claridad para decidir.</h2></div><Link href="/demo" className="inline-flex items-center gap-2 text-sm font-semibold underline underline-offset-4 hover:opacity-70">Verlo en acción <ArrowUpRight className="size-4" /></Link></div><div className="mt-12 grid gap-px overflow-hidden rounded-[28px] border border-landing-line bg-landing-line md:grid-cols-2">{features.map(({ icon: Icon, number, title, text }) => <article key={number} className="group min-h-60 bg-landing-surface p-7 transition-colors hover:bg-landing-highlight/25 sm:p-9"><div className="flex items-start justify-between"><span className="flex size-11 items-center justify-center rounded-xl bg-landing-paper text-landing-ink"><Icon className="size-5" /></span><span className="font-mono text-xs text-landing-muted">{number}</span></div><h3 className="mt-8 text-xl font-semibold tracking-tight">{title}</h3><p className="mt-3 max-w-md text-sm leading-relaxed text-landing-muted">{text}</p></article>)}</div><div className="mt-6 flex flex-wrap gap-2 text-xs font-medium text-landing-muted"><span className="rounded-full border border-landing-line px-3 py-2">Monedas de Latinoamérica y más</span><span className="rounded-full border border-landing-line px-3 py-2">Datos con fuente y fecha</span><span className="rounded-full border border-landing-line px-3 py-2">Costos por producto terminado</span></div></section>
+
+      <section id="aprender" className="scroll-mt-24 bg-landing-ink text-landing-paper"><div className="mx-auto grid w-full max-w-7xl gap-12 px-5 py-20 sm:px-8 lg:grid-cols-[1fr_0.9fr] lg:items-center lg:gap-24 lg:px-10 lg:py-28"><div><p className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-landing-highlight"><span className="size-1.5 rounded-full bg-landing-highlight" /> Aprender haciendo</p><h2 className="mt-5 max-w-xl text-balance text-4xl font-semibold tracking-[-0.055em] sm:text-5xl">Un número sirve. Saber de dónde sale, mucho más.</h2><p className="mt-6 max-w-lg text-base leading-relaxed text-landing-dark-muted">Entender la diferencia entre comprar y consumir, identificar un gasto compartido o reconocer un dato estimado también es educación financiera. Cozte la acerca a la operación de cada día.</p><Link href="/sign-up" className="mt-8 inline-flex h-11 items-center gap-2 rounded-full bg-landing-highlight px-5 text-sm font-semibold text-landing-ink transition-transform hover:-translate-y-0.5">Empieza a entender tus costos <ArrowUpRight className="size-4" /></Link></div><div className="rounded-[28px] border border-landing-paper/15 bg-landing-paper/5 p-5 sm:p-8"><p className="text-xs font-medium uppercase tracking-[0.16em] text-landing-dark-muted">Preguntas que ahora puedes responder</p><div className="mt-6 divide-y divide-landing-paper/15 border-t border-landing-paper/15"><p className="flex items-start gap-4 py-5 text-base sm:text-lg"><ArrowDownRight className="mt-0.5 size-5 shrink-0 text-landing-highlight" /> ¿Cuánto cuesta fabricar y empacar cada variante?</p><p className="flex items-start gap-4 py-5 text-base sm:text-lg"><ArrowDownRight className="mt-0.5 size-5 shrink-0 text-landing-highlight" /> ¿Cómo reparto la electricidad entre productos?</p><p className="flex items-start gap-4 py-5 text-base sm:text-lg"><ArrowDownRight className="mt-0.5 size-5 shrink-0 text-landing-highlight" /> ¿Qué cambió desde el último costeo?</p></div><p className="mt-5 text-xs leading-relaxed text-landing-dark-muted">Y si falta información, Cozte la señala. Un dato desconocido no se convierte en cero.</p></div></div></section>
+
+      <section className="mx-auto w-full max-w-7xl px-5 py-20 sm:px-8 lg:px-10 lg:py-28"><div className="flex flex-col items-start justify-between gap-8 rounded-[30px] bg-landing-highlight px-7 py-10 sm:px-10 lg:flex-row lg:items-end lg:px-14 lg:py-14"><div><p className="text-xs font-semibold uppercase tracking-[0.18em]">¿Empezamos?</p><h2 className="mt-4 max-w-2xl text-balance text-4xl font-semibold leading-tight tracking-[-0.055em] sm:text-5xl">Haz visible el costo real de lo que haces.</h2></div><Link href="/sign-up" className="inline-flex h-12 shrink-0 items-center gap-3 rounded-full bg-landing-ink px-6 text-sm font-semibold text-landing-paper transition-transform hover:-translate-y-0.5">Crear mi cuenta <ArrowUpRight className="size-4" /></Link></div></section>
     </main>
-  );
-  const session = await auth();
-  if (!session.userId) redirect("/sign-in");
-  if (!session.orgId) return (
-    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col items-center justify-center gap-6 p-6">
-      <Card className="w-full">
-        <CardHeader><CardTitle>Tu empresa</CardTitle><CardDescription>Crea o selecciona una empresa para comenzar a costear.</CardDescription></CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <OrganizationSwitcher hidePersonal />
-          <CreateOrganization afterCreateOrganizationUrl="/" />
-          <Button variant="outline" render={<Link href="/demo" />} nativeButton={false}>Ver una demostración</Button>
-        </CardContent>
-      </Card>
-    </main>
-  );
-  let initial;
-  try {
-    initial = await loadDashboard({
-      userId: session.userId,
-      organizationId: session.orgId,
-      role: session.orgRole === "org:admin" ? "owner" : session.orgRole === "org:member" ? "editor" : "viewer",
-    });
-  } catch {
-    return (
-      <main className="mx-auto flex min-h-screen w-full max-w-xl items-center p-6">
-        <Card className="w-full">
-          <CardHeader><CardTitle>Conexión de datos pendiente</CardTitle><CardDescription>La cuenta está lista, pero falta conectar el puente privado de D1.</CardDescription></CardHeader>
-          <CardContent><Button render={<Link href="/demo" />} nativeButton={false}>Ver demostración</Button></CardContent>
-        </Card>
-      </main>
-    );
-  }
-  return <CostosApp initial={initial} />;
+
+    <footer className="border-t border-landing-line"><div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-5 py-8 text-sm text-landing-muted sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-10"><div className="flex items-center gap-2.5"><CozteMark /><span className="font-semibold text-landing-ink">Cozte</span><span>· Costos claros para producir mejor.</span></div><div className="flex flex-wrap gap-5"><Link href="/demo" className="hover:text-landing-ink">Demo</Link><Link href="/sign-in" className="hover:text-landing-ink">Ingresar</Link><span>cozte.com</span></div></div></footer>
+  </div>;
 }

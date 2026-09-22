@@ -30,7 +30,7 @@ La planilla permite buscar y filtrar por tipo o categoría editable. Nombres, pr
 1. Instala dependencias en `apps/web` y `apps/data-bridge` con `npm ci`.
 2. En `apps/data-bridge`, ejecuta `npm run db:local` y `npm run dev`; para pruebas locales, configura `DATA_BRIDGE_SECRET` en `.dev.vars` (mínimo 32 caracteres; no lo subas).
 3. En `apps/web`, copia `.env.example` a `.env.local` y configura Clerk, `DATA_BRIDGE_URL` y el mismo secreto. Ejecuta `npm run dev`.
-4. Visita `/demo` sin necesidad de D1 o R2. Para app real, activa una organización en Clerk.
+4. Visita `/` para la landing pública o `/demo` sin necesidad de D1 o R2. La aplicación real está en `/app` y requiere sesión y organización en Clerk.
 
 Comprobaciones: `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` en `apps/web`; `npm run typecheck`, `npm run deploy:dry`, `npm run smoke` en `apps/data-bridge`. La prueba visual web es `npm run smoke` con el servidor en `localhost:3000`; si Playwright no tiene Chromium instalado, instala su navegador o usa `CHROME_PATH` para apuntar a Chrome.
 

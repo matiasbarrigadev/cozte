@@ -25,6 +25,13 @@
   --color-chart-2: var(--chart-2);
   --color-chart-1: var(--chart-1);
   --color-ring: var(--ring);
+  --color-landing-paper: var(--landing-paper);
+  --color-landing-surface: var(--landing-surface);
+  --color-landing-ink: var(--landing-ink);
+  --color-landing-muted: var(--landing-muted);
+  --color-landing-line: var(--landing-line);
+  --color-landing-highlight: var(--landing-highlight);
+  --color-landing-dark-muted: var(--landing-dark-muted);
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
@@ -47,6 +54,46 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+.landing {
+  --landing-paper: oklch(0.976 0.011 115);
+  --landing-surface: oklch(0.997 0.004 110);
+  --landing-ink: oklch(0.19 0.028 155);
+  --landing-muted: oklch(0.44 0.02 150);
+  --landing-line: oklch(0.86 0.018 140);
+  --landing-highlight: oklch(0.9 0.15 124);
+  --landing-dark-muted: oklch(0.78 0.02 145);
+}
+
+.landing-hero-grid {
+  background-image: linear-gradient(to right, color-mix(in oklch, var(--landing-line) 32%, transparent) 1px, transparent 1px), linear-gradient(to bottom, color-mix(in oklch, var(--landing-line) 32%, transparent) 1px, transparent 1px);
+  background-size: 64px 64px;
+  background-position: center top;
+}
+
+.landing-hero-grid::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, var(--landing-paper) 3%, transparent 62%), linear-gradient(0deg, var(--landing-paper) 0%, transparent 35%);
+}
+
+.landing-hero-grid > * {
+  position: relative;
+}
+
+@keyframes landing-drift {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-9px); }
+}
+
+.landing-float { animation: landing-drift 7s ease-in-out infinite; }
+.landing-float-delayed { animation: landing-drift 6s ease-in-out 1.2s infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-float, .landing-float-delayed { animation: none; }
 }
 
 :root {
