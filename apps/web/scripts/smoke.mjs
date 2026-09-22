@@ -14,6 +14,9 @@ try {
   const landingResponse = await landing.goto(baseUrl, { waitUntil: "networkidle" });
   assert.equal(landingResponse?.status(), 200, "public landing should be available without signing in");
   await landing.getByRole("heading", { name: /Lo que produces tiene un costo/i }).waitFor();
+  await landing.getByRole("link", { name: "Cozte, inicio" }).waitFor();
+  await landing.getByText("Ejemplo: papel interior de $9.000 a $10.000").waitFor();
+  await landing.getByText("+$100", { exact: true }).waitFor();
   assert.equal(await landing.getByRole("link", { name: /Explorar la demo/i }).count(), 1);
   assert.equal(await landing.getByRole("link", { name: /Crear cuenta/i }).count() > 0, true);
   await landing.screenshot({ path: "../../tmp/cozte-landing.png", fullPage: true });
