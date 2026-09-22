@@ -182,8 +182,8 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
       </Sidebar>
       <SidebarInset>
         <header className="flex h-16 items-center gap-3 border-b px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="h-6" /><span className="truncate text-sm text-muted-foreground">{state.organization.name}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}<Badge variant="outline">{currency}</Badge></div></header>
-        <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-7 md:px-8 md:py-10">
-          {demo ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
+        <main className={view === "asistente" ? "mx-auto flex w-full max-w-none flex-col gap-4 px-4 py-5 md:px-8" : "mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-7 md:px-8 md:py-10"}>
+          {demo && view !== "asistente" ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
           {view === "dashboard" ? <>
             <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm text-muted-foreground">Dashboard</p><h1 className="text-3xl font-semibold tracking-tight">Costos de tus productos</h1></div><Button onClick={() => setDialog("product")}><Plus data-icon="inline-start" />Añadir producto</Button></div>
             <div className="grid gap-4 md:grid-cols-3"><Metric label="Productos" value={String(state.products.length)} note="Variantes y productos costeados" /><Metric label="Insumos compartidos" value={String(state.materials.filter((item) => state.components.filter((component) => component.materialId === item.id).length > 1).length)} note="Un precio, varios productos" /><Metric label="Por revisar" value={String(changeCount + state.alerts.length + state.costs.filter((item) => item.warnings.length > 0).length)} note="Cambios y datos faltantes" /></div>
@@ -221,7 +221,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
             </>}
           </> : null}
 
-          {view === "asistente" ? <CozteAssistant state={state} demo={demo} onOpenProductionCosts={() => setView("planilla")} onMaterialProposal={(materialId, priceMinor) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [materialId]: priceMinor } })); toast.info("Precio agregado al borrador. Revísalo antes de confirmar."); setView("planilla"); }} /> : null}
+          {view === "asistente" ? <CozteAssistant state={state} demo={demo} onMaterialProposal={(materialId, priceMinor) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [materialId]: priceMinor } })); toast.info("Precio agregado al borrador. Revísalo antes de confirmar."); setView("planilla"); }} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
         </main>

@@ -35,8 +35,11 @@ try {
   await page.getByRole("button", { name: "Comprobantes" }).click();
   await page.getByRole("heading", { name: "Comprobantes" }).waitFor();
   await page.getByRole("button", { name: "Cozte AI" }).click();
-  await page.getByRole("heading", { name: "Cozte", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Cozte AI", exact: true }).waitFor();
   await page.getByText("¿Qué productos terminados y empacados fabrican, dónde y cómo?").waitFor();
+  assert.equal(await page.getByRole("heading", { name: "Mapa de producción" }).count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Reglas descubiertas" }).count(), 0);
+  await page.screenshot({ path: "../../tmp/cozte-chat.png", fullPage: true });
   await page.getByRole("button", { name: "Historial" }).click();
   await page.getByRole("heading", { name: "Historial de costos" }).waitFor();
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
@@ -49,6 +52,13 @@ try {
   await mobile.waitForTimeout(400);
   assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "mobile page should not overflow horizontally");
   await mobile.screenshot({ path: "../../tmp/cozte-sheet-mobile.png", fullPage: true });
+  await mobile.getByRole("button", { name: "Toggle Sidebar" }).click();
+  await mobile.getByRole("button", { name: "Cozte AI" }).click();
+  await mobile.getByRole("heading", { name: "Cozte AI", exact: true }).waitFor();
+  await mobile.keyboard.press("Escape");
+  await mobile.waitForTimeout(400);
+  assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, "mobile chat should not overflow horizontally");
+  await mobile.screenshot({ path: "../../tmp/cozte-chat-mobile.png", fullPage: true });
   const cron = await mobile.request.get(`${baseUrl}/api/cron/freshness`);
   assert.equal(cron.status(), 401, "cron must reject requests without a secret");
   await mobile.close();
