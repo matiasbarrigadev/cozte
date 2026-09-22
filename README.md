@@ -17,8 +17,8 @@ El motor de costos es determinístico: un precio compartido se registra una vez 
 
 - Cloudflare **Lightning CloudWave** (`b16b057db473a7ca309e70724394acb6`): D1 `claro-costos-db` creado; migraciones `0001` y `0002` aplicadas local y remotamente.
 - Worker `cozte-d1-bridge` desplegado con `DATA_BRIDGE_SECRET`; la conexión firmada desde Vercel fue verificada. Su URL se utiliza solo desde el servidor de Vercel.
-- R2 está habilitado y el bucket privado `cozte-documents` fue creado. Faltan credenciales S3 restringidas al bucket en Vercel Production para que funcionen las cargas.
-- La aplicación Clerk **Cozte** (`app_3Jf9dlY7bLusslTQ1YTsxlPCbxG`) tiene instancia de producción (`ins_3JfBfzn3opJsD1vzLOLZyZJwexb`), organizaciones habilitadas e ingreso por correo. Las claves de producción están en Vercel; los cinco CNAME requeridos se crearon en Vercel DNS. La emisión del certificado SSL de Clerk aún se verifica por separado.
+- R2 está habilitado y el bucket privado `cozte-documents` fue creado. Las variables S3 están en Vercel Production; falta verificar una carga autenticada desde la aplicación.
+- La aplicación Clerk **Cozte** (`app_3Jf9dlY7bLusslTQ1YTsxlPCbxG`) tiene instancia de producción (`ins_3JfBfzn3opJsD1vzLOLZyZJwexb`), organizaciones habilitadas e ingreso por correo. Las claves de producción están en Vercel; los cinco CNAME requeridos se crearon en Vercel DNS y Clerk verificó DNS, SSL y correo. Google OAuth está pendiente y no se ofrece en producción.
 - El proyecto Vercel `lightningteam/cozte` importa `main` con Root Directory `apps/web`. `cozte.com` y `www.cozte.com` responden; las rutas privadas exigen sesión.
 
 ## Desarrollo local
@@ -34,8 +34,8 @@ Comprobaciones: `npm run typecheck`, `npm run lint`, `npm run test`, `npm run bu
 
 1. El repositorio y **Root Directory `apps/web`** ya están enlazados. Las variables de `apps/web/.env.example` van en Vercel como secretos, nunca en código.
 2. El secreto `DATA_BRIDGE_SECRET` ya está instalado en Cloudflare y Vercel Production y la conexión firmada fue verificada. `DATA_BRIDGE_URL` también está configurada.
-3. Comprobar `clerk deploy status --mode agent`: DNS y correo ya se verificaron, pero SSL podría seguir en aprovisionamiento. El ingreso real debe probarse una vez que el certificado esté listo. Google OAuth de desarrollo no está configurado en producción; el piloto usa correo con código.
-4. Crear un token R2 con permiso **Object Read & Write** limitado a `cozte-documents` y añadir `R2_ACCESS_KEY_ID` y `R2_SECRET_ACCESS_KEY` en Vercel Production. `R2_ACCOUNT_ID` y `R2_BUCKET` ya están configurados.
+3. Crear el primer usuario en `www.cozte.com/sign-up`, seleccionar su empresa y verificar un costeo real. El piloto usa correo con código; Google OAuth aún no está configurado en producción.
+4. Verificar una carga autenticada de PDF/imagen pequeña. El token R2 con permiso **Object Read & Write** limitado a `cozte-documents` y las cuatro variables `R2_*` ya están en Vercel Production, pero las variables sensibles no se exportan a pruebas locales.
 5. `CRON_SECRET` ya está configurado en Vercel Production. En Vercel, AI Gateway puede autenticarse con OIDC sin `AI_GATEWAY_API_KEY`; para desarrollo local sí se requiere una clave. El cron en `apps/web/vercel.json` revisa cada día los insumos sin precio o cuya fecha efectiva supera 30 días; esta cadencia es una hipótesis de piloto.
 6. Probar alta de empresa, carga de varios productos, actualización compartida, gastos, chat, archivos y revisión de permisos antes de invitar usuarios. El propietario gestiona el dominio y sus DNS.
 
