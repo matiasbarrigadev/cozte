@@ -12,6 +12,9 @@ export class ApiError extends Error {
 }
 
 export async function requirePrincipal(write = false): Promise<Principal> {
+  if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || !process.env.CLERK_SECRET_KEY) {
+    throw new ApiError(503, "El acceso aún no está configurado");
+  }
   const session = await auth();
   if (!session.userId) throw new ApiError(401, "Inicia sesión para continuar");
   if (!session.orgId) throw new ApiError(403, "Selecciona una empresa para continuar");

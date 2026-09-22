@@ -4,10 +4,18 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { CostosApp } from "@/components/costos-app";
 import { loadDashboard } from "@/lib/server/state";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default async function Home() {
+  if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || !process.env.CLERK_SECRET_KEY) return (
+    <main className="mx-auto flex min-h-screen w-full max-w-xl items-center p-6">
+      <Card className="w-full">
+        <CardHeader><CardTitle>Cozte está preparando el acceso</CardTitle><CardDescription>Mientras activamos el ingreso de empresas, puedes explorar cómo funciona el costeo multiproducto.</CardDescription></CardHeader>
+        <CardContent><Link href="/demo" className={buttonVariants()}>Explorar demostración</Link></CardContent>
+      </Card>
+    </main>
+  );
   const session = await auth();
   if (!session.userId) redirect("/sign-in");
   if (!session.orgId) return (

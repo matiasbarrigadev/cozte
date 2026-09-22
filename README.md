@@ -19,7 +19,7 @@ El motor de costos es determinístico: un precio compartido se registra una vez 
 - Worker `cozte-d1-bridge` desplegado. No tiene configurado `DATA_BRIDGE_SECRET` todavía, por lo que rechaza llamadas a datos. Su URL se utiliza solo desde el servidor de Vercel.
 - R2 aún no está habilitado para esa cuenta. Los documentos funcionarán tras activarlo, crear el bucket `cozte-documents` y configurar credenciales restringidas.
 - Clerk tiene claves de desarrollo locales creadas con CLI, pendientes de reclamar/configurar por el propietario para el proyecto definitivo.
-- **No** hay proyecto Vercel ni dominio conectado. El propietario indicó que hará esa conexión cuando el repositorio esté listo.
+- El proyecto Vercel `lightningteam/cozte` importa `main` con Root Directory `apps/web`. El propietario agregó `cozte.com`; la propagación/configuración DNS se verifica por separado. Aún faltan las claves de Clerk para habilitar acceso real.
 
 ## Desarrollo local
 
@@ -30,14 +30,14 @@ El motor de costos es determinístico: un precio compartido se registra una vez 
 
 Comprobaciones: `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` en `apps/web`; `npm run typecheck`, `npm run deploy:dry`, `npm run smoke` en `apps/data-bridge`. La prueba visual web es `npm run smoke` con el servidor en `localhost:3000`; si Playwright no tiene Chromium instalado, instala su navegador o usa `CHROME_PATH` para apuntar a Chrome.
 
-## Publicación cuando el propietario cree el proyecto
+## Puesta en marcha del proyecto Vercel existente
 
-1. Importar este repositorio a Vercel con **Root Directory `apps/web`** y framework Next.js. Configurar allí las variables de `apps/web/.env.example` como secretos, no en código.
-2. Crear un secreto aleatorio de al menos 32 caracteres. Guardarlo en Cloudflare con `wrangler secret put DATA_BRIDGE_SECRET` desde `apps/data-bridge`, y en Vercel como `DATA_BRIDGE_SECRET`. Configurar `DATA_BRIDGE_URL` con la URL privada del Worker desplegado.
-3. Configurar Clerk para organizaciones e invitaciones; usar las claves de producción y los dominios autorizados del proyecto cuando existan.
+1. El repositorio y **Root Directory `apps/web`** ya están enlazados. Las variables de `apps/web/.env.example` van en Vercel como secretos, nunca en código.
+2. El secreto `DATA_BRIDGE_SECRET` ya está instalado en Cloudflare y Vercel Production y la conexión firmada fue verificada. `DATA_BRIDGE_URL` también está configurada.
+3. Configurar Clerk para organizaciones e invitaciones; cargar las claves de producción en Vercel y volver a desplegar. Hasta entonces `/` muestra un aviso y `/demo` permite explorar sin iniciar sesión.
 4. Habilitar R2 en CloudWave; crear bucket `cozte-documents` y un API token limitado a ese bucket. Añadir `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` y `R2_SECRET_ACCESS_KEY` en Vercel.
-5. Configurar `AI_GATEWAY_API_KEY` y `CRON_SECRET` en Vercel. El cron en `apps/web/vercel.json` revisa cada día los insumos sin precio o cuya fecha efectiva supera 30 días; esta cadencia es una hipótesis de piloto.
-6. Probar alta de empresa, carga de varios productos, actualización compartida, gastos, chat, archivos y revisión de permisos antes de invitar usuarios. Conectar `cozte.com` solo después de esa prueba y de la confirmación del propietario.
+5. `CRON_SECRET` ya está configurado en Vercel Production. En Vercel, AI Gateway puede autenticarse con OIDC sin `AI_GATEWAY_API_KEY`; para desarrollo local sí se requiere una clave. El cron en `apps/web/vercel.json` revisa cada día los insumos sin precio o cuya fecha efectiva supera 30 días; esta cadencia es una hipótesis de piloto.
+6. Probar alta de empresa, carga de varios productos, actualización compartida, gastos, chat, archivos y revisión de permisos antes de invitar usuarios. El propietario gestiona el dominio y sus DNS.
 
 ## Alcance del piloto y límites
 
