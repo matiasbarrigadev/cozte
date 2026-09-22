@@ -33,7 +33,8 @@ async function fetchBank(): Promise<FxTable> {
 
 function valid(table: FxTable): boolean {
   const age = Date.now() - new Date(table.asOf).getTime();
-  return Number.isFinite(age) && age < 7 * 86_400_000 && age > -86_400_000;
+  const maxAge = table.source === "FXRatesAPI" ? 3 * 3_600_000 : 7 * 86_400_000;
+  return Number.isFinite(age) && age < maxAge && age > -86_400_000;
 }
 
 async function latestStored(): Promise<FxTable | null> {
