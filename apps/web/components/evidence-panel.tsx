@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { FileText, Upload } from "lucide-react";
+import { AnimatedIcon } from "@/components/animated-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -52,6 +52,6 @@ export function EvidencePanel({ demo }: { demo: boolean }) {
 
   return <Card><CardHeader><CardTitle>Comprobantes</CardTitle><CardDescription>Documentos privados para respaldar precios y gastos.</CardDescription></CardHeader><CardContent className="flex flex-col gap-5">
     <FieldGroup><Field><FieldLabel htmlFor="evidence-file">PDF o imagen (máximo 4 MB)</FieldLabel><Input id="evidence-file" type="file" accept=".pdf,image/png,image/jpeg,image/webp" disabled={demo || busy} onChange={(event) => setSelected(event.target.files?.[0] ?? null)} /></Field></FieldGroup>
-    {documents.length ? <Table><TableHeader><TableRow><TableHead>Archivo</TableHead><TableHead>Fecha</TableHead><TableHead className="text-right">Tamaño</TableHead></TableRow></TableHeader><TableBody>{documents.map((item) => <TableRow key={item.id}><TableCell><Button variant="link" onClick={() => void openDocument(item.id)}><FileText data-icon="inline-start" />{item.filename}</Button></TableCell><TableCell>{new Date(item.created_at).toLocaleDateString("es-CL")}</TableCell><TableCell className="text-right">{Math.round(item.byte_size / 1024)} KB</TableCell></TableRow>)}</TableBody></Table> : <Empty><EmptyHeader><EmptyMedia variant="icon"><FileText /></EmptyMedia><EmptyTitle>Sin comprobantes</EmptyTitle><EmptyDescription>Adjunta una factura o cotización para respaldar el próximo cambio.</EmptyDescription></EmptyHeader></Empty>}
-  </CardContent><CardFooter><Button variant="outline" disabled={!selected || busy || demo} onClick={() => void upload()}><Upload data-icon="inline-start" />Subir comprobante</Button></CardFooter></Card>;
+    {documents.length ? <Table><TableHeader><TableRow><TableHead>Archivo</TableHead><TableHead>Fecha</TableHead><TableHead className="text-right">Tamaño</TableHead></TableRow></TableHeader><TableBody>{documents.map((item) => <TableRow key={item.id}><TableCell><Button variant="link" onClick={() => void openDocument(item.id)}><AnimatedIcon name="receipt" data-icon="inline-start" />{item.filename}</Button></TableCell><TableCell>{new Date(item.created_at).toLocaleDateString("es-CL")}</TableCell><TableCell className="text-right">{Math.round(item.byte_size / 1024)} KB</TableCell></TableRow>)}</TableBody></Table> : <Empty><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="receipt" size={24} /></EmptyMedia><EmptyTitle>Sin comprobantes</EmptyTitle><EmptyDescription>Adjunta una factura o cotización para respaldar el próximo cambio.</EmptyDescription></EmptyHeader></Empty>}
+  </CardContent><CardFooter><Button variant="outline" disabled={!selected || busy || demo} onClick={() => void upload()}><AnimatedIcon name="upload" data-icon="inline-start" />Subir comprobante</Button></CardFooter></Card>;
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { AlertTriangle, Check, Cloud, Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 import type { DomainState, Material, SharedExpense } from "@/lib/domain";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
@@ -16,6 +15,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { AnimatedIcon } from "@/components/animated-icon";
 
 type SheetKind = "all" | "materials" | "expenses";
 type Draft = { materials: Record<string, number>; expenses: Record<string, number>; materialCurrencies: Record<string, Currency>; expenseCurrencies: Record<string, Currency> };
@@ -133,27 +133,27 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   return <div className="flex flex-col gap-4">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><p className="text-sm text-muted-foreground">Planilla de costos</p><h1 className="text-3xl font-semibold tracking-tight">Tu hoja de costos</h1><p className="text-sm text-muted-foreground">Datos: autoguardado · Importes: revisión previa.</p></div>
-      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={onAddMaterial}><Plus data-icon="inline-start" />Insumo</Button><Button variant="outline" onClick={onAddExpense}><Plus data-icon="inline-start" />Gasto</Button></div>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={onAddMaterial}><AnimatedIcon name="plus" data-icon="inline-start" />Insumo</Button><Button variant="outline" onClick={onAddExpense}><AnimatedIcon name="plus" data-icon="inline-start" />Gasto</Button></div>
     </div>
     <Card className="overflow-hidden py-0">
       <CardContent className="p-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 md:px-6">
           <Tabs value={kind} onValueChange={(value) => setKind(value as SheetKind)}><TabsList variant="line" aria-label="Tipo de costo"><TabsTrigger value="all">Todos <Badge variant="secondary">{state.materials.length + expenses.length}</Badge></TabsTrigger><TabsTrigger value="materials">Insumos <Badge variant="secondary">{state.materials.length}</Badge></TabsTrigger><TabsTrigger value="expenses">Gastos <Badge variant="secondary">{expenses.length}</Badge></TabsTrigger></TabsList></Tabs>
           <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status" aria-live="polite">
-            {draftStatus === "saving" ? <Cloud aria-hidden="true" /> : draftStatus === "saved" ? <Check aria-hidden="true" /> : null}
+            {draftStatus === "saving" ? <AnimatedIcon name="cloud" /> : draftStatus === "saved" ? <AnimatedIcon name="check" /> : null}
             {demo ? "Demo · no se guarda" : draftStatus === "loading" ? "Cargando borrador" : draftStatus === "saving" ? "Guardando borrador" : draftStatus === "error" ? draftReady ? "No se guardó el borrador" : "No se pudo cargar el borrador" : "Borrador guardado"}
             {draftStatus === "error" ? <Button size="sm" variant="outline" onClick={onRetryDraft}>Reintentar</Button> : null}
           </div>
         </div>
         <div className="flex flex-col gap-3 border-b px-4 py-3 md:px-6">
-          <div className="relative"><Search aria-hidden="true" className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Buscar costos" placeholder="Buscar costo o proveedor" className="pl-9" /></div>
+          <div className="relative"><AnimatedIcon name="search" size={16} className="pointer-events-none absolute top-2.5 left-3 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Buscar costos" placeholder="Buscar costo o proveedor" className="pl-9" /></div>
           {categories.length ? <div className="overflow-x-auto pb-1"><ToggleGroup value={[selectedCategory]} onValueChange={(values) => setCategory(values.at(-1) ?? "all")} variant="outline" size="sm" aria-label="Filtrar por categoría" className="min-w-max"><ToggleGroupItem value="all" className="h-11 md:h-7">Todas</ToggleGroupItem>{categories.map((item) => <ToggleGroupItem key={item} value={item} className="h-11 md:h-7">{item}</ToggleGroupItem>)}</ToggleGroup></div> : null}
         </div>
         {materials.length + visibleExpenses.length ? <><p className="px-4 py-1 text-xs text-muted-foreground md:hidden">Desliza la tabla para ver más columnas →</p><div className="overflow-x-auto" role="region" aria-label="Planilla de costos desplazable" tabIndex={0}><Table><TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead>Categoría</TableHead><TableHead>Proveedor / período</TableHead><TableHead>Unidad / reparto</TableHead><TableHead>Moneda</TableHead><TableHead className="text-right">Precio / monto</TableHead><TableHead>Alcance</TableHead><TableHead>Estado</TableHead></TableRow></TableHeader><TableBody>{materials.map(materialRow)}{visibleExpenses.map(expenseRow)}</TableBody></Table></div></> : <Empty className="py-10"><EmptyHeader><EmptyTitle>No hay costos en esta vista</EmptyTitle><EmptyDescription>{query || selectedCategory !== "all" ? "Prueba otra búsqueda o categoría." : "Agrega un insumo o un gasto para comenzar."}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="outline" onClick={() => { setQuery(""); setCategory("all"); setKind("all"); }}>Ver todos</Button></EmptyContent></Empty>}
       </CardContent>
     </Card>
-    {changeCount ? <Alert><AlertTriangle /><AlertTitle>{changeCount} cambio{changeCount === 1 ? "" : "s"} en borrador</AlertTitle><AlertDescription>{affectedProducts.size ? `Puede cambiar el costeo de ${affectedProducts.size} producto${affectedProducts.size === 1 ? "" : "s"}. ` : ""}Los importes vigentes no cambian hasta tu aprobación.</AlertDescription></Alert> : null}
-    {changeCount && !canReview ? <Alert variant="destructive"><AlertTriangle /><AlertTitle>No se puede calcular el impacto</AlertTitle><AlertDescription>Completa el importe y verifica la cotización vigente de la moneda elegida.</AlertDescription></Alert> : null}
+    {changeCount ? <Alert><AnimatedIcon name="alert" /><AlertTitle>{changeCount} cambio{changeCount === 1 ? "" : "s"} en borrador</AlertTitle><AlertDescription>{affectedProducts.size ? `Puede cambiar el costeo de ${affectedProducts.size} producto${affectedProducts.size === 1 ? "" : "s"}. ` : ""}Los importes vigentes no cambian hasta tu aprobación.</AlertDescription></Alert> : null}
+    {changeCount && !canReview ? <Alert variant="destructive"><AnimatedIcon name="alert" /><AlertTitle>No se puede calcular el impacto</AlertTitle><AlertDescription>Completa el importe y verifica la cotización vigente de la moneda elegida.</AlertDescription></Alert> : null}
     <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-muted-foreground">{changeCount ? `${changeCount} importe${changeCount === 1 ? "" : "s"} por confirmar` : "Todos los importes al día"}</span><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={!changeCount || busy} onClick={onDiscard}>Descartar borrador</Button><Button disabled={!changeCount || !canReview || busy || !draftReady} onClick={onReview}>Revisar impacto</Button></div></div>
   </div>;
 }

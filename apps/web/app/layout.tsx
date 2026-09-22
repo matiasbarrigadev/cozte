@@ -24,6 +24,10 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://cozte.com"),
   title: "Cozte | Entiende cuánto te cuesta producir",
   description: "Costos de producción claros para emprendimientos y PyMEs manufactureras. Organiza tus productos, entiende tus números y decide con más información.",
+  icons: {
+    icon: [{ url: "/cozte-mark.svg", type: "image/svg+xml" }],
+    shortcut: "/cozte-mark.svg",
+  },
   openGraph: {
     title: "Cozte | Entiende cuánto te cuesta producir",
     description: "Una forma más clara de conocer, actualizar y entender tus costos de producción.",

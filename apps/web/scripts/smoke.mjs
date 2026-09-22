@@ -16,6 +16,8 @@ try {
   await landing.getByRole("heading", { name: /Lo que produces tiene un costo/i }).waitFor();
   assert.equal(await landing.getByText("Para quienes hacen cosas reales").count(), 0, "hero tag should be removed");
   await landing.getByRole("link", { name: "Cozte, inicio" }).waitFor();
+  assert.equal(await landing.locator(".cozte-logo-mark").count() > 0, true, "brand mark should appear in the landing header");
+  assert.equal(await landing.locator('link[rel="icon"][href="/cozte-mark.svg"]').count(), 1, "brand mark should be the SVG favicon");
   await landing.getByText("Ejemplo: papel interior de $9.000 a $10.000").waitFor();
   await landing.getByText("+$100", { exact: true }).waitFor();
   assert.equal(await landing.getByRole("link", { name: /Explorar la demo/i }).count(), 1);
@@ -31,6 +33,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(`${baseUrl}/demo`, { waitUntil: "networkidle" });
   await page.getByRole("heading", { name: "Costos de tus productos" }).waitFor();
+  assert.equal(await page.locator(".cozte-animated-icon").count() >= 8, true, "dashboard should use animated action icons");
   const sidebarStyle = await page.locator('[data-sidebar="sidebar"]').first().evaluate((element) => {
     const style = getComputedStyle(element);
     return { foreground: style.getPropertyValue("--sidebar-foreground").trim(), backgroundImage: style.backgroundImage, backdropFilter: style.backdropFilter };

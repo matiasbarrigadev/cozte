@@ -106,6 +106,43 @@
   .landing-float, .landing-float-delayed { animation: none; }
 }
 
+.cozte-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: currentColor;
+  line-height: 1;
+}
+
+.cozte-logo-mark {
+  display: inline-block;
+  width: 1.3em;
+  height: 0.94em;
+  flex: none;
+  background: currentColor;
+  mask: url("/cozte-mark.svg") center / contain no-repeat;
+  -webkit-mask: url("/cozte-mark.svg") center / contain no-repeat;
+}
+
+.cozte-logo-word {
+  font-weight: 800;
+  letter-spacing: -0.075em;
+}
+
+.cozte-animated-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+}
+
+.cozte-animated-icon > div { display: inline-flex; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cozte-animated-icon * { animation: none !important; transition: none !important; }
+}
+
 :root {
   --brand-paper: oklch(0.976 0.011 115);
   --brand-surface: oklch(0.997 0.004 110);
