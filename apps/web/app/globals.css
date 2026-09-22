@@ -186,6 +186,96 @@
   box-shadow: 0 12px 30px -26px oklch(0.19 0.028 155 / 35%);
 }
 
+[data-sidebar="sidebar"] {
+  --sidebar: oklch(0.16 0.025 155 / 91%);
+  --sidebar-foreground: var(--brand-paper);
+  --sidebar-accent: oklch(0.36 0.04 145 / 62%);
+  --sidebar-accent-foreground: white;
+  --sidebar-border: oklch(0.98 0.008 115 / 18%);
+  --sidebar-ring: var(--brand-highlight);
+  color: var(--sidebar-foreground);
+  font-family: var(--font-manrope), var(--font-geist-sans), sans-serif;
+  background: linear-gradient(160deg, oklch(0.13 0.027 155 / 92%), oklch(0.19 0.03 150 / 86%)), url("/cozte-atmosphere.webp") center / cover;
+  backdrop-filter: blur(24px) saturate(125%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(125%);
+}
+
+[data-slot="sidebar-container"] { border-color: oklch(0.98 0.008 115 / 14%); }
+
+[data-sidebar="sidebar"] [data-sidebar="header"] { padding: 1.15rem 0.75rem 0.75rem; }
+[data-sidebar="sidebar"] [data-sidebar="content"] { padding: 0.15rem 0.45rem; }
+[data-sidebar="sidebar"] [data-sidebar="group-label"] {
+  color: oklch(0.98 0.008 115 / 58%);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+[data-sidebar="sidebar"] [data-sidebar="menu-button"] {
+  color: oklch(0.98 0.008 115 / 86%);
+  font-size: 0.81rem;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+[data-sidebar="sidebar"] [data-sidebar="menu-button"]:hover,
+[data-sidebar="sidebar"] [data-sidebar="menu-button"][data-active="true"] {
+  background: oklch(0.98 0.008 115 / 13%);
+  color: white;
+}
+[data-sidebar="sidebar"] [data-sidebar="menu-button"][data-active="true"]::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--brand-highlight);
+}
+[data-sidebar="sidebar"] [data-sidebar="footer"] {
+  border-top: 1px solid var(--sidebar-border);
+  padding-top: 0.9rem;
+}
+
+[data-sidebar="sidebar"] .cozte-org-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  border: 1px solid oklch(0.98 0.008 115 / 20%);
+  border-radius: 0.75rem;
+  padding: 0.4rem 0.5rem;
+  background: oklch(0.98 0.008 115 / 7%);
+  color: white;
+  font-family: var(--font-manrope), sans-serif;
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+[data-sidebar="sidebar"] .cozte-org-trigger:hover,
+[data-sidebar="sidebar"] .cozte-user-trigger:hover { background: oklch(0.98 0.008 115 / 15%); }
+[data-sidebar="sidebar"] .cozte-org-trigger :is(span, svg) { color: inherit; }
+[data-sidebar="sidebar"] .cozte-org-avatar {
+  border-radius: 0.4rem;
+  background: var(--brand-highlight);
+  color: var(--brand-ink);
+}
+[data-sidebar="sidebar"] .cozte-user-trigger {
+  flex: none;
+  border: 1px solid oklch(0.98 0.008 115 / 20%);
+  border-radius: 0.75rem;
+  padding: 0.25rem;
+  background: oklch(0.98 0.008 115 / 7%);
+}
+[data-sidebar="sidebar"] .cozte-user-avatar {
+  background: var(--brand-highlight);
+  color: var(--brand-ink);
+}
+[data-sidebar="sidebar"] :is(.cozte-org-trigger, .cozte-user-trigger):focus-visible {
+  outline: 2px solid var(--brand-highlight);
+  outline-offset: 2px;
+}
+.cozte-clerk-popover { font-family: var(--font-manrope), var(--font-geist-sans), sans-serif; }
+
 .cozte-workspace [data-slot="table-header"] {
   background: color-mix(in oklch, var(--brand-paper) 62%, var(--card));
 }

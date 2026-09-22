@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
+import { OrganizationSwitcher, UserButton, useOrganization } from "@clerk/nextjs";
 import { toast } from "sonner";
 import { ArrowLeft, ArrowRight, Bot, Boxes, ClipboardCheck, Clock3, FileText, LayoutDashboard, Plus, Table2 } from "lucide-react";
 import { calculateCosts, convertToOrganizationCurrency, type DomainState, type Product, type ProductCost } from "@/lib/domain";
@@ -199,14 +199,14 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
   return (
     <SidebarProvider className="cozte-workspace">
       <Sidebar collapsible="icon">
-        <SidebarHeader><div className="min-h-15 px-2 py-3 group-data-[collapsible=icon]:hidden"><strong className="block text-2xl font-semibold tracking-[-0.075em]">cozte</strong><span className="text-xs text-muted-foreground">Costeo vivo</span></div></SidebarHeader>
+        <SidebarHeader><div className="min-h-15 px-2 py-3 group-data-[collapsible=icon]:hidden"><strong className="block text-2xl font-extrabold tracking-[-0.08em]">cozte</strong><span className="text-xs text-sidebar-foreground/65">Costeo vivo</span></div></SidebarHeader>
         <SidebarContent><SidebarGroup><SidebarGroupLabel>Espacio de trabajo</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>
           {nav.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id} badge={item.id === "revision" ? changeCount : 0} onNavigate={() => navigate(item.id)} />)}
         </SidebarMenu></SidebarGroupContent></SidebarGroup></SidebarContent>
-        <SidebarFooter><div className="flex items-center gap-2 px-2 pb-2">{demo ? <Badge variant="outline">Demostración</Badge> : <><OrganizationSwitcher hidePersonal /><UserButton /></>}</div></SidebarFooter>
+        <SidebarFooter><div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">{demo ? <Badge variant="outline" className="border-white/25 bg-white/5 text-white">Demostración</Badge> : <><div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden"><OrganizationSwitcher hidePersonal appearance={{ elements: { organizationSwitcherTrigger: "cozte-org-trigger", organizationPreviewAvatarBox: "cozte-org-avatar", organizationSwitcherPopoverCard: "cozte-clerk-popover" } }} /></div><UserButton appearance={{ elements: { userButtonTrigger: "cozte-user-trigger", userButtonAvatarBox: "cozte-user-avatar", userButtonPopoverCard: "cozte-clerk-popover" } }} /></>}</div></SidebarFooter>
       </Sidebar>
       <SidebarInset>
-        <header className="flex h-16 items-center gap-3 border-b bg-card px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="h-6" /><span className="truncate text-sm text-muted-foreground">{state.organization.name}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}{!demo && !state.products.length && !state.materials.length && !state.expenses.length ? <NativeSelect value={currency} disabled={busy} aria-label="Moneda base de la empresa" onChange={(event) => void changeBaseCurrency(event.target.value as Currency)}>{supportedCurrencies.map((code) => <NativeSelectOption key={code} value={code}>{code}</NativeSelectOption>)}</NativeSelect> : <Badge variant="outline" title="Moneda base de la empresa">{currency}</Badge>}</div></header>
+        <header className="flex h-16 items-center gap-3 border-b bg-card px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="h-6" /><span className="truncate text-sm font-semibold text-foreground">{demo ? state.organization.name : <ActiveOrganizationName fallback={state.organization.name} />}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}{!demo && !state.products.length && !state.materials.length && !state.expenses.length ? <NativeSelect value={currency} disabled={busy} aria-label="Moneda base de la empresa" onChange={(event) => void changeBaseCurrency(event.target.value as Currency)}>{supportedCurrencies.map((code) => <NativeSelectOption key={code} value={code}>{code}</NativeSelectOption>)}</NativeSelect> : <Badge variant="outline" title="Moneda base de la empresa">{currency}</Badge>}</div></header>
         <main className={view === "asistente" ? "mx-auto flex w-full max-w-none flex-col gap-4 px-4 py-5 md:px-8" : "mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-7 md:px-8 md:py-10"}>
           {demo && view !== "asistente" ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
           {view === "dashboard" ? <>
@@ -263,6 +263,11 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
 
 function Metric({ label, value, note }: { label: string; value: string; note: string }) {
   return <Card><CardHeader><CardDescription>{label}</CardDescription><CardTitle className="text-3xl tabular-nums">{value}</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">{note}</CardContent></Card>;
+}
+
+function ActiveOrganizationName({ fallback }: { fallback: string }) {
+  const { organization } = useOrganization();
+  return organization?.name ?? fallback;
 }
 
 function NavigationItem({ item, active, badge, onNavigate }: { item: (typeof nav)[number]; active: boolean; badge: number; onNavigate: () => void }) {

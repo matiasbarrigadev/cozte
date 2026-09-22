@@ -14,6 +14,7 @@ try {
   const landingResponse = await landing.goto(baseUrl, { waitUntil: "networkidle" });
   assert.equal(landingResponse?.status(), 200, "public landing should be available without signing in");
   await landing.getByRole("heading", { name: /Lo que produces tiene un costo/i }).waitFor();
+  assert.equal(await landing.getByText("Para quienes hacen cosas reales").count(), 0, "hero tag should be removed");
   await landing.getByRole("link", { name: "Cozte, inicio" }).waitFor();
   await landing.getByText("Ejemplo: papel interior de $9.000 a $10.000").waitFor();
   await landing.getByText("+$100", { exact: true }).waitFor();
@@ -30,6 +31,13 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.goto(`${baseUrl}/demo`, { waitUntil: "networkidle" });
   await page.getByRole("heading", { name: "Costos de tus productos" }).waitFor();
+  const sidebarStyle = await page.locator('[data-sidebar="sidebar"]').first().evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { foreground: style.getPropertyValue("--sidebar-foreground").trim(), backgroundImage: style.backgroundImage, backdropFilter: style.backdropFilter };
+  });
+  assert.match(sidebarStyle.foreground, /^lab\(9\d/, "sidebar text should use the light brand color");
+  assert.match(sidebarStyle.backgroundImage, /gradient/, "sidebar should have a translucent dark surface");
+  assert.match(sidebarStyle.backdropFilter, /blur/, "sidebar should use backdrop blur");
   assert.equal(await page.getByRole("row").count(), 4);
   await page.screenshot({ path: "../../tmp/cozte-dashboard.png", fullPage: true });
   await page.getByRole("button", { name: "Costos de producción" }).click();
