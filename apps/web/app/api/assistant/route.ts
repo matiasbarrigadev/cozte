@@ -9,15 +9,41 @@ import { loadState } from "@/lib/server/state";
 import { reserveAssistantRequest } from "@/lib/server/assistant-limits";
 import { addAssistantEvent, errorDetails, finishAssistantRun, startAssistantRun } from "@/lib/server/assistant-trace";
 import { mutationSchema } from "@/lib/server/mutations";
+import { COZTE_IMAGE_MEDIA_TYPES, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_TOTAL_IMAGE_BYTES } from "@/lib/cozte-image-attachments";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
+const incomingImageSchema = z.object({
+  type: z.literal("file"),
+  filename: z.string().max(200).optional(),
+  mediaType: z.enum(COZTE_IMAGE_MEDIA_TYPES),
+  url: z.string().max(3_000_000).regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/),
+}).superRefine((part, context) => {
+  const payload = part.url.slice(part.url.indexOf(",") + 1);
+  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+  const bytes = Math.floor(payload.length * 3 / 4) - padding;
+  if (bytes > COZTE_MAX_IMAGE_BYTES) context.addIssue({ code: "custom", message: "Cada imagen debe pesar menos de 2 MB", path: ["url"] });
+});
+
 const incomingSchema = z.object({
-  message: z.object({ id: z.string().min(1).max(100), role: z.literal("user"), parts: z.array(z.union([
-    z.object({ type: z.literal("text"), text: z.string().trim().min(1).max(8000) }),
-    z.object({ type: z.literal("file"), filename: z.string().max(200).optional(), mediaType: z.enum(["image/png", "image/jpeg", "image/webp"]), url: z.string().regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/).max(3_000_000) }),
-  ])).min(1).max(2) }),
+  message: z.object({
+    id: z.string().min(1).max(100),
+    role: z.literal("user"),
+    parts: z.array(z.union([
+      z.object({ type: z.literal("text"), text: z.string().trim().min(1).max(8000) }),
+      incomingImageSchema,
+    ])).min(1).max(COZTE_MAX_IMAGE_COUNT + 1).superRefine((parts, context) => {
+      const images = parts.filter((part) => part.type === "file");
+      if (images.length > COZTE_MAX_IMAGE_COUNT) context.addIssue({ code: "custom", message: "Puedes adjuntar hasta seis imágenes", path: [] });
+      const totalBytes = images.reduce((total, part) => {
+        const payload = part.url.slice(part.url.indexOf(",") + 1);
+        const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
+        return total + Math.floor(payload.length * 3 / 4) - padding;
+      }, 0);
+      if (totalBytes > COZTE_MAX_TOTAL_IMAGE_BYTES) context.addIssue({ code: "custom", message: "Las imágenes adjuntas superan 8 MB en total", path: [] });
+    }),
+  }),
 });
 
 const costActionSchema = z.discriminatedUnion("action", [
@@ -46,7 +72,7 @@ export async function POST(request: Request) {
   try {
     const principal = await requirePrincipal();
     if (!process.env.AI_GATEWAY_API_KEY) throw new ApiError(503, "Cozte AI aún no tiene configurada su clave de AI Gateway");
-    if (Number(request.headers.get("content-length") ?? 0) > 3_100_000) throw new ApiError(413, "Mensaje o imagen demasiado grande");
+    if (Number(request.headers.get("content-length") ?? 0) > 11_500_000) throw new ApiError(413, "El mensaje o las imágenes adjuntas superan el límite de tamaño");
     const { message } = incomingSchema.parse(await request.json());
     if (!message.parts.some((part) => part.type === "text") && !message.parts.some((part) => part.type === "file")) throw new ApiError(400, "Escribe un mensaje o adjunta una imagen");
     const [state, profileState, previous] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadConversation(principal)]);
