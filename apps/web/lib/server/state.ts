@@ -1,12 +1,15 @@
 import "server-only";
 import { calculateCosts, type DomainState } from "@/lib/domain";
+import { convertNativeMilli, isCurrency, type Currency, type FxQuote } from "@/lib/currency";
 import { dbBatch, dbQuery } from "./db";
 import type { Principal } from "./auth";
+import { officialFxTable, quotesFor } from "./fx";
 
 type OrganizationRow = { id: string; name: string; currency: string; revision: number };
 type MaterialRow = {
   id: string; name: string; supplier: string; purchase_unit: string; category: string; version: number;
   price_minor: number | null; source: string | null; effective_date: string | null;
+  currency: string | null; native_amount_milli: number | null;
 };
 type ProductRow = {
   id: string; name: string; lot_units: number; sale_price_minor: number;
@@ -16,6 +19,7 @@ type ComponentRow = { product_id: string; material_id: string; quantity_milli: n
 type ExpenseRow = {
   id: string; name: string; period: string; amount_minor: number;
   allocation_basis: "hours" | "units"; category: string; version: number;
+  currency: string | null; native_amount_milli: number | null;
 };
 
 export async function ensureOrganization(principal: Principal): Promise<void> {
@@ -27,23 +31,32 @@ export async function ensureOrganization(principal: Principal): Promise<void> {
 
 export async function loadState(principal: Principal): Promise<DomainState> {
   await ensureOrganization(principal);
-  const org = principal.organizationId;
+  return loadStateForOrganization(principal.organizationId);
+}
+
+export async function loadStateForOrganization(org: string): Promise<DomainState> {
   const [organizations, materials, products, components, expenses] = await dbBatch<OrganizationRow | MaterialRow | ProductRow | ComponentRow | ExpenseRow>([
     { sql: "SELECT id, name, currency, revision FROM organizations WHERE id=?", params: [org] },
-    { sql: "SELECT m.id, m.name, m.supplier, m.purchase_unit, m.category, m.version, p.amount_minor AS price_minor, p.source, p.effective_date FROM materials m LEFT JOIN material_prices p ON p.material_id=m.id AND p.version=m.version WHERE m.organization_id=? ORDER BY m.name", params: [org] },
+    { sql: "SELECT m.id, m.name, m.supplier, m.purchase_unit, m.category, m.version, p.amount_minor AS price_minor, p.source, p.effective_date, p.currency, p.native_amount_milli FROM materials m LEFT JOIN material_prices p ON p.material_id=m.id AND p.version=m.version WHERE m.organization_id=? ORDER BY m.name", params: [org] },
     { sql: "SELECT id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli, version FROM products WHERE organization_id=? ORDER BY name", params: [org] },
     { sql: "SELECT pm.product_id, pm.material_id, pm.quantity_milli FROM product_materials pm JOIN products p ON p.id=pm.product_id WHERE p.organization_id=?", params: [org] },
-    { sql: "SELECT id, name, period, amount_minor, allocation_basis, category, version FROM shared_expenses WHERE organization_id=? ORDER BY name", params: [org] },
+    { sql: "SELECT id, name, period, amount_minor, allocation_basis, category, version, currency, native_amount_milli FROM shared_expenses WHERE organization_id=? ORDER BY name", params: [org] },
   ]);
   const organization = organizations[0] as OrganizationRow | undefined;
   if (!organization) throw new Error("Organization was not provisioned");
+  const base: Currency = isCurrency(organization.currency) ? organization.currency : "CLP";
+  let fxQuotes: Partial<Record<Currency, FxQuote>> = {};
+  try { fxQuotes = quotesFor(base, await officialFxTable()); } catch (error) { console.error("FX lookup failed", error); }
+  const normalize = (amountMilli: number, currency: Currency) => currency === base ? Math.round(amountMilli / 1000) : fxQuotes[currency] ? convertNativeMilli(amountMilli, fxQuotes[currency]) : null;
   return {
     revision: organization.revision,
     activePeriod: (expenses as ExpenseRow[]).map((row) => row.period).sort().at(-1) ?? new Date().toISOString().slice(0, 7),
-    organization: { id: organization.id, name: organization.name, currency: organization.currency },
+    organization: { id: organization.id, name: organization.name, currency: base },
+    fxQuotes,
     materials: (materials as MaterialRow[]).map((row) => ({
       id: row.id, name: row.name, supplier: row.supplier, purchaseUnit: row.purchase_unit, category: row.category,
-      version: row.version, priceMinor: row.price_minor, source: row.source, effectiveDate: row.effective_date,
+      version: row.version, priceMinor: row.price_minor === null ? null : normalize(row.native_amount_milli ?? row.price_minor * 1000, isCurrency(row.currency ?? "") ? row.currency as Currency : base), source: row.source, effectiveDate: row.effective_date,
+      currency: isCurrency(row.currency ?? "") ? row.currency as Currency : base, nativeAmountMilli: row.price_minor === null ? null : row.native_amount_milli ?? row.price_minor * 1000,
     })),
     products: (products as ProductRow[]).map((row) => ({
       id: row.id, name: row.name, lotUnits: row.lot_units, salePriceMinor: row.sale_price_minor,
@@ -54,8 +67,10 @@ export async function loadState(principal: Principal): Promise<DomainState> {
       productId: row.product_id, materialId: row.material_id, quantityMilli: row.quantity_milli,
     })),
     expenses: (expenses as ExpenseRow[]).map((row) => ({
-      id: row.id, name: row.name, period: row.period, amountMinor: row.amount_minor,
+      id: row.id, name: row.name, period: row.period, amountMinor: normalize(row.native_amount_milli ?? row.amount_minor * 1000, isCurrency(row.currency ?? "") ? row.currency as Currency : base) ?? row.amount_minor,
       allocationBasis: row.allocation_basis, category: row.category, version: row.version,
+      currency: isCurrency(row.currency ?? "") ? row.currency as Currency : base, nativeAmountMilli: row.native_amount_milli ?? row.amount_minor * 1000,
+      fxMissing: isCurrency(row.currency ?? "") && row.currency !== base && !fxQuotes[row.currency as Currency],
     })),
   };
 }

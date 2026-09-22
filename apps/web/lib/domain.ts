@@ -1,3 +1,5 @@
+import { convertNativeMilli, type Currency, type FxQuote } from "./currency";
+
 export type Product = {
   id: string;
   name: string;
@@ -19,6 +21,8 @@ export type Material = {
   source: string | null;
   effectiveDate: string | null;
   version: number;
+  currency?: Currency;
+  nativeAmountMilli?: number | null;
 };
 
 export type Component = {
@@ -35,12 +39,16 @@ export type SharedExpense = {
   allocationBasis: "hours" | "units";
   category: string;
   version: number;
+  currency?: Currency;
+  nativeAmountMilli?: number;
+  fxMissing?: boolean;
 };
 
 export type DomainState = {
   revision: number;
   activePeriod: string;
-  organization: { id: string; name: string; currency: string };
+  organization: { id: string; name: string; currency: Currency };
+  fxQuotes?: Partial<Record<Currency, FxQuote>>;
   products: Product[];
   materials: Material[];
   components: Component[];
@@ -63,6 +71,12 @@ export type ProductCost = {
   lines: CostLine[];
   warnings: string[];
 };
+
+export function convertToOrganizationCurrency(state: DomainState, nativeAmountMilli: number, currency: Currency): number | null {
+  if (currency === state.organization.currency) return Math.round(nativeAmountMilli / 1000);
+  const quote = state.fxQuotes?.[currency];
+  return quote ? convertNativeMilli(nativeAmountMilli, quote) : null;
+}
 
 function safeInteger(value: bigint): number {
   const number = Number(value);
@@ -125,6 +139,7 @@ export function calculateCosts(
     state.products.map((product) => [product.id, 0]),
   );
   const unallocatedExpenseBases: string[] = [];
+  const missingExpenseFx = state.expenses.some((expense) => expense.period === state.activePeriod && expense.fxMissing);
   for (const basis of ["hours", "units"] as const) {
     const total = state.expenses
       .filter((expense) => expense.period === state.activePeriod && expense.allocationBasis === basis)
@@ -150,6 +165,7 @@ export function calculateCosts(
   return state.products.map((product) => {
     const lines: CostLine[] = [];
     const warnings: string[] = unallocatedExpenseBases.map((basis) => `Falta actividad para repartir gastos por ${basis}`);
+    if (missingExpenseFx) warnings.push("Falta cotización vigente para un gasto compartido");
     for (const component of components.get(product.id) ?? []) {
       const material = materials.get(component.materialId);
       if (!material) {

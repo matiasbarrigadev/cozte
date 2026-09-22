@@ -5,7 +5,8 @@ import Link from "next/link";
 import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
 import { toast } from "sonner";
 import { ArrowLeft, ArrowRight, Bot, Boxes, ClipboardCheck, Clock3, FileText, LayoutDashboard, Plus, Table2 } from "lucide-react";
-import { calculateCosts, type DomainState, type Product, type ProductCost } from "@/lib/domain";
+import { calculateCosts, convertToOrganizationCurrency, type DomainState, type Product, type ProductCost } from "@/lib/domain";
+import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,7 +27,7 @@ import { CostHistory, type CostSnapshotRow, type HistoryEntry, type ProfileSnaps
 
 type Dashboard = DomainState & { costs: ProductCost[]; alerts: { id: string; material_id: string; message: string; first_detected_at: string }[] };
 type View = "dashboard" | "producto" | "planilla" | "revision" | "comprobantes" | "asistente" | "historial";
-type Draft = { materials: Record<string, number>; expenses: Record<string, number>; source: string; effectiveDate: string };
+type Draft = { materials: Record<string, number>; expenses: Record<string, number>; materialCurrencies: Record<string, Currency>; expenseCurrencies: Record<string, Currency>; source: string; effectiveDate: string };
 
 const nav: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -37,9 +38,9 @@ const nav: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "historial", label: "Historial", icon: Clock3 },
 ];
 
-const formatMoney = (value: number | null, currency: string) => value === null ? "Sin calcular" : new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
+const formatMoney = (value: number | null, currency: string) => value === null ? "Sin calcular" : new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: currency === "CLP" ? 0 : 3 }).format(value);
 const formatPercent = (value: number | null) => value === null ? "—" : `${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 1 }).format(value)}%`;
-const emptyDraft = (): Draft => ({ materials: {}, expenses: {}, source: "", effectiveDate: new Date().toISOString().slice(0, 10) });
+const emptyDraft = (): Draft => ({ materials: {}, expenses: {}, materialCurrencies: {}, expenseCurrencies: {}, source: "", effectiveDate: new Date().toISOString().slice(0, 10) });
 
 export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?: boolean }) {
   const [state, setState] = React.useState<Dashboard>(initial);
@@ -52,6 +53,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
   const draftGeneration = React.useRef(0);
   const draftWriteChain = React.useRef<Promise<void>>(Promise.resolve());
   const [review, setReview] = React.useState<ProductCost[] | null>(null);
+  const [reviewFxRates, setReviewFxRates] = React.useState<Record<string, number>>({});
   const [busy, setBusy] = React.useState(false);
   const [pendingMeta, setPendingMeta] = React.useState<{ action: Record<string, unknown>; affected: string[]; description: string } | null>(null);
   const [dialog, setDialog] = React.useState<"product" | "material" | "expense" | "edit-product" | null>(null);
@@ -62,12 +64,21 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
   const currency = state.organization.currency;
   const product = state.products.find((item) => item.id === selected) ?? state.products[0];
   const currentCost = state.costs.find((item) => item.productId === product?.id);
-  const changedMaterials = state.materials.filter((item) => draft.materials[item.id] !== undefined && draft.materials[item.id] !== item.priceMinor);
-  const changedExpenses = state.expenses.filter((item) => item.period === state.activePeriod && draft.expenses[item.id] !== undefined && draft.expenses[item.id] !== item.amountMinor);
+  const materialCurrency = (item: DomainState["materials"][number]) => draft.materialCurrencies[item.id] ?? item.currency ?? currency;
+  const expenseCurrency = (item: DomainState["expenses"][number]) => draft.expenseCurrencies[item.id] ?? item.currency ?? currency;
+  const nativeMaterial = (item: DomainState["materials"][number]) => item.nativeAmountMilli == null ? item.priceMinor : item.nativeAmountMilli / 1000;
+  const nativeExpense = (item: DomainState["expenses"][number]) => item.nativeAmountMilli == null ? item.amountMinor : item.nativeAmountMilli / 1000;
+  const changedMaterials = state.materials.filter((item) => draft.materialCurrencies[item.id] !== undefined || (draft.materials[item.id] !== undefined && draft.materials[item.id] !== nativeMaterial(item)));
+  const changedExpenses = state.expenses.filter((item) => item.period === state.activePeriod && (draft.expenseCurrencies[item.id] !== undefined || (draft.expenses[item.id] !== undefined && draft.expenses[item.id] !== nativeExpense(item))));
   const changeCount = changedMaterials.length + changedExpenses.length;
   const clientPreview = React.useMemo(() => {
-    try { return calculateCosts(state, draft.materials, draft.expenses); } catch { return null; }
-  }, [state, draft]);
+    try {
+      const materialAmounts = Object.fromEntries(Object.entries(draft.materials).map(([id, amount]) => [id, convertToOrganizationCurrency(state, toNativeMilli(amount), draft.materialCurrencies[id] ?? state.materials.find((item) => item.id === id)?.currency ?? currency)]));
+      const expenseAmounts = Object.fromEntries(Object.entries(draft.expenses).map(([id, amount]) => [id, convertToOrganizationCurrency(state, toNativeMilli(amount), draft.expenseCurrencies[id] ?? state.expenses.find((item) => item.id === id)?.currency ?? currency)]));
+      if (changedMaterials.some((item) => draft.materials[item.id] === undefined) || changedExpenses.some((item) => draft.expenses[item.id] === undefined) || [...Object.values(materialAmounts), ...Object.values(expenseAmounts)].some((value) => value === null)) return null;
+      return calculateCosts(state, materialAmounts as Record<string, number>, expenseAmounts as Record<string, number>);
+    } catch { return null; }
+  }, [state, draft, currency, changedMaterials, changedExpenses]);
   const preview = review ?? clientPreview;
 
   React.useEffect(() => {
@@ -106,6 +117,19 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
     setState(await response.json());
   }
 
+  async function changeBaseCurrency(next: Currency) {
+    if (demo || next === currency) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/organization/currency", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ currency: next, expectedRevision: state.revision }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "No se pudo cambiar la moneda base");
+      await refresh();
+      toast.success(`Moneda base: ${next}`);
+    } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo cambiar la moneda"); }
+    finally { setBusy(false); }
+  }
+
   async function save(action: Record<string, unknown>, quiet = false) {
     if (demo) { toast.info("Demostración: los cambios no se guardan"); return false; }
     setBusy(true);
@@ -129,10 +153,11 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
     if (!demo) {
       setBusy(true);
       try {
-        const response = await fetch("/api/changes", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "bulk-prices", materials: changedMaterials.map((item) => ({ id: item.id, priceMinor: draft.materials[item.id] })), expenses: changedExpenses.map((item) => ({ id: item.id, amountMinor: draft.expenses[item.id] })), source: draft.source || "Pendiente de fuente", effectiveDate: draft.effectiveDate, expectedRevision: state.revision, idempotencyKey: crypto.randomUUID() }) });
+        const response = await fetch("/api/changes", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "bulk-prices", materials: changedMaterials.map((item) => ({ id: item.id, amount: draft.materials[item.id], currency: materialCurrency(item) })), expenses: changedExpenses.map((item) => ({ id: item.id, amount: draft.expenses[item.id], currency: expenseCurrency(item) })), source: draft.source || "Pendiente de fuente", effectiveDate: draft.effectiveDate, expectedRevision: state.revision, idempotencyKey: crypto.randomUUID() }) });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error ?? "No se pudo calcular");
         setReview(result.after);
+        setReviewFxRates(Object.fromEntries(Object.entries(result.next.fxQuotes ?? {}).map(([code, quote]) => [code, (quote as { ratePpm: number }).ratePpm])));
       } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo calcular"); return; }
       finally { setBusy(false); }
     }
@@ -141,7 +166,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
 
   async function confirmChanges() {
     if (!draft.source.trim() || draft.source.trim().length < 2) { toast.error("Indica la fuente del cambio"); return; }
-    const saved = await save({ action: "bulk-prices", materials: changedMaterials.map((item) => ({ id: item.id, priceMinor: draft.materials[item.id] })), expenses: changedExpenses.map((item) => ({ id: item.id, amountMinor: draft.expenses[item.id] })), source: draft.source.trim(), effectiveDate: draft.effectiveDate });
+    const saved = await save({ action: "bulk-prices", materials: changedMaterials.map((item) => ({ id: item.id, amount: draft.materials[item.id], currency: materialCurrency(item) })), expenses: changedExpenses.map((item) => ({ id: item.id, amount: draft.expenses[item.id], currency: expenseCurrency(item) })), expectedFxRates: reviewFxRates, source: draft.source.trim(), effectiveDate: draft.effectiveDate });
     if (saved) { setDraftStatus("saving"); setDraft(emptyDraft()); setView("dashboard"); }
   }
 
@@ -181,7 +206,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
         <SidebarFooter><div className="flex items-center gap-2 px-2 pb-2">{demo ? <Badge variant="outline">Demostración</Badge> : <><OrganizationSwitcher hidePersonal /><UserButton /></>}</div></SidebarFooter>
       </Sidebar>
       <SidebarInset>
-        <header className="flex h-16 items-center gap-3 border-b px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="h-6" /><span className="truncate text-sm text-muted-foreground">{state.organization.name}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}<Badge variant="outline">{currency}</Badge></div></header>
+        <header className="flex h-16 items-center gap-3 border-b px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="h-6" /><span className="truncate text-sm text-muted-foreground">{state.organization.name}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}{!demo && !state.products.length && !state.materials.length && !state.expenses.length ? <NativeSelect value={currency} disabled={busy} aria-label="Moneda base de la empresa" onChange={(event) => void changeBaseCurrency(event.target.value as Currency)}>{supportedCurrencies.map((code) => <NativeSelectOption key={code} value={code}>{code}</NativeSelectOption>)}</NativeSelect> : <Badge variant="outline" title="Moneda base de la empresa">{currency}</Badge>}</div></header>
         <main className={view === "asistente" ? "mx-auto flex w-full max-w-none flex-col gap-4 px-4 py-5 md:px-8" : "mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-7 md:px-8 md:py-10"}>
           {demo && view !== "asistente" ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
           {view === "dashboard" ? <>
@@ -206,6 +231,8 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
               onRetryDraft={() => { if (draftReady) { setDraftStatus("saving"); setDraft((current) => ({ ...current })); } else { setDraftStatus("loading"); setDraftLoadAttempt((current) => current + 1); } }}
               onMaterialPrice={(id, value) => { if (!demo) setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [id]: value } })); setReview(null); }}
               onExpenseAmount={(id, value) => { if (!demo) setDraftStatus("saving"); setDraft((current) => ({ ...current, expenses: { ...current.expenses, [id]: value } })); setReview(null); }}
+              onMaterialCurrency={(id, value) => { setDraftStatus("saving"); setDraft((current) => { const materials = { ...current.materials }; delete materials[id]; const materialCurrencies = { ...current.materialCurrencies }; if (value === (state.materials.find((item) => item.id === id)?.currency ?? currency)) delete materialCurrencies[id]; else materialCurrencies[id] = value; return { ...current, materials, materialCurrencies }; }); setReview(null); }}
+              onExpenseCurrency={(id, value) => { setDraftStatus("saving"); setDraft((current) => { const expenses = { ...current.expenses }; delete expenses[id]; const expenseCurrencies = { ...current.expenseCurrencies }; if (value === (state.expenses.find((item) => item.id === id)?.currency ?? currency)) delete expenseCurrencies[id]; else expenseCurrencies[id] = value; return { ...current, expenses, expenseCurrencies }; }); setReview(null); }}
               onMetaChange={editMetadata} onAddMaterial={() => setDialog("material")} onAddExpense={() => setDialog("expense")}
               onReview={reviewChanges} onDiscard={() => { if (!demo) setDraftStatus("saving"); setDraft(emptyDraft()); setReview(null); }} />
           </> : null}
@@ -215,13 +242,13 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
           {view === "revision" ? <>
             <div><p className="text-sm text-muted-foreground">Revisión</p><h1 className="text-3xl font-semibold tracking-tight">Antes de confirmar</h1><p className="text-sm text-muted-foreground">Ningún cambio se aplica hasta que lo apruebes.</p></div>
             {!changeCount ? <Empty><EmptyHeader><EmptyMedia variant="icon"><ClipboardCheck /></EmptyMedia><EmptyTitle>No hay cambios</EmptyTitle><EmptyDescription>Edita un precio o un gasto en la planilla.</EmptyDescription></EmptyHeader><EmptyContent><Button onClick={() => setView("planilla")}>Abrir planilla</Button></EmptyContent></Empty> : <>
-              <Card><CardHeader><CardTitle>{changeCount} cambio{changeCount === 1 ? "" : "s"} en borrador</CardTitle><CardDescription>Valores vigentes frente a nuevos valores</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead>Tipo</TableHead><TableHead className="text-right">Vigente</TableHead><TableHead className="text-right">Nuevo</TableHead></TableRow></TableHeader><TableBody>{changedMaterials.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Insumo</TableCell><TableCell className="text-right">{formatMoney(item.priceMinor, currency)}</TableCell><TableCell className="text-right">{formatMoney(draft.materials[item.id], currency)}</TableCell></TableRow>)}{changedExpenses.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Gasto compartido</TableCell><TableCell className="text-right">{formatMoney(item.amountMinor, currency)}</TableCell><TableCell className="text-right">{formatMoney(draft.expenses[item.id], currency)}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
+              <Card><CardHeader><CardTitle>{changeCount} cambio{changeCount === 1 ? "" : "s"} en borrador</CardTitle><CardDescription>Importes originales y equivalencia en {currency}. Si cambia la cotización, volverás a revisar.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead>Tipo</TableHead><TableHead className="text-right">Vigente ({currency})</TableHead><TableHead className="text-right">Nuevo original</TableHead><TableHead className="text-right">Equivalente ({currency})</TableHead></TableRow></TableHeader><TableBody>{changedMaterials.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Insumo</TableCell><TableCell className="text-right">{formatMoney(item.priceMinor, currency)}</TableCell><TableCell className="text-right">{draft.materials[item.id] === undefined ? "Pendiente" : formatMoney(draft.materials[item.id], materialCurrency(item))}</TableCell><TableCell className="text-right">{draft.materials[item.id] === undefined ? "—" : formatMoney(convertToOrganizationCurrency(state, toNativeMilli(draft.materials[item.id]), materialCurrency(item)), currency)}</TableCell></TableRow>)}{changedExpenses.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Gasto compartido</TableCell><TableCell className="text-right">{formatMoney(item.amountMinor, currency)}</TableCell><TableCell className="text-right">{draft.expenses[item.id] === undefined ? "Pendiente" : formatMoney(draft.expenses[item.id], expenseCurrency(item))}</TableCell><TableCell className="text-right">{draft.expenses[item.id] === undefined ? "—" : formatMoney(convertToOrganizationCurrency(state, toNativeMilli(draft.expenses[item.id]), expenseCurrency(item)), currency)}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
               <Card><CardHeader><CardTitle>Impacto en productos</CardTitle><CardDescription>Fabricación por unidad, calculada con las mismas reglas que el costo vigente.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Producto</TableHead><TableHead className="text-right">Vigente</TableHead><TableHead className="text-right">Nuevo</TableHead><TableHead className="text-right">Diferencia</TableHead></TableRow></TableHeader><TableBody>{state.products.map((item) => { const oldCost = state.costs.find((entry) => entry.productId === item.id); const newCost = preview?.find((entry) => entry.productId === item.id); const delta = oldCost?.unitMinor != null && newCost?.unitMinor != null ? newCost.unitMinor - oldCost.unitMinor : null; return <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell className="text-right">{formatMoney(oldCost?.unitMinor ?? null, currency)}</TableCell><TableCell className="text-right">{formatMoney(newCost?.unitMinor ?? null, currency)}</TableCell><TableCell className="text-right"><Badge variant={delta && delta > 0 ? "destructive" : "secondary"}>{delta == null ? "—" : `${delta > 0 ? "+" : ""}${formatMoney(delta, currency)}`}</Badge></TableCell></TableRow>; })}</TableBody></Table></CardContent></Card>
               <Card><CardHeader><CardTitle>Fuente y fecha</CardTitle><CardDescription>Estos datos quedarán en el historial de la actualización.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-2"><label className="flex flex-col gap-1 text-sm">Fuente<Input value={draft.source} onChange={(event) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, source: event.target.value })); }} placeholder="Factura, cotización o verificación manual" /></label><label className="flex flex-col gap-1 text-sm">Fecha efectiva<Input type="date" value={draft.effectiveDate} onChange={(event) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, effectiveDate: event.target.value })); }} /></label></CardContent><CardFooter className="flex gap-2"><Button variant="outline" onClick={() => setView("planilla")}>Seguir editando</Button><Button disabled={busy || demo} onClick={confirmChanges}>Confirmar cambios</Button></CardFooter></Card>
             </>}
           </> : null}
 
-          {view === "asistente" ? <CozteAssistant state={state} demo={demo} onMaterialProposal={(materialId, priceMinor) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [materialId]: priceMinor } })); toast.info("Precio agregado al borrador. Revísalo antes de confirmar."); setView("planilla"); }} /> : null}
+          {view === "asistente" ? <CozteAssistant demo={demo} onMaterialProposal={(materialId, amount, proposalCurrency) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [materialId]: amount }, materialCurrencies: { ...current.materialCurrencies, [materialId]: proposalCurrency } })); toast.info("Precio agregado al borrador. Revísalo antes de confirmar."); setView("planilla"); }} onExpenseProposal={(expenseId, amount, proposalCurrency) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, expenses: { ...current.expenses, [expenseId]: amount }, expenseCurrencies: { ...current.expenseCurrencies, [expenseId]: proposalCurrency } })); toast.info("Gasto agregado al borrador. Revísalo antes de confirmar."); setView("planilla"); }} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
         </main>

@@ -2,12 +2,15 @@ import { z } from "zod";
 import { apiFailure, requirePrincipal } from "@/lib/server/auth";
 import { dbBatch, dbQuery } from "@/lib/server/db";
 import { loadState } from "@/lib/server/state";
+import { supportedCurrencies } from "@/lib/currency";
 
 export const runtime = "nodejs";
 
 const draftSchema = z.object({
-  materials: z.record(z.string().min(1).max(120), z.number().int().min(0).max(1_000_000_000_000)),
-  expenses: z.record(z.string().min(1).max(120), z.number().int().min(0).max(1_000_000_000_000)),
+  materials: z.record(z.string().min(1).max(120), z.number().min(0).max(1_000_000_000)),
+  expenses: z.record(z.string().min(1).max(120), z.number().min(0).max(1_000_000_000)),
+  materialCurrencies: z.record(z.string().min(1).max(120), z.enum(supportedCurrencies)).default({}),
+  expenseCurrencies: z.record(z.string().min(1).max(120), z.enum(supportedCurrencies)).default({}),
   source: z.string().max(200),
   effectiveDate: z.iso.date(),
 });
@@ -38,7 +41,7 @@ export async function PUT(request: Request) {
     const state = await loadState(principal);
     const materialIds = new Set(state.materials.map((item) => item.id));
     const expenseIds = new Set(state.expenses.filter((item) => item.period === state.activePeriod).map((item) => item.id));
-    if (Object.keys(draft.materials).some((id) => !materialIds.has(id)) || Object.keys(draft.expenses).some((id) => !expenseIds.has(id))) {
+    if (Object.keys(draft.materials).some((id) => !materialIds.has(id)) || Object.keys(draft.expenses).some((id) => !expenseIds.has(id)) || Object.keys(draft.materialCurrencies).some((id) => !materialIds.has(id)) || Object.keys(draft.expenseCurrencies).some((id) => !expenseIds.has(id))) {
       return Response.json({ error: "El borrador contiene filas que ya no existen" }, { status: 400 });
     }
     await dbBatch([{
