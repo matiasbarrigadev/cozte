@@ -67,8 +67,8 @@
 }
 
 .landing-hero-grid {
-  background-image: linear-gradient(to right, color-mix(in oklch, var(--landing-line) 32%, transparent) 1px, transparent 1px), linear-gradient(to bottom, color-mix(in oklch, var(--landing-line) 32%, transparent) 1px, transparent 1px);
-  background-size: 64px 64px;
+  background-image: radial-gradient(circle, color-mix(in oklch, var(--landing-line) 65%, transparent) 1.2px, transparent 1.4px);
+  background-size: 26px 26px;
   background-position: center top;
 }
 
