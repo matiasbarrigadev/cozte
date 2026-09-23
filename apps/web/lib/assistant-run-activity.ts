@@ -1,47 +1,5 @@
-export type AssistantTraceEvent = { id: string; kind: string; payload: unknown; created_at: string };
-
-export type AssistantToolExecution = {
-  toolCallId: string;
-  toolName: string;
-  input?: unknown;
-  output?: unknown;
-  startedAt?: string;
-  finishedAt?: string;
-  durationMs?: number;
-  repairReason?: string;
-};
-
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-export function assistantToolExecutions(events: AssistantTraceEvent[]): AssistantToolExecution[] {
-  const executions = new Map<string, AssistantToolExecution>();
-  for (const event of events) {
-    const payload = record(event.payload);
-    if (!payload) continue;
-    const toolCallId = typeof payload.toolCallId === "string" ? payload.toolCallId : null;
-    if (!toolCallId) continue;
-    const current = executions.get(toolCallId) ?? {
-      toolCallId,
-      toolName: typeof payload.toolName === "string" ? payload.toolName : "unknown",
-    };
-    if (typeof payload.toolName === "string") current.toolName = payload.toolName;
-    if (event.kind === "tool_started") {
-      current.input = payload.input;
-      current.startedAt = event.created_at;
-    } else if (event.kind === "tool_finished") {
-      current.output = payload.output;
-      current.finishedAt = event.created_at;
-      if (typeof payload.durationMs === "number") current.durationMs = payload.durationMs;
-    } else if (event.kind === "tool_input_repaired" && typeof payload.reason === "string") {
-      current.repairReason = payload.reason;
-    } else {
-      continue;
-    }
-    executions.set(toolCallId, current);
-  }
-  return [...executions.values()];
 }
 
 export function assistantToolOutcome(output: unknown): string {
@@ -54,8 +12,14 @@ export function assistantToolOutcome(output: unknown): string {
       ? "Producto listo para evaluación; requiere revisión"
       : "Avance guardado como borrador";
   }
-  if (result.applied === true) return "Aplicado y auditado";
-  if (record(result.proposal)?.proposalId || typeof result.proposalId === "string") return "Propuesta creada para revisión";
-  if (result.material || result.organization) return "Datos consultados";
-  return "Completada";
+  if (result.applied === true) return "Cambio aplicado y guardado";
+  const proposal = record(result.proposal);
+  if (typeof proposal?.title === "string") return `Propuesta: ${proposal.title}`;
+  if (typeof result.title === "string" && typeof result.proposalId === "string") return `Propuesta: ${result.title}`;
+  if (proposal?.proposalId || typeof result.proposalId === "string") return "Propuesta creada para revisión";
+  if (result.material) return "Insumo identificado";
+  if ("confidence" in result) return "Insumo por confirmar";
+  if (result.organization) return "Datos de costos revisados";
+  if ("monthlyMinor" in result || "directPerFinishedUnitMinor" in result) return "Cálculo listo";
+  return "Resultado disponible";
 }
