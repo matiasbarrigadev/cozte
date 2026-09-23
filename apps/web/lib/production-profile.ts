@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { convertNativeMilli, supportedCurrencies, toNativeMilli, type Currency, type FxQuote } from "./currency";
+import { isoDateToolInputSchema } from "./iso-date";
 
 const name = z.string().trim().min(1).max(100);
 const categoryName = z.string().trim().min(2).max(40);
-const evidence = z.object({ quality: z.enum(["measured", "estimated", "missing"]), source: z.string().trim().max(160).nullable(), asOf: z.iso.date().nullable() });
 const originalAmount = z.number().nonnegative().max(1_000_000_000).refine((value) => Math.round(value * 1000) / 1000 === value, "Usa hasta tres decimales");
 
-export const productionProfileSchema = z.object({
+function createProductionProfileSchema(dateSchema: z.ZodType<string>) {
+  const evidence = z.object({ quality: z.enum(["measured", "estimated", "missing"]), source: z.string().trim().max(160).nullable(), asOf: z.nullable(dateSchema) });
+  return z.object({
   businessSummary: z.string().trim().max(500),
   site: z.object({ name, location: z.string().trim().max(160) }).nullable(),
   stages: z.array(z.object({ name, notes: z.string().trim().max(240) })).max(20),
@@ -39,7 +41,13 @@ export const productionProfileSchema = z.object({
     shares: z.array(z.object({ product: name, percent: z.number().min(0).max(100) })).max(30),
     evidence: evidence.optional(),
   })).max(60),
-});
+  });
+}
+
+// Keep strict calendar validation for persisted data and use a JSON-Schema-safe
+// variant only for the schema serialized across the workflow step boundary.
+export const productionProfileSchema = createProductionProfileSchema(z.iso.date());
+export const productionProfileToolSchema = createProductionProfileSchema(isoDateToolInputSchema);
 
 export type ProductionProfile = z.infer<typeof productionProfileSchema>;
 

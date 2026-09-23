@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { experimental_evaluate, tool } from "ai";
 import { z } from "zod";
 import { supportedCurrencies } from "@/lib/currency";
-import { monthlyEquivalent, productionProfileSchema } from "@/lib/production-profile";
+import { monthlyEquivalent, productionProfileSchema, productionProfileToolSchema } from "@/lib/production-profile";
 import { mutationNeedsHumanReview } from "@/lib/cost-approval-policy";
 import { normalizeCozteProductAction } from "@/lib/cozte-product-input";
 import type { DomainState } from "@/lib/domain";
@@ -13,29 +13,7 @@ import { createMutationProposal, createProductionProfileProposal } from "./assis
 import { loadState } from "./state";
 import { addAssistantToolEvent, errorDetails } from "./assistant-trace";
 import { commitMutation, mutationSchema } from "./mutations";
-
-const cozteProductFields = {
-  name: z.string().trim().min(2).max(120).describe("Nombre claro del producto y su formato"),
-  lotUnits: z.number().int().min(1).max(1_000_000_000).describe("Unidades buenas y vendibles que salen de un lote"),
-  salePrice: z.number().int().min(0).max(1_000_000_000_000).describe("Precio de venta por unidad, en importes normales de la moneda de la empresa"),
-  salesVariablePerUnit: z.number().int().min(0).max(1_000_000_000_000).describe("Gasto variable de venta por unidad, en la moneda de la empresa; usa cero solo si está confirmado que no existe"),
-  laborCostPerLot: z.number().int().min(0).max(1_000_000_000_000).describe("Costo de trabajo directo para producir un lote completo, en la moneda de la empresa"),
-  productionHoursPerLot: z.number().min(0).max(1_000_000).refine((value) => Math.round(value * 1000) / 1000 === value, "Usa hasta tres decimales").describe("Horas normales de trabajo para producir un lote; por ejemplo, 1.5 significa una hora y media"),
-};
-
-const costActionSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("create-category"), name: z.string() }),
-  z.object({ action: z.literal("rename-category"), id: z.string(), name: z.string() }),
-  z.object({ action: z.literal("create-material"), name: z.string(), supplier: z.string(), purchaseUnit: z.string(), category: z.string(), price: z.number().optional(), currency: z.enum(supportedCurrencies).optional(), source: z.string().optional(), effectiveDate: z.iso.date().optional() }),
-  z.object({ action: z.literal("update-material-meta"), id: z.string(), field: z.enum(["name", "supplier", "purchaseUnit", "category"]), value: z.string() }),
-  z.object({ action: z.literal("create-expense"), name: z.string(), period: z.string(), amount: z.number(), currency: z.enum(supportedCurrencies), allocationBasis: z.enum(["hours", "units", "manual"]), shares: z.record(z.string(), z.number()).default({}), category: z.string(), source: z.string() }),
-  z.object({ action: z.literal("update-expense-meta"), id: z.string(), field: z.enum(["name", "category", "period", "allocationBasis"]), value: z.string() }),
-  z.object({ action: z.literal("update-expense-allocation"), id: z.string(), basis: z.enum(["hours", "units", "manual"]), shares: z.record(z.string(), z.number()).default({}) }),
-  z.object({ action: z.literal("set-component"), productId: z.string(), materialId: z.string(), quantityMilli: z.number() }),
-  z.object({ action: z.literal("create-product"), ...cozteProductFields, cloneProductId: z.string().optional() }),
-  z.object({ action: z.literal("create-products"), products: z.array(z.object({ ...cozteProductFields, cloneProductId: z.string().optional() })).min(2).max(10) }),
-  z.object({ action: z.literal("update-product"), id: z.string(), ...cozteProductFields }),
-]);
+import { cozteCostActionSchema, cozteCostActionToolSchema, cozteMaterialPriceSchema, cozteMaterialPriceToolSchema } from "./cozte-tool-schemas";
 
 type CozteToolName = "inspectCostBase" | "calculateCostRule" | "findMaterial" | "proposeMaterialPrice" | "proposeExpenseAmount" | "proposeProductionProfile" | "proposeCostAction";
 type ToolStepInput = { principal: Principal; runId: string; toolCallId: string; toolName: CozteToolName; input: unknown };
@@ -79,7 +57,7 @@ async function runCozteTool(input: ToolStepInput): Promise<unknown> {
       } catch { return { material: null, confidence: 0 }; }
     }
     case "proposeMaterialPrice": {
-      const { materialId, amount, currency, source, effectiveDate } = z.object({ materialId: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), source: z.string().trim().max(160).nullable(), effectiveDate: z.iso.date().optional() }).parse(input.input);
+      const { materialId, amount, currency, source, effectiveDate } = cozteMaterialPriceSchema.parse(input.input);
       const [latest, latestProfile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
       const material = latest.materials.find((item) => item.id === materialId);
       if (!material) return { error: "Insumo no encontrado; pregunta cuál es" };
@@ -112,7 +90,7 @@ async function runCozteTool(input: ToolStepInput): Promise<unknown> {
       } catch (error) { return { error: error instanceof Error ? error.message : "No se pudo registrar la propuesta de producción" }; }
     }
     case "proposeCostAction": {
-      const { label, brief, change } = z.object({ label: z.string().trim().min(3).max(140), brief: z.string().trim().min(8).max(400).optional(), change: costActionSchema }).parse(input.input);
+      const { label, brief, change } = z.object({ label: z.string().trim().min(3).max(140), brief: z.string().trim().min(8).max(400).optional(), change: cozteCostActionSchema }).parse(input.input);
       const [latest, latestProfile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
       const parsed = mutationSchema.safeParse({ ...normalizeCozteProductAction(change), expectedRevision: latest.revision, idempotencyKey: toolIdempotencyKey(runId, toolCallId), acknowledgeImpact: true });
       if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Propuesta inválida" };
@@ -151,10 +129,10 @@ export function createCozteTools(principal: Principal, runId: string) {
     inspectCostBase: tool({ description: "Consulta costos, perfil manufacturero y brechas actuales antes de proponer cambios o responder con datos.", inputSchema: z.object({}), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "inspectCostBase", input }) }),
     calculateCostRule: tool({ description: "Calcula una equivalencia mensual o costo directo por unidad terminada; jamás inventa los datos faltantes.", inputSchema: z.object({ frequency: z.enum(["monthly", "quarterly", "annual"]).optional(), amountMinor: z.number().int().nonnegative().optional(), pricePerPurchaseMinor: z.number().int().nonnegative().optional(), unitsPerPurchase: z.number().positive().optional(), quantityPerFinishedUnit: z.number().nonnegative().optional() }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "calculateCostRule", input }) }),
     findMaterial: tool({ description: "Identifica un insumo vigente mencionado en un cambio de precio; devuelve ninguno si es ambiguo.", inputSchema: z.object({ mention: z.string().trim().min(1).max(200) }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "findMaterial", input }) }),
-    proposeMaterialPrice: tool({ description: "Actualiza el precio directamente si el insumo todavía no afecta productos evaluados. Si afecta alguno, registra una propuesta para aprobación humana. Conserva moneda, fuente y fecha efectiva indicadas.", inputSchema: z.object({ materialId: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), source: z.string().trim().max(160).nullable(), effectiveDate: z.iso.date().optional() }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "proposeMaterialPrice", input }) }),
+    proposeMaterialPrice: tool({ description: "Actualiza el precio directamente si el insumo todavía no afecta productos evaluados. Si afecta alguno, registra una propuesta para aprobación humana. Conserva moneda, fuente y fecha efectiva indicadas.", inputSchema: cozteMaterialPriceToolSchema, execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "proposeMaterialPrice", input }) }),
     proposeExpenseAmount: tool({ description: "Actualiza directamente el gasto si todavía no hay productos evaluados. Si afecta costos de productos evaluados, registra una propuesta para aprobación humana.", inputSchema: z.object({ expenseId: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), source: z.string().trim().max(160).nullable() }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "proposeExpenseAmount", input }) }),
-    proposeProductionProfile: tool({ description: "Guarda los avances del mapa de producción sin aprobación mientras se está armando. Solo abre una revisión humana cuando un producto queda completo para evaluación o cuando cambia un costo que afecta a un producto ya evaluado. Conserva todo lo conocido y usa null si un dato falta.", inputSchema: productionProfileSchema, execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "proposeProductionProfile", input }) }),
-    proposeCostAction: tool({ description: "Gestiona la planilla según su etapa: cambios de preparación que no afectan productos evaluados se guardan directamente y quedan auditados; crear/evaluar un producto o cambiar un costo que ya afecta un producto evaluado abre una propuesta para aprobación humana. Usa IDs reales de inspectCostBase. set-component.quantityMilli son milésimas de la unidad de COMPRA del material, no de la unidad de consumo. Incluye un brief breve y claro.", inputSchema: z.object({ label: z.string().trim().min(3).max(140), brief: z.string().trim().min(8).max(400).optional(), change: costActionSchema }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "proposeCostAction", input }) }),
+    proposeProductionProfile: tool({ description: "Guarda los avances del mapa de producción sin aprobación mientras se está armando. Solo abre una revisión humana cuando un producto queda completo para evaluación o cuando cambia un costo que afecta a un producto ya evaluado. Conserva todo lo conocido y usa null si un dato falta.", inputSchema: productionProfileToolSchema, execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "proposeProductionProfile", input }) }),
+    proposeCostAction: tool({ description: "Gestiona la planilla según su etapa: cambios de preparación que no afectan productos evaluados se guardan directamente y quedan auditados; crear/evaluar un producto o cambiar un costo que ya afecta un producto evaluado abre una propuesta para aprobación humana. Usa IDs reales de inspectCostBase. set-component.quantityMilli son milésimas de la unidad de COMPRA del material, no de la unidad de consumo. Incluye un brief breve y claro.", inputSchema: z.object({ label: z.string().trim().min(3).max(140), brief: z.string().trim().min(8).max(400).optional(), change: cozteCostActionToolSchema }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "proposeCostAction", input }) }),
   };
 }
 
