@@ -1,6 +1,6 @@
 import { z, ZodError } from "zod";
 import { apiFailure, requirePrincipal } from "@/lib/server/auth";
-import { createMutationProposal, decideAssistantProposal, listAssistantProposals } from "@/lib/server/assistant-proposals";
+import { decideAssistantProposal, listAssistantProposals, proposeCatalogMutation } from "@/lib/server/assistant-proposals";
 import { listAssistantDataSources } from "@/lib/server/assistant-trace";
 import { mutationSchema } from "@/lib/server/mutations";
 
@@ -36,7 +36,8 @@ export async function POST(request: Request) {
     }
     const create = createSchema.safeParse(body);
     if (create.success) {
-      return Response.json({ proposal: await createMutationProposal(principal, create.data.mutation) }, { status: 201, headers: { "cache-control": "no-store" } });
+      const result = await proposeCatalogMutation(principal, create.data.mutation);
+      return Response.json(result.applied ? result : { proposal: result }, { status: 201, headers: { "cache-control": "no-store" } });
     }
     return Response.json({ error: "Solicitud de propuesta inválida" }, { status: 400 });
   } catch (error) {

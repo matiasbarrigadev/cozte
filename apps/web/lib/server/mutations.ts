@@ -39,7 +39,7 @@ export const mutationSchema = z.discriminatedUnion("action", [
   common.extend({
     action: z.literal("create-material"),
     name, supplier: z.string().trim().max(120), purchaseUnit: name,
-    category: category.optional(),
+    category: category.optional(), effectiveDate: z.iso.date().optional(),
     price: sourceAmount.optional(), currency: currency.optional(), source: z.string().trim().max(200).optional(),
   }),
   common.extend({
@@ -130,7 +130,7 @@ function projection(state: DomainState, input: Mutation): DomainState {
         purchaseUnit: input.purchaseUnit, category: input.category ?? "Materia prima",
         priceMinor: input.price === undefined ? null : convertToOrganizationCurrency(next, toNativeMilli(input.price), input.currency ?? next.organization.currency),
         currency: input.currency ?? next.organization.currency, nativeAmountMilli: input.price === undefined ? null : toNativeMilli(input.price),
-        source: input.source ?? null, effectiveDate: input.price === undefined ? null : new Date().toISOString().slice(0, 10), version: 1 });
+        source: input.source ?? null, effectiveDate: input.price === undefined ? null : input.effectiveDate ?? new Date().toISOString().slice(0, 10), version: 1 });
       if (input.price !== undefined && next.materials.at(-1)?.priceMinor === null) throw new ApiError(503, "Falta cotización vigente para el nuevo insumo");
       break;
     case "update-material-meta": {
@@ -252,7 +252,8 @@ export function previewMutation(state: DomainState, input: Mutation) {
   return { next, before: calculateCosts(state), after: calculateCosts(next) };
 }
 
-export async function commitMutation(principal: Principal, input: Mutation, options: { assistantProposalId?: string } = {}) {
+export async function commitMutation(principal: Principal, input: Mutation, options: { assistantProposalId?: string; source?: "cozte" | "user" } = {}) {
+  if (principal.role === "viewer") throw new ApiError(403, "No tienes permiso para modificar costos");
   const [state, profile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
   const inputCurrencies: Currency[] = input.action === "bulk-prices" ? [...input.materials, ...input.expenses].map((item) => item.currency) : input.action === "create-material" ? [input.currency ?? state.organization.currency] : input.action === "create-expense" ? [input.currency] : [];
   const existingForeign = [...state.materials, ...state.expenses].some((item) => item.currency && item.currency !== state.organization.currency);
@@ -318,7 +319,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       break;
     case "create-material":
       statements.push({ sql: "INSERT INTO materials (id, organization_id, name, supplier, purchase_unit, category) VALUES (?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.supplier, input.purchaseUnit, input.category ?? "Materia prima"] });
-      if (input.price !== undefined) statements.push({ sql: "INSERT INTO material_prices (id, organization_id, material_id, version, amount_minor, source, effective_date, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, entityId, next.materials.find((item) => item.id === "new")!.priceMinor, input.source || "Carga manual", new Date().toISOString().slice(0, 10), actorId, ...fxFields(input.currency ?? next.organization.currency, toNativeMilli(input.price))] });
+      if (input.price !== undefined) statements.push({ sql: "INSERT INTO material_prices (id, organization_id, material_id, version, amount_minor, source, effective_date, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, entityId, next.materials.find((item) => item.id === "new")!.priceMinor, input.source || "Carga manual", input.effectiveDate ?? new Date().toISOString().slice(0, 10), actorId, ...fxFields(input.currency ?? next.organization.currency, toNativeMilli(input.price))] });
       next.materials.find((item) => item.id === "new")!.id = entityId;
       break;
     case "update-material-meta": {
@@ -394,7 +395,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       break;
   }
   statements.push({ sql: "UPDATE organizations SET revision=revision+1 WHERE id=?", params: [organizationId] });
-  statements.push({ sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, actorId, input.action, entityId, JSON.stringify(input)] });
+  statements.push({ sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, actorId, input.action, entityId, JSON.stringify(options.source ? { ...input, source: options.source } : input)] });
 
   // Snapshots are saved with the same transaction as the input change.
   for (const cost of calculateCosts(next)) {
@@ -416,7 +417,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
   const result = { revision: next.revision, entityId, ...(input.action === "create-products" ? { entityIds: productEntityIds } : {}), before, after: calculateCosts(next) };
   if (options.assistantProposalId) {
     statements.push(
-      { sql: "UPDATE assistant_proposals SET status='approved', decision_by=?, decision_note=NULL, decided_at=CURRENT_TIMESTAMP, result_json=? WHERE id=? AND organization_id=? AND kind='cost-mutation' AND status='pending'", params: [actorId, JSON.stringify(result), options.assistantProposalId, organizationId] },
+      { sql: "UPDATE assistant_proposals SET status='approved', decision_by=?, decision_note=NULL, decided_at=CURRENT_TIMESTAMP, result_json=?, payload_json=?, base_organization_revision=? WHERE id=? AND organization_id=? AND kind='cost-mutation' AND status='pending'", params: [actorId, JSON.stringify(result), JSON.stringify(input), input.expectedRevision, options.assistantProposalId, organizationId] },
       { sql: "INSERT INTO assistant_proposal_events (id, organization_id, proposal_id, actor_id, event_type, payload_json) VALUES (?, ?, ?, ?, 'approved', ?)", params: [crypto.randomUUID(), organizationId, options.assistantProposalId, actorId, JSON.stringify({ changeSetId, entityId, baseRevision: input.expectedRevision, revision: next.revision })] },
       { sql: "DELETE FROM assistant_proposal_assertions WHERE id=?", params: [proposalAssertionId] },
     );

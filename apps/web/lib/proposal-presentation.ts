@@ -1,6 +1,6 @@
 import type { Currency } from "./currency";
 import type { DomainState, ProductCost } from "./domain";
-import type { ProductionProfile } from "./production-profile";
+import type { ProductionProfile, ProfileCost } from "./production-profile";
 
 export type ProposalSection = { title: string; lines: string[] };
 export type ProposalDetails = { sections: ProposalSection[]; blockers?: string[] };
@@ -8,7 +8,7 @@ export type ProposalPresentation = { title: string; summary: string; details: Pr
 
 const shown = (value: number | null | undefined, suffix = "") => value == null ? "dato pendiente" : `${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 2 }).format(value)}${suffix}`;
 
-export function productionProfilePresentation(profile: ProductionProfile, gaps: string[], referenceErrors: string[] = []): ProposalPresentation {
+export function productionProfilePresentation(profile: ProductionProfile, gaps: string[], referenceErrors: string[] = [], evaluation?: { currency: Currency; costs: ProfileCost[] }): ProposalPresentation {
   const products = profile.products.map((item) => {
     const output = `${shown(item.goodUnitsPerBatch)} unidades aptas por lote`;
     const volume = item.batchesPerMonth == null ? "volumen mensual pendiente" : `${shown(item.batchesPerMonth)} lotes/mes`;
@@ -29,15 +29,22 @@ export function productionProfilePresentation(profile: ProductionProfile, gaps: 
     return `${item.name} · ${item.category} · ${amount} ${frequency} · reparto por ${allocation}`;
   });
   const blocking = referenceErrors.length ? referenceErrors : [];
+  const evaluatedCosts = evaluation?.costs.map((cost) => {
+    const product = profile.products.find((item) => item.name.toLocaleLowerCase() === cost.product.toLocaleLowerCase());
+    return cost.unitMinor === null
+      ? `${cost.product}: todavía sin costo unitario calculable${cost.warnings.length ? ` · ${cost.warnings.join("; ")}` : ""}`
+      : `${cost.product}: ${money(cost.unitMinor, evaluation.currency)} por ${product?.finishedUnit ?? "unidad"}`;
+  });
   const title = profile.products.length > 1
-    ? `Propuesta: Crear estos ${profile.products.length} productos`
+    ? `Propuesta: Evaluar mapa con ${profile.products.length} productos`
     : profile.products.length === 1
-      ? `Propuesta: Crear producto ${profile.products[0].name}`
-      : "Propuesta: Actualizar el proceso productivo";
+      ? `Propuesta: Evaluar ${profile.products[0].name}`
+      : "Propuesta: Revisar mapa de producción";
   const brief = profile.businessSummary.trim() || "Ordenar qué se produce, dónde y cómo antes de llevar el mapa a los costos vigentes.";
   const sections: ProposalSection[] = [
-    { title: "Qué propone Cozte", lines: [brief, "Al aprobar, queda versionado este mapa con sus productos. No crea fichas de costos vigentes ni cambia la planilla."] },
+    { title: "Qué propone Cozte", lines: [brief, "Al aprobar, se inicia el seguimiento de evaluación con una revisión versionada del mapa. No cambia costos vigentes ni crea fichas de la planilla."] },
     { title: `Productos incluidos (${profile.products.length})`, lines: products.length ? products : ["Todavía no hay productos definidos."] },
+    ...(evaluatedCosts ? [{ title: "Costo unitario calculado por el motor", lines: evaluatedCosts.length ? evaluatedCosts : ["Todavía no hay productos para calcular."] }] : []),
     { title: "Dónde y cómo se produce", lines: [site, ...(stages.length ? stages : ["Etapas del proceso pendientes."])] },
     { title: "Insumos directos", lines: inputs.length ? inputs : ["No se han registrado insumos."] },
     { title: "Gastos y servicios compartidos", lines: recurringCosts.length ? recurringCosts : ["No se han registrado gastos compartidos."] },

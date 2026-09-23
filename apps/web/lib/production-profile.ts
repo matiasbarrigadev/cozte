@@ -108,6 +108,72 @@ export function calculateProductionCosts(profile: ProductionProfile, base: Curre
   });
 }
 
+/** Products that have enough verified manufacturing and cost data to enter human evaluation. */
+export function evaluableProfileProducts(profile: ProductionProfile, base: Currency = "CLP", quotes: Partial<Record<Currency, FxQuote>> = {}): string[] {
+  if (!profile.site || !profile.stages.length || !profile.categories.length || validateProfileReferences(profile).length) return [];
+  const costs = calculateProductionCosts(profile, base, quotes);
+  const hasUnlinkedInput = profile.inputs.some((input) => !input.usage.length);
+  if (hasUnlinkedInput || (!profile.inputs.length && !profile.recurringCosts.length)) return [];
+  return profile.products.filter((product) => {
+    if (product.goodUnitsPerBatch === null || product.goodUnitsPerBatch <= 0 || product.batchesPerMonth === null || product.batchesPerMonth <= 0) return false;
+    if (profile.recurringCosts.some((cost) => cost.allocation === "production_hours") && product.hoursPerBatch === null) return false;
+    const productKey = product.name.toLocaleLowerCase();
+    const relevantInputs = profile.inputs.filter((input) => input.usage.some((usage) => usage.product.toLocaleLowerCase() === productKey));
+    if (relevantInputs.some((input) => {
+      const usage = input.usage.find((item) => item.product.toLocaleLowerCase() === productKey);
+      const hasPrice = input.pricePerPurchase !== undefined || input.pricePerPurchaseMinor !== null;
+      return !hasPrice || input.unitsPerPurchase === null || input.unitsPerPurchase <= 0 || usage?.quantityPerBatch == null || !input.evidence || input.evidence.quality === "missing";
+    })) return false;
+    if (profile.recurringCosts.some((cost) => {
+      const hasAmount = cost.amount !== undefined || cost.amountMinor !== null;
+      return !hasAmount || !cost.evidence || cost.evidence.quality === "missing";
+    })) return false;
+    return costs.find((cost) => cost.product.toLocaleLowerCase() === productKey)?.unitMinor !== null;
+  }).map((product) => product.name);
+}
+
+function profileProductCostFingerprint(profile: ProductionProfile, productName: string): string {
+  const key = productName.toLocaleLowerCase();
+  const product = profile.products.find((item) => item.name.toLocaleLowerCase() === key);
+  if (!product) return "missing";
+  const inputs = profile.inputs.filter((input) => input.usage.some((usage) => usage.product.toLocaleLowerCase() === key)).map((input) => ({
+    purchaseUnit: input.purchaseUnit, consumptionUnit: input.consumptionUnit, unitsPerPurchase: input.unitsPerPurchase,
+    pricePerPurchaseMinor: input.pricePerPurchaseMinor, pricePerPurchase: input.pricePerPurchase, priceCurrency: input.priceCurrency,
+    usage: input.usage.filter((usage) => usage.product.toLocaleLowerCase() === key).map((usage) => usage.quantityPerBatch),
+  })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const recurringCosts = profile.recurringCosts.flatMap((cost) => {
+    const weights = profile.products.map((item) => ({
+      name: item.name.toLocaleLowerCase(),
+      value: cost.allocation === "manual_percentage"
+        ? cost.shares.find((share) => share.product.toLocaleLowerCase() === item.name.toLocaleLowerCase())?.percent ?? 0
+        : cost.allocation === "production_hours"
+          ? item.batchesPerMonth != null && item.hoursPerBatch != null ? item.batchesPerMonth * item.hoursPerBatch : null
+          : item.batchesPerMonth != null && item.goodUnitsPerBatch != null ? item.batchesPerMonth * item.goodUnitsPerBatch : null,
+    }));
+    const targetWeight = weights.find((item) => item.name === key)?.value;
+    const totalWeight = weights.reduce<number | null>((total, item) => total === null || item.value === null ? null : total + item.value, 0);
+    if (targetWeight == null || targetWeight <= 0 || totalWeight == null || totalWeight <= 0) return [];
+    return [{
+      frequency: cost.frequency, amountMinor: cost.amountMinor, amount: cost.amount, amountCurrency: cost.amountCurrency,
+      allocation: cost.allocation, targetShare: targetWeight / totalWeight,
+    }];
+  }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return JSON.stringify({
+    product: [product.name, product.finishedUnit, product.goodUnitsPerBatch, product.batchesPerMonth,
+      profile.recurringCosts.some((cost) => cost.allocation === "production_hours") ? product.hoursPerBatch : null],
+    inputs, recurringCosts,
+  });
+}
+
+/** True when a proposed profile changes cost assumptions for a previously evaluated product. */
+export function changesEvaluatedProductCosts(confirmed: ProductionProfile | null, proposed: ProductionProfile, base: Currency = "CLP", quotes: Partial<Record<Currency, FxQuote>> = {}): boolean {
+  if (!confirmed) return false;
+  const evaluated = evaluableProfileProducts(confirmed, base, quotes);
+  if (!evaluated.length) return false;
+  const nextEvaluable = new Set(evaluableProfileProducts(proposed, base, quotes).map((name) => name.toLocaleLowerCase()));
+  return evaluated.some((name) => !nextEvaluable.has(name.toLocaleLowerCase()) || profileProductCostFingerprint(confirmed, name) !== profileProductCostFingerprint(proposed, name));
+}
+
 export function profileGaps(profile: ProductionProfile): string[] {
   const gaps: string[] = [];
   if (!profile.site) gaps.push("Falta identificar dónde se fabrica");

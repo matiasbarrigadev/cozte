@@ -2,14 +2,16 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { DomainState } from "@/lib/domain";
-import { profileGaps, productionProfileSchema, validateProfileReferences, type ProductionProfile } from "@/lib/production-profile";
+import { changesEvaluatedProductCosts, emptyProductionProfile, evaluableProfileProducts, profileGaps, productionProfileSchema, validateProfileReferences, type ProductionProfile } from "@/lib/production-profile";
 import { mutationSchema, previewMutation, commitMutation, type Mutation } from "./mutations";
+import { calculateProductionCosts } from "@/lib/production-profile";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery } from "./db";
 import { loadState } from "./state";
-import { loadProductionProfile, confirmProductionProfile } from "./production-profile";
+import { loadProductionProfile, confirmProductionProfile, saveEvaluatedProfileMetadata, saveProductionProfileDraft } from "./production-profile";
 import { mutationProposalPresentation, productionProfilePresentation, type ProposalDetails } from "@/lib/proposal-presentation";
 import { getAssistantRunMessageIds, listAssistantDataSources, type AssistantDataSource } from "./assistant-trace";
+import { mutationNeedsHumanReview } from "@/lib/cost-approval-policy";
 
 const MAX_PROPOSAL_BYTES = 100_000;
 const sourceSchema = z.object({ runId: z.string().min(1).max(100), toolCallId: z.string().min(1).max(200) }).optional();
@@ -189,10 +191,110 @@ export async function createMutationProposal(
   return toolResult(row);
 }
 
-function profileOptions(profile: ProductionProfile) {
+async function rebaseMutationProposal(principal: Principal, row: ProposalRow, mutation: Mutation, state: DomainState) {
+  const rebased = mutationSchema.parse({ ...mutation, expectedRevision: state.revision }) as Mutation;
+  const preview = previewMutation(state, rebased);
+  const presentation = mutationProposalPresentation(state, rebased as Record<string, unknown>, preview.before, preview.after, { label: row.title, brief: row.summary });
+  let oldDetails: unknown;
+  try { oldDetails = JSON.parse(row.details_json) as unknown; } catch { oldDetails = null; }
+  if (JSON.stringify(oldDetails) === JSON.stringify(presentation.details)) return { mutation: rebased, proposal: null as AssistantProposal | null };
+
+  const encodedMutation = JSON.stringify(rebased);
+  const encodedDetails = JSON.stringify(presentation.details);
+  const dedupeKey = createHash("sha256").update(JSON.stringify({ ...rebased, idempotencyKey: undefined })).digest("hex");
+  const assertionId = crypto.randomUUID();
+  const refreshed = await dbBatch([
+    { sql: "INSERT INTO assistant_proposal_assertions (id, valid) VALUES (?, (SELECT CASE WHEN status='pending' AND organization_id=? AND (SELECT revision FROM organizations WHERE id=?)=? THEN 1 ELSE 0 END FROM assistant_proposals WHERE id=?))", params: [assertionId, principal.organizationId, principal.organizationId, state.revision, row.id] },
+    { sql: "UPDATE assistant_proposals SET title=?, summary=?, details_json=?, payload_json=?, dedupe_key=?, base_organization_revision=? WHERE id=? AND organization_id=? AND status='pending' RETURNING id", params: [presentation.title, presentation.summary, encodedDetails, encodedMutation, dedupeKey, state.revision, row.id, principal.organizationId] },
+    { sql: "INSERT INTO assistant_proposal_events (id, organization_id, proposal_id, actor_id, event_type, payload_json) VALUES (?, ?, ?, ?, 'refreshed', ?)", params: [crypto.randomUUID(), principal.organizationId, row.id, principal.userId, eventPayload({ previousRevision: row.base_organization_revision, currentRevision: state.revision, reason: "Cambió el impacto calculado; hace falta revisar la propuesta actualizada." })] },
+    { sql: "DELETE FROM assistant_proposal_assertions WHERE id=?", params: [assertionId] },
+  ]);
+  if (!refreshed[1]?.length) throw new ApiError(409, "La propuesta se decidió en otra sesión. Actualiza la actividad.");
+  const updated = await getAssistantProposal(principal, row.id);
+  if (!updated) throw new ApiError(404, "No encontramos la propuesta actualizada");
+  return { mutation: rebased, proposal: updated };
+}
+
+async function refreshProfileProposal(principal: Principal, row: ProposalRow, state: DomainState) {
+  const current = await loadProductionProfile(principal);
+  if (!current.draft || current.revision !== row.applied_profile_revision || JSON.stringify(current.draft) !== JSON.stringify(productionProfileSchema.parse(JSON.parse(row.payload_json)))) {
+    await markProposalStale(principal, row.id, "El mapa cambió desde que se preparó la revisión. Pídele a Cozte que actualice la propuesta.");
+    const latest = await getAssistantProposal(principal, row.id);
+    throw new ApiError(409, latest?.decisionNote ?? "El mapa cambió; actualiza la propuesta con Cozte.");
+  }
+  const profile = productionProfileSchema.parse(JSON.parse(row.payload_json));
+  const presentation = profileOptions(profile, state).presentation;
+  const assertionId = crypto.randomUUID();
+  const statements = await dbBatch([
+    { sql: "INSERT INTO assistant_proposal_assertions (id, valid) VALUES (?, (SELECT CASE WHEN status='pending' AND organization_id=? AND (SELECT revision FROM organizations WHERE id=?)=? AND (SELECT revision FROM production_profiles WHERE organization_id=?)=? THEN 1 ELSE 0 END FROM assistant_proposals WHERE id=?))", params: [assertionId, principal.organizationId, principal.organizationId, state.revision, principal.organizationId, current.revision, row.id] },
+    { sql: "UPDATE assistant_proposals SET title=?, summary=?, details_json=?, base_organization_revision=? WHERE id=? AND organization_id=? AND status='pending' RETURNING id", params: [presentation.title, presentation.summary, JSON.stringify(presentation.details), state.revision, row.id, principal.organizationId] },
+    { sql: "INSERT INTO assistant_proposal_events (id, organization_id, proposal_id, actor_id, event_type, payload_json) VALUES (?, ?, ?, ?, 'refreshed', ?)", params: [crypto.randomUUID(), principal.organizationId, row.id, principal.userId, eventPayload({ previousRevision: row.base_organization_revision, currentRevision: state.revision, reason: "La base cambió; revisa otra vez antes de confirmar." })] },
+    { sql: "DELETE FROM assistant_proposal_assertions WHERE id=?", params: [assertionId] },
+  ]);
+  if (!statements[1]?.length) throw new ApiError(409, "La propuesta se actualizó en otra sesión. Vuelve a cargarla.");
+  const updated = await getAssistantProposal(principal, row.id);
+  if (!updated) throw new ApiError(404, "No encontramos la propuesta actualizada");
+  return { proposal: updated };
+}
+
+async function refreshPendingProposalBases(principal: Principal, appliedProposalId: string) {
+  const state = await loadState(principal);
+  const [rows, profileState] = await Promise.all([
+    dbQuery<ProposalRow>(`SELECT ${baseRows()} FROM assistant_proposals WHERE organization_id=? AND status='pending' AND id<>? ORDER BY created_at, id LIMIT 50`, [principal.organizationId, appliedProposalId]),
+    loadProductionProfile(principal),
+  ]);
+  for (const row of rows) {
+    if (row.base_organization_revision >= state.revision) continue;
+    try {
+      let patch: { title: string; summary: string; details: string; payload?: string; dedupeKey?: string } | null = null;
+      let impactChanged = false;
+      if (row.kind === "cost-mutation") {
+        const previous = mutationSchema.parse(proposalPayload(row)) as Mutation;
+        const expectedFxRates = previous.action === "bulk-prices"
+          ? Object.fromEntries([...new Set([...state.materials, ...state.expenses].map((item) => item.currency ?? state.organization.currency))].filter((code) => code !== state.organization.currency).flatMap((code) => state.fxQuotes?.[code] ? [[code, state.fxQuotes[code]!.ratePpm]] : []))
+          : undefined;
+        const mutation = mutationSchema.parse({ ...previous, expectedRevision: state.revision, ...(expectedFxRates ? { expectedFxRates } : {}) }) as Mutation;
+        const dedupeKey = createHash("sha256").update(JSON.stringify({ ...mutation, idempotencyKey: undefined })).digest("hex");
+        const duplicate = await byPendingDedupeKey(principal, dedupeKey);
+        if (duplicate && duplicate.id !== row.id) {
+          const assertionId = crypto.randomUUID();
+          await dbBatch([
+            { sql: "INSERT INTO assistant_proposal_assertions (id, valid) VALUES (?, (SELECT CASE WHEN status='pending' AND organization_id=? THEN 1 ELSE 0 END FROM assistant_proposals WHERE id=?))", params: [assertionId, principal.organizationId, row.id] },
+            { sql: "UPDATE assistant_proposals SET status='superseded', decision_by=?, decision_note=?, decided_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND status='pending'", params: [principal.userId, `Duplicada por ${duplicate.id}`, row.id, principal.organizationId] },
+            { sql: "INSERT INTO assistant_proposal_events (id, organization_id, proposal_id, actor_id, event_type, payload_json) VALUES (?, ?, ?, ?, 'superseded', ?)", params: [crypto.randomUUID(), principal.organizationId, row.id, principal.userId, eventPayload({ reason: "Se conservó otra propuesta idéntica", duplicateOf: duplicate.id })] },
+            { sql: "DELETE FROM assistant_proposal_assertions WHERE id=?", params: [assertionId] },
+          ]);
+          continue;
+        }
+        const preview = previewMutation(state, mutation);
+        const presentation = mutationProposalPresentation(state, mutation as Record<string, unknown>, preview.before, preview.after, { label: row.title, brief: row.summary });
+        impactChanged = JSON.stringify(proposalDetails(row)) !== JSON.stringify(presentation.details);
+        patch = { title: presentation.title, summary: presentation.summary, details: JSON.stringify(presentation.details), payload: JSON.stringify(mutation), dedupeKey };
+      } else {
+        if (!profileState.draft || profileState.revision !== row.applied_profile_revision || JSON.stringify(profileState.draft) !== JSON.stringify(productionProfileSchema.parse(JSON.parse(row.payload_json)))) continue;
+        const profile = productionProfileSchema.parse(JSON.parse(row.payload_json));
+        const presentation = profileOptions(profile, state).presentation;
+        impactChanged = JSON.stringify(proposalDetails(row)) !== JSON.stringify(presentation.details);
+        patch = { title: presentation.title, summary: presentation.summary, details: JSON.stringify(presentation.details) };
+      }
+      const assertionId = crypto.randomUUID();
+      const updated = await dbBatch([
+        { sql: "INSERT INTO assistant_proposal_assertions (id, valid) VALUES (?, (SELECT CASE WHEN status='pending' AND organization_id=? AND base_organization_revision=? AND (SELECT revision FROM organizations WHERE id=?)=? THEN 1 ELSE 0 END FROM assistant_proposals WHERE id=?))", params: [assertionId, principal.organizationId, row.base_organization_revision, principal.organizationId, state.revision, row.id] },
+        { sql: "UPDATE assistant_proposals SET title=?, summary=?, details_json=?, payload_json=COALESCE(?, payload_json), dedupe_key=COALESCE(?, dedupe_key), base_organization_revision=? WHERE id=? AND organization_id=? AND status='pending' AND base_organization_revision=? RETURNING id", params: [patch.title, patch.summary, patch.details, patch.payload ?? null, patch.dedupeKey ?? null, state.revision, row.id, principal.organizationId, row.base_organization_revision] },
+        { sql: "INSERT INTO assistant_proposal_events (id, organization_id, proposal_id, actor_id, event_type, payload_json) VALUES (?, ?, ?, ?, 'refreshed', ?)", params: [crypto.randomUUID(), principal.organizationId, row.id, principal.userId, eventPayload({ previousRevision: row.base_organization_revision, currentRevision: state.revision, impactChanged, reason: impactChanged ? "Se actualizó el impacto calculado; sigue pendiente de aprobación." : "Se actualizó la revisión base; el impacto calculado no cambió." })] },
+        { sql: "DELETE FROM assistant_proposal_assertions WHERE id=?", params: [assertionId] },
+      ]);
+      if (!updated[1]?.length) continue;
+    } catch (error) {
+      console.error("Pending Cozte proposal refresh failed", row.id, error);
+    }
+  }
+}
+
+function profileOptions(profile: ProductionProfile, state?: DomainState) {
   const gaps = profileGaps(profile);
   const referenceErrors = validateProfileReferences(profile);
-  const presentation = productionProfilePresentation(profile, gaps, referenceErrors);
+  const presentation = productionProfilePresentation(profile, gaps, referenceErrors, state ? { currency: state.organization.currency, costs: calculateProductionCosts(profile, state.organization.currency, state.fxQuotes) } : undefined);
   return { gaps, referenceErrors, presentation };
 }
 
@@ -214,7 +316,26 @@ export async function createProductionProfileProposal(
   ]);
   if (state.organization.id !== principal.organizationId) throw new ApiError(403, "La empresa de la propuesta no coincide con tu sesión");
   const expectedProfileRevision = options.profileRevision ?? existingProfile.revision;
-  const { gaps, referenceErrors, presentation } = profileOptions(profile);
+  const { gaps, referenceErrors, presentation } = profileOptions(profile, state);
+  const evaluableProducts = evaluableProfileProducts(profile, state.organization.currency, state.fxQuotes);
+  const confirmedEvaluable = new Set(evaluableProfileProducts(existingProfile.confirmed ?? emptyProductionProfile, state.organization.currency, state.fxQuotes).map((name) => name.toLocaleLowerCase()));
+  const newlyEvaluable = evaluableProducts.filter((name) => !confirmedEvaluable.has(name.toLocaleLowerCase()));
+  const impactsEvaluatedProduct = changesEvaluatedProductCosts(existingProfile.confirmed, profile, state.organization.currency, state.fxQuotes);
+  if (!newlyEvaluable.length && !impactsEvaluatedProduct) {
+    const currentJson = JSON.stringify(existingProfile.draft ?? existingProfile.confirmed);
+    if (currentJson === JSON.stringify(profile)) return { kind: "profile-draft", status: "unchanged", draftRevision: existingProfile.revision, gaps, referenceErrors, evaluableProducts };
+    const confirmedProducts = existingProfile.confirmed?.products.map((item) => item.name) ?? [];
+    const proposedProducts = profile.products.map((item) => item.name);
+    const confirmedReady = evaluableProfileProducts(existingProfile.confirmed ?? emptyProductionProfile, state.organization.currency, state.fxQuotes);
+    const metadataOnly = !!existingProfile.confirmed && confirmedReady.length === confirmedProducts.length && evaluableProducts.length === proposedProducts.length
+      && confirmedProducts.length === proposedProducts.length && confirmedProducts.every((name) => proposedProducts.some((candidate) => candidate.toLocaleLowerCase() === name.toLocaleLowerCase()));
+    if (metadataOnly) {
+      const saved = await saveEvaluatedProfileMetadata(principal, profile, expectedProfileRevision, state.revision);
+      return { kind: "profile-metadata", applied: true, status: "applied", draftRevision: saved.revision, gaps, referenceErrors, evaluableProducts };
+    }
+    const saved = await saveProductionProfileDraft(principal, profile, expectedProfileRevision, state.revision);
+    return { kind: "profile-draft", status: "building", draftRevision: saved.revision, gaps, referenceErrors, evaluableProducts };
+  }
   const proposalId = crypto.randomUUID();
   const payload = JSON.stringify(profile);
   const details = JSON.stringify(presentation.details);
@@ -240,7 +361,7 @@ export async function createProductionProfileProposal(
   }
   const row = await getRow(principal, proposalId);
   if (!row) throw new Error("La propuesta de producción se guardó, pero no se pudo recuperar");
-  return { ...toolResult(row), gaps, referenceErrors };
+  return { ...toolResult(row), gaps, referenceErrors, evaluableProducts, reviewReason: impactsEvaluatedProduct ? "Afecta productos ya evaluados" : "Producto completo listo para evaluación" };
 }
 
 async function markProposalStale(principal: Principal, proposalId: string, reason: string) {
@@ -301,7 +422,7 @@ export async function decideAssistantProposal(
   principal: Principal,
   proposalId: string,
   input: { decision: "approve" | "reject" | "request-changes"; note?: string | null },
-): Promise<{ proposal: AssistantProposal; result?: unknown }> {
+): Promise<{ proposal: AssistantProposal; result?: unknown; needsReview?: boolean }> {
   if (principal.role === "viewer") throw new ApiError(403, "No tienes permiso para decidir propuestas");
   const note = input.note?.trim() || null;
   if (note && note.length > 500) throw new ApiError(400, "La nota es demasiado larga");
@@ -317,13 +438,23 @@ export async function decideAssistantProposal(
 
   try {
     if (row.kind === "production-profile") {
+      const state = await loadState(principal);
+      if (state.revision !== row.base_organization_revision) return { ...(await refreshProfileProposal(principal, row, state)), needsReview: true };
       const profile = await confirmProductionProfile(principal, row.applied_profile_revision ?? -1, row.id);
+      await refreshPendingProposalBases(principal, row.id).catch((error) => console.error("Pending Cozte proposal refresh failed after profile approval", error));
       const proposal = await getAssistantProposal(principal, row.id);
       if (!proposal) throw new Error("El mapa se confirmó, pero no se recuperó su registro de auditoría");
       return { proposal, result: { profileRevision: profile.revision, confirmed: true } };
     }
-    const mutation = mutationSchema.parse(proposalPayload(row)) as Mutation;
+    let mutation = mutationSchema.parse(proposalPayload(row)) as Mutation;
+    const currentState = await loadState(principal);
+    if (currentState.revision !== mutation.expectedRevision) {
+      const rebased = await rebaseMutationProposal(principal, row, mutation, currentState);
+      if (rebased.proposal) return { proposal: rebased.proposal, needsReview: true };
+      mutation = rebased.mutation;
+    }
     const result = await commitMutation(principal, mutation, { assistantProposalId: row.id });
+    await refreshPendingProposalBases(principal, row.id).catch((error) => console.error("Pending Cozte proposal refresh failed after cost approval", error));
     const proposal = await getAssistantProposal(principal, row.id);
     if (!proposal) throw new Error("El cambio se aplicó, pero no se recuperó su registro de auditoría");
     return { proposal, result };
@@ -339,6 +470,9 @@ export async function decideAssistantProposal(
 }
 
 export async function proposeCatalogMutation(principal: Principal, rawMutation: unknown): Promise<Record<string, unknown>> {
-  const mutation = mutationSchema.parse(rawMutation);
-  return createMutationProposal(principal, mutation);
+  const parsed = mutationSchema.parse(rawMutation);
+  const [state, profile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
+  const mutation = mutationSchema.parse({ ...parsed, expectedRevision: state.revision }) as Mutation;
+  if (!mutationNeedsHumanReview(state, mutation, [profile.confirmed])) return { applied: true, result: await commitMutation(principal, mutation, { source: "user" }) };
+  return createMutationProposal(principal, mutation, { stateSnapshot: state });
 }

@@ -7,6 +7,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, type UIMessage } from "ai";
 import { toast } from "sonner";
 import type { ProductionProfile } from "@/lib/production-profile";
+import type { Currency } from "@/lib/currency";
 import type { AssistantProposal } from "@/lib/server/assistant-proposals";
 import type { AssistantDataSource } from "@/lib/server/assistant-trace";
 import type { ProposalSection } from "@/lib/proposal-presentation";
@@ -27,7 +28,7 @@ import { AnimatedIcon } from "@/components/animated-icon";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, getCozteAttachmentKind, getCozteAttachmentMaxBytes, getCozteAttachmentMediaType } from "@/lib/cozte-assistant-attachments";
 import { cn } from "cn";
 
-type ProfileResponse = { confirmed: ProductionProfile | null; draft: ProductionProfile | null; revision: number; organizationRevision: number; catalog?: { actions: { key: string; label: string; details: string; action: Record<string, unknown> }[]; missingProducts: string[]; issues: string[] } };
+type ProfileResponse = { confirmed: ProductionProfile | null; draft: ProductionProfile | null; revision: number; organizationRevision: number; currency: Currency; costs: { product: string; unitMinor: number | null; warnings: string[] }[]; gaps: string[]; evaluableProducts: string[]; catalog?: { actions: { key: string; label: string; details: string; action: Record<string, unknown> }[]; missingProducts: string[]; issues: string[] } };
 
 const suggestions = [
   "Mapear mi producción",
@@ -58,6 +59,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
     onFinish: ({ message, isError, isAbort }) => {
       void loadProfile();
       void loadProposals(true);
+      if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && ["tool-proposeCostAction", "tool-proposeMaterialPrice", "tool-proposeExpenseAmount", "tool-proposeProductionProfile"].includes(part.type) && !!part.output && typeof part.output === "object" && (part.output as { applied?: boolean }).applied)) void onDataChanged();
       if (!isAbort && (isError || !message.parts.some((part) => part.type === "text" && part.text.trim()))) toast.error("Cozte no pudo completar esta respuesta. Tu mensaje quedó guardado; puedes reintentarlo.");
     },
     onError: () => toast.error("No se pudo conectar con Cozte. Revisa tu conexión y vuelve a intentar."),
@@ -153,7 +155,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
     if ((!value && !attachments.length) || demo || status !== "ready" || loading || preparing || voiceState !== "idle") return;
     setPreparing(true);
     try {
-      let message = value || (attachments.length ? "Revisa los archivos adjuntos como evidencia de costos de producción. Pregúntame por los datos que falten y no hagas cambios sin mi aprobación." : "");
+      let message = value || (attachments.length ? "Revisa los archivos adjuntos como evidencia de costos de producción. Pregúntame por los datos que falten y guárdalos en el mapa de trabajo; no cargues precios a la base operativa sin que te lo pida. Pide aprobación solo si un producto completo inicia evaluación o cambia un costo que afecte productos ya evaluados." : "");
       let files: FileList | undefined;
       const spreadsheets = attachments.filter((file) => getCozteAttachmentKind(file) === "spreadsheet");
       if (spreadsheets.length) {
@@ -191,7 +193,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
   }
 
   async function decideProposal(proposal: AssistantProposal, decision: "approve" | "reject") {
-    if (demo || busyProposalIds.current.has(proposal.id)) return;
+    if (demo || status !== "ready" || busyProposalIds.current.has(proposal.id)) return;
     busyProposalIds.current.add(proposal.id);
     setBusyProposalId(proposal.id);
     try {
@@ -201,10 +203,20 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
         throw new Error(data.error ?? "La propuesta cambió. Actualicé su estado; vuelve a revisarla.");
       }
       await Promise.all([loadProposals(true), loadProfile()]);
+      if (data.needsReview) {
+        toast.message("La base de costos cambió. Actualicé la propuesta; revisa el impacto nuevo antes de aprobarla.");
+        return;
+      }
       if (decision === "approve") {
         await onDataChanged();
         toast.success(proposal.kind === "production-profile" ? "Mapa de producción confirmado y versionado" : isProductCreation(proposal.title) ? "Productos creados y costo guardado en el historial" : "Propuesta aplicada y guardada en el historial");
-      } else toast.success("Propuesta descartada y registrada");
+        void sendMessage({ text: proposal.kind === "production-profile"
+          ? `Actualización automática: el equipo aprobó el mapa de producción “${proposal.title}”. Ya está confirmado y versionado. Incorpora esa decisión al contexto y continúa con el siguiente dato pendiente; no vuelvas a pedir aprobación para lo mismo.`
+          : `Actualización automática: el equipo aprobó y aplicó “${proposal.title}”. Revisa la base vigente y continúa con el modelo actualizado; no vuelvas a pedir aprobación para el mismo cambio.` }).catch(() => toast.error("La decisión quedó registrada, pero Cozte no pudo recibir la actualización automática. Escríbele para continuar."));
+      } else {
+        toast.success("Propuesta descartada y registrada");
+        void sendMessage({ text: `Actualización automática: el equipo descartó “${proposal.title}”. No apliques ese cambio. Continúa con la información vigente y pregunta solo si hace falta una alternativa.` }).catch(() => toast.error("La decisión quedó registrada, pero Cozte no pudo recibir la actualización automática. Escríbele para continuar."));
+      }
     } catch (cause) {
       await Promise.all([loadProposals(true), loadProfile()]);
       toast.error(cause instanceof Error ? cause.message : "No se pudo actualizar la propuesta");
@@ -214,7 +226,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
 
   async function requestProposalChanges(proposal: AssistantProposal) {
     const note = adjustmentNote.trim();
-    if (demo || note.length < 3 || busyProposalIds.current.has(proposal.id)) return;
+    if (demo || status !== "ready" || note.length < 3 || busyProposalIds.current.has(proposal.id)) return;
     busyProposalIds.current.add(proposal.id);
     setBusyProposalId(proposal.id);
     try {
@@ -225,8 +237,8 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
       setSelectedProposalId(null);
       setAdjustmentNote("");
       setMobilePanel("chat");
-      setInput(`Necesito ajustar la propuesta “${proposal.title}”: ${note}. Revisa el proceso, prepara una nueva propuesta con esos cambios y explícame su impacto antes de aplicarla.`);
-      toast.success("Ajustes registrados. El mensaje quedó listo para continuar con Cozte.");
+      void sendMessage({ text: `Actualización automática: el equipo pidió ajustar “${proposal.title}”. Cambios solicitados: ${note}. Revisa el contexto, actualiza los datos y explica el nuevo impacto. No apliques ni vuelvas a proponer la versión anterior.` }).catch(() => toast.error("Los ajustes quedaron registrados, pero Cozte no pudo recibir la actualización automática."));
+      toast.success("Ajustes registrados y enviados a Cozte");
     } catch (cause) {
       await loadProposals(true);
       toast.error(cause instanceof Error ? cause.message : "No se pudieron registrar los ajustes");
@@ -239,8 +251,11 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
       const response = await fetch("/api/assistant/proposals", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mutation: { ...action, expectedRevision: profile.organizationRevision, idempotencyKey: crypto.randomUUID() } }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "No se pudo preparar la propuesta");
-      await loadProposals(true);
-      toast.success(`${label}: propuesta guardada para revisión`);
+      await Promise.all([loadProposals(true), loadProfile()]);
+      if (data.applied) {
+        await onDataChanged();
+        toast.success(`${label}: cambio aplicado y auditado`);
+      } else toast.success(`${label}: propuesta guardada para revisión`);
     } catch (cause) {
       await loadProposals(true);
       toast.error(cause instanceof Error ? cause.message : "No se pudo preparar la propuesta");
@@ -299,9 +314,11 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
                   {message.parts.map((part, index) => {
                     if (part.type === "text") return message.role === "assistant" ? <AssistantMarkdown key={index} text={part.text} /> : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
                     if (isToolUIPart(part) && part.state === "output-available" && part.type.startsWith("tool-propose")) {
-                      const result = part.output as { proposal?: { title?: string; proposalId?: string }; proposalId?: string; title?: string; error?: string };
+                      const result = part.output as { kind?: string; applied?: boolean; status?: string; draftRevision?: number; evaluableProducts?: string[]; proposal?: { title?: string; proposalId?: string }; proposalId?: string; title?: string; error?: string };
                       const saved = result.proposal ?? result;
                       if (result.error) return <Badge key={index} variant="destructive">No se guardó la propuesta: {result.error}</Badge>;
+                      if (result.kind === "profile-draft") return <Badge key={index} variant="secondary">{result.evaluableProducts?.length ? `Listo para evaluar · ${result.evaluableProducts.join(", ")}` : "Avance guardado · en armado, sin aprobación"}</Badge>;
+                      if (result.applied) return <Badge key={index} variant="secondary">Cambio aplicado y auditado</Badge>;
                       if (saved.proposalId) return <Badge key={index} variant="secondary">{saved.title ?? "Propuesta guardada"} · disponible en actividad</Badge>;
                     }
                     if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
@@ -364,6 +381,12 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
               <CardDescription>Propuestas, decisiones y fuentes, en un mismo lugar.</CardDescription>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3 py-4">
+              {profile?.draft ? <section aria-label="Estado del mapa de producción" className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
+                <div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">Mapa de producción</h2><Badge variant={pendingProposals.some((proposal) => proposal.kind === "production-profile") ? "outline" : profile.evaluableProducts.length ? "secondary" : "outline"}>{pendingProposals.some((proposal) => proposal.kind === "production-profile") ? "Revisión pendiente" : profile.evaluableProducts.length ? "Listo para evaluar" : "En armado"}</Badge></div>
+                <p className="text-xs text-muted-foreground">{profile.evaluableProducts.length ? `Puede iniciar evaluación: ${profile.evaluableProducts.join(", ")}.` : "Los datos parciales se guardan sin pedir aprobación. El permiso aparece al completar un producto para evaluación."}</p>
+                {profile.evaluableProducts.length ? <ul className="flex flex-col gap-1 text-xs">{profile.evaluableProducts.map((name) => { const cost = profile.costs.find((item) => item.product.toLocaleLowerCase() === name.toLocaleLowerCase())?.unitMinor; return <li key={name} className="flex items-center justify-between gap-2"><span>{name}</span><strong>{cost === null || cost === undefined ? "Costo pendiente" : `${formatProfileUnitCost(cost, profile.currency)} / unidad`}</strong></li>; })}</ul> : null}
+                {!profile.evaluableProducts.length && profile.gaps.length ? <p className="text-xs text-muted-foreground">Pendiente: {profile.gaps.slice(0, 3).join(" · ")}{profile.gaps.length > 3 ? "…" : ""}</p> : null}
+              </section> : null}
               <section aria-labelledby="cozte-activity-title" className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-2"><h2 id="cozte-activity-title" className="text-sm font-semibold">Propuestas y decisiones</h2>{proposalsLoading ? <span className="text-xs text-muted-foreground">Cargando…</span> : null}</div>
                 <div className="flex flex-wrap gap-1" aria-label="Filtrar actividad">
@@ -393,10 +416,10 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
               </section>
 
               {catalogHasActions && profile?.confirmed ? <section aria-labelledby="cozte-map-actions-title" className="flex flex-col gap-3 border-t pt-4">
-                <div><h2 id="cozte-map-actions-title" className="text-sm font-semibold">Acciones del mapa</h2><p className="mt-1 text-xs text-muted-foreground">Cada cambio se prepara como propuesta para revisar.</p></div>
+                <div><h2 id="cozte-map-actions-title" className="text-sm font-semibold">Acciones del mapa</h2><p className="mt-1 text-xs text-muted-foreground">Los avances sin impacto en productos evaluados no piden aprobación. La revisión se activa al completar un producto o cambiar costos que lo afectan.</p></div>
                 {profile.catalog?.missingProducts.length ? <div className="flex flex-col gap-2 rounded-lg border p-3 text-xs"><strong>Productos fuera de la planilla</strong><p className="text-muted-foreground">Faltan datos de lote, venta, mano de obra u horas. Cozte no los completará con ceros.</p><Button size="sm" variant="outline" disabled={demo || status !== "ready"} onClick={() => void send("Preparemos la propuesta para crear en Costos de producción las fichas de " + profile.catalog?.missingProducts.join(", ") + ". Primero dime qué datos faltan y no uses ceros para desconocidos.")}>Completar fichas con Cozte</Button></div> : null}
                 {profile.catalog?.issues.length ? <ul className="list-inside list-disc text-xs text-muted-foreground">{profile.catalog.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}
-                <div className="flex flex-col gap-2">{profile.catalog?.actions.map((item) => <div key={item.key} className="flex flex-col gap-2 rounded-lg border p-3 text-xs"><div><strong>{item.label}</strong><p className="mt-1 text-muted-foreground">{item.details}</p></div><Button size="sm" variant="outline" className="self-start" disabled={demo} onClick={() => void proposeCatalogAction(item.action, item.label)}>Preparar propuesta</Button></div>)}</div>
+                <div className="flex flex-col gap-2">{profile.catalog?.actions.map((item) => <div key={item.key} className="flex flex-col gap-2 rounded-lg border p-3 text-xs"><div><strong>{item.label}</strong><p className="mt-1 text-muted-foreground">{item.details}</p></div><Button size="sm" variant="outline" className="self-start" disabled={demo} onClick={() => void proposeCatalogAction(item.action, item.label)}>Aplicar o revisar</Button></div>)}</div>
               </section> : null}
             </CardContent>
           </Card>
@@ -423,10 +446,10 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
               {selectedProposal.history.length ? <ol className="flex flex-col gap-2">{selectedProposal.history.map((event) => <li key={event.id} className="flex flex-col gap-1 border-t pt-2 text-sm"><div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1"><span className="font-medium">{proposalEventLabel(event.type, event)} <span className="font-normal text-muted-foreground">· {proposalEventActor(event)}</span></span><time className="text-xs text-muted-foreground" dateTime={event.createdAt}>{formatProposalDate(event.createdAt)}</time></div>{proposalEventReason(event) ? <p className="text-xs text-muted-foreground">{proposalEventReason(event)}</p> : null}</li>)}</ol> : <p className="text-xs text-muted-foreground">No hay otros eventos registrados.</p>}
             </section>
           </div>
-          {selectedProposal.status === "pending" ? <section className="flex flex-col gap-2 rounded-lg border p-3" aria-label="Solicitar cambios"><label htmlFor="cozte-adjustment-note" className="text-sm font-semibold">¿Qué habría que cambiar?</label><p className="text-xs text-muted-foreground">Cozte registrará tu decisión y dejará un mensaje listo para preparar una nueva propuesta.</p><Textarea id="cozte-adjustment-note" value={adjustmentNote} maxLength={500} onChange={(event) => setAdjustmentNote(event.target.value)} placeholder="Ej. Repartir electricidad por horas de uso, no por unidades…" /><Button type="button" size="sm" variant="outline" className="self-start" disabled={adjustmentNote.trim().length < 3 || busyProposalId !== null} onClick={() => void requestProposalChanges(selectedProposal)}>{busyProposalId === selectedProposal.id ? "Registrando…" : "Solicitar ajustes"}</Button></section> : null}
+          {selectedProposal.status === "pending" ? <section className="flex flex-col gap-2 rounded-lg border p-3" aria-label="Solicitar cambios"><label htmlFor="cozte-adjustment-note" className="text-sm font-semibold">¿Qué habría que cambiar?</label><p className="text-xs text-muted-foreground">Cozte recibirá la decisión y el detalle para preparar la versión ajustada.</p><Textarea id="cozte-adjustment-note" value={adjustmentNote} maxLength={500} onChange={(event) => setAdjustmentNote(event.target.value)} placeholder="Ej. Repartir electricidad por horas de uso, no por unidades…" /><Button type="button" size="sm" variant="outline" className="self-start" disabled={adjustmentNote.trim().length < 3 || busyProposalId !== null || status !== "ready"} onClick={() => void requestProposalChanges(selectedProposal)}>{busyProposalId === selectedProposal.id ? "Registrando…" : "Solicitar ajustes"}</Button></section> : null}
           {selectedProposal.status === "pending" ? <DialogFooter>
-            <Button variant="outline" disabled={busyProposalId !== null} onClick={() => void decideProposal(selectedProposal, "reject")}>{busyProposalId === selectedProposal.id ? "Guardando…" : "Descartar propuesta"}</Button>
-            <Button disabled={!canApprove(selectedProposal) || busyProposalId !== null} onClick={() => void decideProposal(selectedProposal, "approve")}><AnimatedIcon name="check" data-icon="inline-start" />{busyProposalId === selectedProposal.id ? "Guardando…" : selectedProposal.kind === "production-profile" ? "Aprobar mapa" : isProductCreation(selectedProposal.title) ? "Aprobar y crear" : "Aprobar y aplicar"}</Button>
+            <Button variant="outline" disabled={busyProposalId !== null || status !== "ready"} onClick={() => void decideProposal(selectedProposal, "reject")}>{busyProposalId === selectedProposal.id ? "Guardando…" : "Descartar propuesta"}</Button>
+            <Button disabled={!canApprove(selectedProposal) || busyProposalId !== null || status !== "ready"} onClick={() => void decideProposal(selectedProposal, "approve")}><AnimatedIcon name="check" data-icon="inline-start" />{busyProposalId === selectedProposal.id ? "Guardando…" : selectedProposal.kind === "production-profile" ? "Aprobar mapa" : isProductCreation(selectedProposal.title) ? "Aprobar y crear" : "Aprobar y aplicar"}</Button>
           </DialogFooter> : null}
         </> : null}
       </DialogContent>
@@ -492,7 +515,7 @@ function ProposalStatusBadge({ status, changeRequested = false }: { status: Assi
 function proposalEventLabel(type: string, event?: AssistantProposal["history"][number]) {
   const details = event?.details && typeof event.details === "object" ? event.details as Record<string, unknown> : {};
   if (type === "stale" && details.origin === "user-requested-changes") return "Ajustes solicitados";
-  const labels: Record<string, string> = { created: "Propuesta registrada", approved: "Aprobada y aplicada", rejected: "Descartada", superseded: "Reemplazada por otra propuesta", stale: "Requiere actualización", approval_failed: "Intento de aprobación fallido" };
+  const labels: Record<string, string> = { created: "Propuesta registrada", approved: "Aprobada y aplicada", rejected: "Descartada", superseded: "Reemplazada por otra propuesta", stale: "Requiere actualización", refreshed: "Propuesta actualizada", approval_failed: "Intento de aprobación fallido" };
   return labels[type] ?? "Evento registrado";
 }
 
@@ -500,7 +523,7 @@ function proposalEventActor(event: AssistantProposal["history"][number]) {
   if (event.type === "approved" || event.type === "rejected") return "decisión del usuario";
   const details = event.details && typeof event.details === "object" ? event.details as Record<string, unknown> : {};
   if (event.type === "stale" && details.origin === "user-requested-changes") return "decisión del usuario";
-  if (event.type === "stale" || event.type === "superseded" || event.type === "approval_failed") return "sistema";
+  if (event.type === "stale" || event.type === "superseded" || event.type === "refreshed" || event.type === "approval_failed") return "sistema";
   if (details.source === "cozte") return "Cozte";
   if (details.source === "migration") return "migración de datos";
   return "usuario";
@@ -516,4 +539,8 @@ function formatProposalDate(value: string) {
   const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? `${value.replace(" ", "T")}Z` : value;
   const date = new Date(normalized);
   return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat("es", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function formatProfileUnitCost(value: number, currency: Currency) {
+  return new Intl.NumberFormat("es", { style: "currency", currency, maximumFractionDigits: currency === "CLP" || currency === "ARS" ? 0 : 2 }).format(value);
 }
