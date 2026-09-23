@@ -64,6 +64,12 @@ export async function addAssistantEvent(runId: string, kind: string, payload: un
   await dbBatch([{ sql: "INSERT INTO assistant_run_events (id, run_id, kind, payload_json) VALUES (?, ?, ?, ?)", params: [crypto.randomUUID(), runId, kind, auditJson(payload)] }]);
 }
 
+export async function addAssistantWorkflowEvent(workflowRunId: string, kind: string, payload: unknown): Promise<void> {
+  const rows = await dbQuery<{ id: string }>("SELECT id FROM assistant_runs WHERE workflow_run_id=? LIMIT 1", [workflowRunId]);
+  if (!rows[0]) throw new Error("No se encontró la conversación de esta ejecución de Cozte");
+  await addAssistantEvent(rows[0].id, kind, payload);
+}
+
 function stableToolEventId(runId: string, toolCallId: string, kind: string): string {
   const bytes = createHash("sha256").update(`${runId}:${toolCallId}:${kind}`).digest().subarray(0, 16);
   bytes[6] = (bytes[6] & 0x0f) | 0x50;

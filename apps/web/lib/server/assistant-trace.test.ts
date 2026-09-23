@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 const { dbQueryMock, dbBatchMock } = vi.hoisted(() => ({ dbQueryMock: vi.fn(), dbBatchMock: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("./db", () => ({ dbBatch: dbBatchMock, dbQuery: dbQueryMock }));
-import { addAssistantToolEvent, auditJson, errorDetails, getAssistantToolExecution, getAssistantRun, isAssistantWorkflowLinked, linkAssistantWorkflowRun, listAssistantDataSources, listAssistantRuns, listAssistantToolExecutions } from "./assistant-trace";
+import { addAssistantToolEvent, addAssistantWorkflowEvent, auditJson, errorDetails, getAssistantToolExecution, getAssistantRun, isAssistantWorkflowLinked, linkAssistantWorkflowRun, listAssistantDataSources, listAssistantRuns, listAssistantToolExecutions } from "./assistant-trace";
 import type { Principal } from "./auth";
 
 describe("trazas de Cozte", () => {
@@ -52,6 +52,15 @@ describe("trazas de Cozte", () => {
     expect(linked).toBe(true);
     expect(dbBatchMock.mock.calls.at(-1)?.[0][0].sql).toContain("RETURNING id");
     expect(dbQueryMock.mock.calls.at(-1)?.[1]).toEqual(["run-1", "workflow-1", "org-1", "user-1"]);
+  });
+
+  it("asocia los eventos internos del workflow con su conversación", async () => {
+    dbQueryMock.mockResolvedValueOnce([{ id: "run-1" }]);
+    await addAssistantWorkflowEvent("workflow-1", "tool_input_repaired", { toolName: "proposeCostAction" });
+
+    expect(dbQueryMock.mock.calls.at(-1)?.[1]).toEqual(["workflow-1"]);
+    expect(dbBatchMock.mock.calls.at(-1)?.[0][0].params?.[1]).toBe("run-1");
+    expect(dbBatchMock.mock.calls.at(-1)?.[0][0].params?.[2]).toBe("tool_input_repaired");
   });
 
   it("no marca como interrumpidos los workflows durables que llevan más de 90 segundos", async () => {

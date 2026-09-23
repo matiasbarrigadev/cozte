@@ -5,7 +5,7 @@ import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
 import type { Principal } from "./auth";
 import { saveConversation } from "./production-profile";
-import { addAssistantEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked } from "./assistant-trace";
+import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked } from "./assistant-trace";
 import { createCozteTools } from "./cozte-agent-tools";
 
 export const COZTE_MAX_AGENT_STEPS = 48;
@@ -45,9 +45,17 @@ async function recordCozteWorkflowError(runId: string, error: unknown): Promise<
   await addAssistantEvent(runId, "stream_error", { error: errorDetails(error) });
 }
 
-async function recordCozteToolRepair(runId: string, payload: unknown): Promise<void> {
+const cozteToolNames = ["inspectCostBase", "calculateCostRule", "findMaterial", "proposeMaterialPrice", "proposeExpenseAmount", "proposeProductionProfile", "proposeCostAction"];
+
+async function repairCozteToolCall({ toolCall, error }: { toolCall: { type: "tool-call"; toolCallId: string; toolName: string; input: string }; error: { message: string } }): Promise<{ type: "tool-call"; toolCallId: string; toolName: string; input: string } | null> {
   "use step";
-  await addAssistantEvent(runId, "tool_input_repaired", payload);
+  if (!cozteToolNames.includes(toolCall.toolName)) return null;
+  const repaired = repairCozteToolInput(toolCall.toolName, toolCall.input);
+  if (!repaired) return null;
+  const { workflowRunId } = getWorkflowMetadata();
+  await addAssistantWorkflowEvent(workflowRunId, "tool_input_repaired", { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, reason: error.message })
+    .catch((traceError) => console.error("Cozte repair trace failed", errorDetails(traceError)));
+  return { ...toolCall, input: repaired };
 }
 
 async function checkCozteWorkflowLink(input: { principal: Principal; runId: string; workflowRunId: string }): Promise<boolean> {
@@ -79,13 +87,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     stopWhen: isStepCount(COZTE_MAX_AGENT_STEPS),
     maxOutputTokens: 2500,
     providerOptions: { gateway: { only: ["minimax"] } },
-    repairToolCall: async ({ toolCall, error }) => {
-      if (!Object.hasOwn(tools, toolCall.toolName)) return null;
-      const repaired = repairCozteToolInput(toolCall.toolName, toolCall.input);
-      if (!repaired) return null;
-      await recordCozteToolRepair(input.runId, { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, reason: error.message }).catch((traceError) => console.error("Cozte repair trace failed", errorDetails(traceError)));
-      return { ...toolCall, input: repaired };
-    },
+    repairToolCall: repairCozteToolCall,
   });
 
   try {
