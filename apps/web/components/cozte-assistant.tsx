@@ -4,7 +4,8 @@ import * as React from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, isToolUIPart, type UIMessage } from "ai";
+import { WorkflowChatTransport } from "@ai-sdk/workflow/client";
+import { isToolUIPart, type UIMessage } from "ai";
 import { toast } from "sonner";
 import type { ProductionProfile } from "@/lib/production-profile";
 import type { Currency } from "@/lib/currency";
@@ -30,6 +31,8 @@ import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZ
 import { cn } from "cn";
 
 type ProfileResponse = { confirmed: ProductionProfile | null; draft: ProductionProfile | null; revision: number; organizationRevision: number; currency: Currency; costs: { product: string; unitMinor: number | null; warnings: string[] }[]; gaps: string[]; evaluableProducts: string[]; catalog?: { actions: { key: string; label: string; details: string; action: Record<string, unknown> }[]; missingProducts: string[]; issues: string[] } };
+type PersistedToolExecution = { messageId: string; runId: string; toolCallId: string; toolName: string; status: "running" | "completed" | "failed" };
+const ACTIVE_WORKFLOW_STORAGE_KEY = "cozte-active-workflow-run";
 const suggestions = [
   "Mapear mi producción",
   "Repartir gastos compartidos",
@@ -46,6 +49,8 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
   const [profile, setProfile] = React.useState<ProfileResponse | null>(null);
   const [proposals, setProposals] = React.useState<AssistantProposal[]>([]);
   const [dataSources, setDataSources] = React.useState<AssistantDataSource[]>([]);
+  const [toolExecutions, setToolExecutions] = React.useState<PersistedToolExecution[]>([]);
+  const [resumeExistingWorkflow, setResumeExistingWorkflow] = React.useState(false);
   const [mobilePanel, setMobilePanel] = React.useState<"chat" | "activity">("chat");
   const [activityFilter, setActivityFilter] = React.useState<"all" | "pending" | "decisions" | "updates">("all");
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
@@ -54,8 +59,25 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
   const busyProposalIds = React.useRef(new Set<string>());
   const [loading, setLoading] = React.useState(!demo);
   const [proposalsLoading, setProposalsLoading] = React.useState(!demo);
-  const transport = React.useMemo(() => new DefaultChatTransport({ api: "/api/assistant", prepareSendMessagesRequest: ({ messages }) => ({ body: { message: messages.at(-1) } }) }), []);
-  const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport,
+  const transport = React.useMemo(() => new WorkflowChatTransport<UIMessage>({
+    api: "/api/assistant",
+    maxConsecutiveErrors: 5,
+    onChatSendMessage: (response) => {
+      const workflowRunId = response.headers.get("x-workflow-run-id");
+      if (workflowRunId) window.localStorage.setItem(ACTIVE_WORKFLOW_STORAGE_KEY, workflowRunId);
+    },
+    onChatEnd: () => {
+      window.localStorage.removeItem(ACTIVE_WORKFLOW_STORAGE_KEY);
+      setResumeExistingWorkflow(false);
+    },
+    prepareSendMessagesRequest: ({ messages }) => ({ body: { message: messages.at(-1) } }),
+    prepareReconnectToStreamRequest: (options) => {
+      const workflowRunId = window.localStorage.getItem(ACTIVE_WORKFLOW_STORAGE_KEY);
+      if (!workflowRunId) throw new Error("No hay una ejecución activa de Cozte para reanudar");
+      return { ...options, api: `/api/assistant/${encodeURIComponent(workflowRunId)}/stream` };
+    },
+  }), []);
+  const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport, resume: resumeExistingWorkflow,
     onFinish: ({ message, isError, isAbort }) => {
       void loadProfile();
       void loadProposals(true);
@@ -145,10 +167,22 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
     Promise.all([fetch("/api/assistant", { cache: "no-store" }), fetch("/api/production-profile", { cache: "no-store" }), fetch("/api/assistant/proposals", { cache: "no-store" })]).then(async ([chatResponse, profileResponse, proposalResponse]) => {
       if (!chatResponse.ok || !profileResponse.ok || !proposalResponse.ok) throw new Error("No se pudo cargar Cozte");
       const [chat, process, proposalData] = await Promise.all([chatResponse.json(), profileResponse.json(), proposalResponse.json()]);
-      if (active) { setMessages(chat.messages ?? []); setProfile(process); setProposals(Array.isArray(proposalData.proposals) ? proposalData.proposals : []); setDataSources(Array.isArray(proposalData.sources) ? proposalData.sources : []); }
+      if (active) {
+        setMessages(chat.messages ?? []);
+        setToolExecutions(Array.isArray(chat.toolExecutions) ? chat.toolExecutions : []);
+        setProfile(process);
+        setProposals(Array.isArray(proposalData.proposals) ? proposalData.proposals : []);
+        setDataSources(Array.isArray(proposalData.sources) ? proposalData.sources : []);
+        if (typeof chat.activeWorkflowRunId === "string" && chat.activeWorkflowRunId) {
+          window.localStorage.setItem(ACTIVE_WORKFLOW_STORAGE_KEY, chat.activeWorkflowRunId);
+          setResumeExistingWorkflow(true);
+        } else {
+          window.localStorage.removeItem(ACTIVE_WORKFLOW_STORAGE_KEY);
+        }
+      }
     }).catch(() => { if (active) toast.error("No se pudieron cargar el chat y las propuestas guardadas"); }).finally(() => { if (active) { setLoading(false); setProposalsLoading(false); } });
     return () => { active = false; };
-  }, [demo, setMessages]);
+  }, [demo, setMessages, setToolExecutions, setResumeExistingWorkflow]);
 
   async function send(text: string) {
     const value = text.trim();
@@ -290,6 +324,15 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
       }
     }
   }
+  const toolsByAssistantMessage = new Map<string, PersistedToolExecution[]>();
+  let toolTurnUserMessageId: string | null = null;
+  for (const message of messages) {
+    if (message.role === "user") toolTurnUserMessageId = message.id;
+    if (message.role === "assistant" && toolTurnUserMessageId) {
+      const executions = toolExecutions.filter((execution) => execution.messageId === toolTurnUserMessageId);
+      if (executions.length) toolsByAssistantMessage.set(message.id, executions);
+    }
+  }
   const catalogHasActions = Boolean(profile?.confirmed && ((profile.catalog?.actions.length ?? 0) > 0 || (profile.catalog?.missingProducts.length ?? 0) > 0 || (profile.catalog?.issues.length ?? 0) > 0));
 
   return <>
@@ -320,6 +363,10 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
                     if (isToolUIPart(part) && (part.state === "input-streaming" || part.state === "input-available")) return <TextShimmer key={index} className="text-xs">Consultando datos…</TextShimmer>;
                     return null;
                   })}
+                  {message.role === "assistant" ? (() => {
+                    const liveToolCallIds = new Set(message.parts.filter(isToolUIPart).map((part) => part.toolCallId));
+                    return (toolsByAssistantMessage.get(message.id) ?? []).filter((execution) => !liveToolCallIds.has(execution.toolCallId)).map((execution) => <AssistantMessageToolTag key={`${execution.runId}:${execution.toolCallId}`} toolName={execution.toolName} persisted={execution} />);
+                  })() : null}
                 </div>
                 {(proposalsAfterMessage.get(message.id) ?? []).map((proposal) => <ProposalTurnCard key={proposal.id} proposal={proposal} onOpen={() => setSelectedProposalId(proposal.id)} />)}
               </React.Fragment>)}
@@ -349,7 +396,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
                   {draggingFiles ? <div className="pointer-events-none absolute inset-x-3 top-2 z-10 rounded-lg border border-dashed border-primary bg-background/95 px-3 py-2 text-center text-sm font-medium text-primary">Suelta los archivos para adjuntarlos</div> : null}
                   <PromptInputTextarea id="cozte-message" aria-label="Mensaje a Cozte" maxLength={2000} placeholder="Cuéntame qué producen o qué cambió…" onPaste={handleAttachmentPaste} />
                   <PromptInputActions className="justify-between">
-                    <span className="px-2 text-xs text-muted-foreground">Pega o arrastra imágenes, PDF o Excel · hasta {COZTE_MAX_ATTACHMENT_COUNT} archivos</span>
+                    <span className="px-2 text-xs text-muted-foreground">Pega o arrastra imágenes, PDF o Excel · se conservan cifrados para reanudar · hasta {COZTE_MAX_ATTACHMENT_COUNT}</span>
                     <div className="flex items-center gap-2">
                       <Button type="button" size="icon-sm" variant="ghost" aria-label="Adjuntar imágenes, PDF o Excel" title="Adjuntar archivos" onClick={() => fileInput.current?.click()}><AnimatedIcon name="attach" /></Button>
                       {voiceState === "idle" ? <Button type="button" size="icon-sm" variant="ghost" aria-label="Dictar mensaje" title="Dictar mensaje" onClick={() => void startDictation()}><AnimatedIcon name="mic" /></Button> : <div className="flex items-center gap-2" role="status" aria-label={voiceState === "listening" ? "Escuchando el micrófono" : voiceState === "starting" ? "Activando micrófono" : "Pausando dictado"}>{voiceState === "listening" ? <AudioWaveform analyser={analyser} /> : null}<span className="hidden text-xs text-muted-foreground sm:inline">{voiceState === "starting" ? "Activando…" : voiceState === "pausing" ? "Pausando…" : "Escuchando"}</span><Button type="button" size="sm" variant="outline" disabled={voiceState === "pausing"} onClick={pauseDictation}><AnimatedIcon name="pause" data-icon="inline-start" />{voiceState === "starting" ? "Cancelar" : "Pausar"}</Button></div>}
@@ -395,7 +442,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
 
               <section aria-labelledby="cozte-sources-title" className="flex flex-col gap-3 border-t pt-4">
                 <div><h2 id="cozte-sources-title" className="text-sm font-semibold">Fuentes de datos</h2><p className="mt-1 text-xs text-muted-foreground">Archivos adjuntos y el turno donde se usaron.</p></div>
-                {!dataSources.length ? <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">Las imágenes, PDF y planillas que compartas aparecerán aquí como referencia. No se guarda el archivo original; el texto leído de Excel queda en la conversación.</p> : null}
+                {!dataSources.length ? <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">Los adjuntos se conservan cifrados en la ejecución para que Cozte pueda reanudarla; el historial guarda el texto y el nombre del archivo. El extracto leído de Excel sí queda en la conversación.</p> : null}
                 <ol className="flex flex-col gap-2">
                   {dataSources.map((source) => <li key={source.id} className="rounded-lg border p-3">
                     <div className="flex min-w-0 flex-col gap-1"><span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{dataSourceKindLabel(source.kind)}</span><strong className="break-all text-sm">{source.label}</strong><span className="text-xs text-muted-foreground"><time dateTime={source.createdAt}>{formatProposalDate(source.createdAt)}</time>{source.mediaType ? ` · ${source.mediaType}` : ""}</span></div>
@@ -458,19 +505,48 @@ function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; o
   </Card>;
 }
 
-function AssistantMessageToolTag({ toolName, input, output, errorText }: { toolName: string; input: unknown; output: unknown; errorText?: string }) {
-  const outcome = errorText ?? assistantToolOutcome(output);
-  const failed = !!errorText || outcome.startsWith("Error:") || outcome.startsWith("No se completó:");
-  return <details className="group w-fit max-w-full rounded-md border bg-background/70 text-foreground">
+function AssistantMessageToolTag({ toolName, input, output, errorText, persisted }: { toolName: string; input?: unknown; output?: unknown; errorText?: string; persisted?: PersistedToolExecution }) {
+  const [details, setDetails] = React.useState<{ input?: unknown; output?: unknown; durationMs?: number; error?: string } | null>(null);
+  const [loadingDetails, setLoadingDetails] = React.useState(false);
+  const [detailsError, setDetailsError] = React.useState<string | null>(null);
+  const detailsRequest = React.useRef<AbortController | null>(null);
+  React.useEffect(() => () => detailsRequest.current?.abort(), []);
+  function loadDetails() {
+    if (!persisted || details || loadingDetails || detailsRequest.current) return;
+    const controller = new AbortController();
+    detailsRequest.current = controller;
+    setLoadingDetails(true);
+    setDetailsError(null);
+    fetch(`/api/assistant/runs?id=${encodeURIComponent(persisted.runId)}&toolCallId=${encodeURIComponent(persisted.toolCallId)}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los detalles de esta herramienta");
+        setDetails(data);
+      })
+      .catch((cause) => { if (!controller.signal.aborted) setDetailsError(cause instanceof Error ? cause.message : "No se pudieron cargar los detalles"); })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadingDetails(false);
+        if (detailsRequest.current === controller) detailsRequest.current = null;
+      });
+  }
+  const resolvedInput = persisted ? details?.input : input;
+  const resolvedOutput = persisted ? details?.output : output;
+  const resolvedError = errorText ?? details?.error;
+  const outcome = persisted ? persisted.status === "failed" ? "No se completó" : persisted.status === "running" ? "En curso" : "Ejecución guardada" : errorText ?? assistantToolOutcome(output);
+  const failed = persisted?.status === "failed" || !!resolvedError || outcome.startsWith("Error:") || outcome.startsWith("No se completó:");
+  return <details className="group w-fit max-w-full rounded-md border bg-background/70 text-foreground" onToggle={(event) => { if (event.currentTarget.open) loadDetails(); }}>
     <summary className="flex max-w-full cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
       <span aria-hidden="true" className="shrink-0 text-muted-foreground transition-transform group-open:rotate-90">▸</span>
       <Badge variant={failed ? "destructive" : "outline"} className="shrink-0">{assistantToolLabel(toolName)}</Badge>
       <span className="min-w-0 truncate text-muted-foreground">{failed ? "Falló" : outcome}</span>
     </summary>
     <div className="flex max-h-[min(20rem,50vh)] max-w-[min(32rem,80vw)] flex-col gap-2 overflow-auto border-t p-2.5">
-      {errorText ? <AssistantToolPayload title="Qué pasó" value={errorText} /> : null}
-      {input !== undefined ? <AssistantToolPayload title="Datos que usó Cozte" value={input} /> : <p className="text-xs text-muted-foreground">No quedaron datos de entrada registrados.</p>}
-      {output !== undefined ? <AssistantToolPayload title="Resultado" value={output} /> : <p className="text-xs text-muted-foreground">No quedó un resultado para mostrar.</p>}
+      {loadingDetails ? <p className="text-xs text-muted-foreground">Cargando los datos de la ejecución…</p> : null}
+      {detailsError ? <p className="text-xs text-destructive">{detailsError}</p> : null}
+      {resolvedError ? <AssistantToolPayload title="Qué pasó" value={resolvedError} /> : null}
+      {resolvedInput !== undefined ? <AssistantToolPayload title="Datos que usó Cozte" value={resolvedInput} /> : !loadingDetails ? <p className="text-xs text-muted-foreground">No quedaron datos de entrada registrados.</p> : null}
+      {resolvedOutput !== undefined ? <AssistantToolPayload title="Resultado" value={resolvedOutput} /> : persisted?.status === "running" ? <p className="text-xs text-muted-foreground">Esta herramienta todavía está trabajando.</p> : !loadingDetails ? <p className="text-xs text-muted-foreground">No quedó un resultado para mostrar.</p> : null}
+      {details?.durationMs !== undefined ? <p className="text-[11px] text-muted-foreground">Duración: {(details.durationMs / 1000).toFixed(1)} s</p> : null}
     </div>
   </details>;
 }
