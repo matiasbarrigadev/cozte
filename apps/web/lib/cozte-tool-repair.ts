@@ -2,6 +2,7 @@ const numericKeys = new Set([
   "amount", "price", "lotUnits", "salePriceMinor", "salesVariableMinor", "laborLotMinor",
   "productionHoursMilli", "quantityMilli", "quantityPerBatch", "percent", "ratePpm", "unitsPerPurchase",
   "goodUnitsPerBatch", "startedUnitsPerBatch", "normalScrapUnitsPerBatch", "batchesPerMonth", "hoursPerBatch",
+  "salePrice", "salesVariablePerUnit", "laborCostPerLot", "productionHoursPerLot",
   "pricePerPurchaseMinor", "pricePerPurchase", "amountMinor",
 ]);
 

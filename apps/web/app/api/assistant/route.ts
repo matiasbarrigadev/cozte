@@ -5,6 +5,7 @@ import { supportedCurrencies } from "@/lib/currency";
 import { productionProfileSchema, monthlyEquivalent } from "@/lib/production-profile";
 import { mutationNeedsHumanReview } from "@/lib/cost-approval-policy";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
+import { normalizeCozteProductAction } from "@/lib/cozte-product-input";
 import { ApiError, apiFailure, requirePrincipal } from "@/lib/server/auth";
 import { loadProductionProfile, loadConversation, saveConversation } from "@/lib/server/production-profile";
 import { createMutationProposal, createProductionProfileProposal } from "@/lib/server/assistant-proposals";
@@ -59,6 +60,15 @@ const incomingSchema = z.object({
   }),
 });
 
+const cozteProductFields = {
+  name: z.string().trim().min(2).max(120).describe("Nombre claro del producto y su formato"),
+  lotUnits: z.number().int().min(1).max(1_000_000_000).describe("Unidades buenas y vendibles que salen de un lote"),
+  salePrice: z.number().int().min(0).max(1_000_000_000_000).describe("Precio de venta por unidad, en importes normales de la moneda de la empresa"),
+  salesVariablePerUnit: z.number().int().min(0).max(1_000_000_000_000).describe("Gasto variable de venta por unidad, en la moneda de la empresa; usa cero solo si está confirmado que no existe"),
+  laborCostPerLot: z.number().int().min(0).max(1_000_000_000_000).describe("Costo de trabajo directo para producir un lote completo, en la moneda de la empresa"),
+  productionHoursPerLot: z.number().min(0).max(1_000_000).refine((value) => Math.round(value * 1000) / 1000 === value, "Usa hasta tres decimales").describe("Horas normales de trabajo para producir un lote; por ejemplo, 1.5 significa una hora y media"),
+};
+
 const costActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("create-category"), name: z.string() }),
   z.object({ action: z.literal("rename-category"), id: z.string(), name: z.string() }),
@@ -68,9 +78,9 @@ const costActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("update-expense-meta"), id: z.string(), field: z.enum(["name", "category", "period", "allocationBasis"]), value: z.string() }),
   z.object({ action: z.literal("update-expense-allocation"), id: z.string(), basis: z.enum(["hours", "units", "manual"]), shares: z.record(z.string(), z.number()).default({}) }),
   z.object({ action: z.literal("set-component"), productId: z.string(), materialId: z.string(), quantityMilli: z.number() }),
-  z.object({ action: z.literal("create-product"), name: z.string(), lotUnits: z.number(), salePriceMinor: z.number(), salesVariableMinor: z.number(), laborLotMinor: z.number(), productionHoursMilli: z.number() }),
-  z.object({ action: z.literal("create-products"), products: z.array(z.object({ name: z.string(), lotUnits: z.number(), salePriceMinor: z.number(), salesVariableMinor: z.number(), laborLotMinor: z.number(), productionHoursMilli: z.number(), cloneProductId: z.string().optional() })).min(2).max(10) }),
-  z.object({ action: z.literal("update-product"), id: z.string(), name: z.string(), lotUnits: z.number(), salePriceMinor: z.number(), salesVariableMinor: z.number(), laborLotMinor: z.number(), productionHoursMilli: z.number() }),
+  z.object({ action: z.literal("create-product"), ...cozteProductFields, cloneProductId: z.string().optional() }),
+  z.object({ action: z.literal("create-products"), products: z.array(z.object({ ...cozteProductFields, cloneProductId: z.string().optional() })).min(2).max(10) }),
+  z.object({ action: z.literal("update-product"), id: z.string(), ...cozteProductFields }),
 ]);
 
 function toolIdempotencyKey(runId: string, toolCallId: string): string {
@@ -99,7 +109,8 @@ export async function POST(request: Request) {
     const [state, profileState, previous] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadConversation(principal)]);
     if (previous.at(-1)?.id === message.id) throw new ApiError(409, "Ese mensaje ya fue recibido");
     await reserveAssistantRequest(principal);
-    const products = state.products.map((item) => ({ id: item.id, name: item.name, lotUnits: item.lotUnits, salePriceMinor: item.salePriceMinor, salesVariableMinor: item.salesVariableMinor, laborLotMinor: item.laborLotMinor, productionHoursMilli: item.productionHoursMilli }));
+    const cozteProduct = (item: typeof state.products[number]) => ({ id: item.id, name: item.name, lotUnits: item.lotUnits, salePrice: item.salePriceMinor, salesVariablePerUnit: item.salesVariableMinor, laborCostPerLot: item.laborLotMinor, productionHoursPerLot: item.productionHoursMilli / 1000 });
+    const products = state.products.map(cozteProduct);
     let proposalProfileRevision = profileState.revision;
     const tools = {
       inspectCostBase: tool({
@@ -109,7 +120,7 @@ export async function POST(request: Request) {
           const [latest, latestProfile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
           const latestProductNames = new Map(latest.products.map((item) => [item.id, item.name]));
           const latestMaterialNames = new Map(latest.materials.map((item) => [item.id, item.name]));
-          return { organization: latest.organization, categories: latest.categories, products: latest.products, materials: latest.materials, components: latest.components.map((item) => ({ productId: item.productId, productName: latestProductNames.get(item.productId), materialId: item.materialId, materialName: latestMaterialNames.get(item.materialId), quantityMilli: item.quantityMilli, quantityInPurchaseUnits: item.quantityMilli / 1000 })), expenses: latest.expenses.map((item) => ({ id: item.id, name: item.name, category: item.category, amountMinor: item.amountMinor, currency: item.currency ?? latest.organization.currency, nativeAmountMilli: item.nativeAmountMilli, period: item.period, allocationBasis: item.allocationBasis, allocationShares: item.allocationShares })), fxQuotes: latest.fxQuotes, profile: latestProfile.draft ?? latestProfile.confirmed, gaps: latestProfile.gaps, evaluableProducts: latestProfile.evaluableProducts };
+          return { organization: latest.organization, categories: latest.categories, products: latest.products.map(cozteProduct), materials: latest.materials, components: latest.components.map((item) => ({ productId: item.productId, productName: latestProductNames.get(item.productId), materialId: item.materialId, materialName: latestMaterialNames.get(item.materialId), quantityMilli: item.quantityMilli, quantityInPurchaseUnits: item.quantityMilli / 1000 })), expenses: latest.expenses.map((item) => ({ id: item.id, name: item.name, category: item.category, amountMinor: item.amountMinor, currency: item.currency ?? latest.organization.currency, nativeAmountMilli: item.nativeAmountMilli, period: item.period, allocationBasis: item.allocationBasis, allocationShares: item.allocationShares })), fxQuotes: latest.fxQuotes, profile: latestProfile.draft ?? latestProfile.confirmed, gaps: latestProfile.gaps, evaluableProducts: latestProfile.evaluableProducts };
         },
       }),
       calculateCostRule: tool({
@@ -189,7 +200,7 @@ export async function POST(request: Request) {
         inputSchema: z.object({ label: z.string().trim().min(3).max(140), brief: z.string().trim().min(8).max(400).optional(), change: costActionSchema }),
         execute: async ({ label, brief, change }, { toolCallId }) => {
           const [latest, latestProfile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
-          const parsed = mutationSchema.safeParse({ ...change, expectedRevision: latest.revision, idempotencyKey: toolIdempotencyKey(runId!, toolCallId), acknowledgeImpact: true });
+          const parsed = mutationSchema.safeParse({ ...normalizeCozteProductAction(change), expectedRevision: latest.revision, idempotencyKey: toolIdempotencyKey(runId!, toolCallId), acknowledgeImpact: true });
           if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Propuesta inválida" };
           try {
             if (!mutationNeedsHumanReview(latest, parsed.data, [latestProfile.confirmed])) return { kind: "cost-action" as const, applied: true, label, result: await commitMutation(principal, parsed.data, { source: "cozte" }) };
@@ -202,12 +213,13 @@ export async function POST(request: Request) {
     const validated = await validateUIMessages({ messages: [...previous.slice(-22), incoming], tools });
     const instructions = [
       "Eres Cozte, copiloto de costos de producción para PyMEs manufactureras. Habla español claro, breve y práctico.",
+      "Comunícate como una persona experta que enseña con sencillez: usa palabras cotidianas, frases cortas y ve al punto. No nombres herramientas, funciones, campos internos, código, bases de datos ni pasos técnicos; cuenta solo qué entendiste, qué cambió y qué falta. Normalmente responde en 1–3 frases. Si ayuda a entender un concepto financiero, explícalo en una frase y da un ejemplo sencillo; no des una clase larga. Si algo falla, dilo sin tecnicismos y ofrece el siguiente paso concreto.",
       "Tu trabajo es ENTENDER el proceso, CONFIGURAR reglas tipadas y usar el motor determinístico. Durante el armado, registra sin pedir aprobación los datos que todavía no cambian productos evaluados. La persona aprueba al iniciar la evaluación de un producto completo y cualquier cambio posterior que afecte su costo.",
       "Alcance: producto terminado, empacado y listo para despacho. Excluye envío, ventas y administración ajena a producción.",
       "Modela tres niveles: ubicación/planta, producto con proceso e insumos, y lote con consumo real y unidades aptas.",
       "Comprar no equivale a consumir. Cada insumo lleva unidad comprada, unidad usada, conversión y cantidad por lote y producto; un mismo insumo puede tener consumos distintos.",
       "Al proponer set-component para la planilla, convierte cantidad consumida por lote a unidades de compra usando unitsPerPurchase confirmado, y multiplica por 1000 para quantityMilli. Si falta conversión, pregunta antes de proponer. Al proponer create-expense desde un importe trimestral o anual, normalízalo a un importe del período mensual y explica el cálculo; no inventes la periodicidad.",
-      "Para create-product o create-products, pide precio de venta, costos de venta, trabajo directo, horas y unidades por lote; el esquema operacional exige esos números. No uses cero para representar un dato desconocido. Si faltan, consérvalo en el mapa de trabajo, sin pedir aprobación. Si hay varios productos completos, usa una única propuesta create-products para evaluarlos juntos.",
+      "Para crear o actualizar productos, usa los datos expresados en forma normal: precio por unidad, gasto variable de venta por unidad, trabajo directo por lote y horas habituales por lote (no milésimas). La moneda es la de la empresa. Pide unidades buenas por lote y esos importes/tiempos; no uses cero para representar algo desconocido. Si falta un dato, consérvalo como pendiente en el mapa de trabajo, sin pedir aprobación. Si hay varios productos completos, envíalos juntos para una sola revisión.",
       "Gastos compartidos como electricidad, gas, alquiler y trabajo se asignan una sola vez por horas, unidades aptas o porcentajes explícitos. Normaliza pagos mensuales, trimestrales y anuales a una base mensual. Para horas/unidades solicita lotes mensuales y horas por lote. No repartas por igual sin evidencia.",
       "El denominador son unidades aptas terminadas y empacadas; pregunta unidades iniciadas, merma normal, pérdidas extraordinarias y capacidad ociosa. No mezcles pérdidas extraordinarias en el costo normal.",
       "Distingue costo objetivo, costo real y escenario de cambio. Explica variaciones por precio, consumo, tiempo, rendimiento o reparto usando snapshots históricos; no recalcules el pasado con reglas actuales.",
@@ -235,7 +247,7 @@ export async function POST(request: Request) {
       if (!Object.hasOwn(tools, toolCall.toolName)) return null;
       const repaired = repairCozteToolInput(toolCall.toolName, toolCall.input);
       if (!repaired) return null;
-      await record("tool_input_repaired", { toolName: toolCall.toolName, reason: error.message });
+      await record("tool_input_repaired", { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, reason: error.message });
       return { ...toolCall, input: repaired };
     } });
     const convertedMessages = await convertToModelMessages(validated);

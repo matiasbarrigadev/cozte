@@ -11,6 +11,7 @@ import type { Currency } from "@/lib/currency";
 import type { AssistantProposal } from "@/lib/server/assistant-proposals";
 import type { AssistantDataSource } from "@/lib/server/assistant-trace";
 import type { ProposalSection } from "@/lib/proposal-presentation";
+import { assistantToolExecutions, assistantToolOutcome, type AssistantTraceEvent } from "@/lib/assistant-run-activity";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,8 @@ import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZ
 import { cn } from "cn";
 
 type ProfileResponse = { confirmed: ProductionProfile | null; draft: ProductionProfile | null; revision: number; organizationRevision: number; currency: Currency; costs: { product: string; unitMinor: number | null; warnings: string[] }[]; gaps: string[]; evaluableProducts: string[]; catalog?: { actions: { key: string; label: string; details: string; action: Record<string, unknown> }[]; missingProducts: string[]; issues: string[] } };
+type AssistantRunSummary = { id: string; message_id: string; model_id: string; status: string; started_at: string; finished_at: string | null; error_text: string | null };
+type AssistantRunDetails = AssistantRunSummary & { events: AssistantTraceEvent[] };
 
 const suggestions = [
   "Mapear mi producción",
@@ -46,6 +49,13 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
   const [profile, setProfile] = React.useState<ProfileResponse | null>(null);
   const [proposals, setProposals] = React.useState<AssistantProposal[]>([]);
   const [dataSources, setDataSources] = React.useState<AssistantDataSource[]>([]);
+  const [assistantRuns, setAssistantRuns] = React.useState<AssistantRunSummary[]>([]);
+  const [assistantRunsLoading, setAssistantRunsLoading] = React.useState(!demo);
+  const [assistantRunsError, setAssistantRunsError] = React.useState<string | null>(null);
+  const [assistantRunDetails, setAssistantRunDetails] = React.useState<Record<string, AssistantRunDetails>>({});
+  const [assistantRunLoading, setAssistantRunLoading] = React.useState<Set<string>>(() => new Set());
+  const [assistantRunErrors, setAssistantRunErrors] = React.useState<Record<string, string>>({});
+  const loadingAssistantRunIds = React.useRef(new Set<string>());
   const [mobilePanel, setMobilePanel] = React.useState<"chat" | "activity">("chat");
   const [activityFilter, setActivityFilter] = React.useState<"all" | "pending" | "decisions" | "updates">("all");
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
@@ -55,10 +65,25 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
   const [loading, setLoading] = React.useState(!demo);
   const [proposalsLoading, setProposalsLoading] = React.useState(!demo);
   const transport = React.useMemo(() => new DefaultChatTransport({ api: "/api/assistant", prepareSendMessagesRequest: ({ messages }) => ({ body: { message: messages.at(-1) } }) }), []);
+  const loadAssistantRuns = React.useCallback(async (silent = false) => {
+    if (demo) return;
+    setAssistantRunsLoading(true);
+    try {
+      const response = await fetch("/api/assistant/runs", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "No se pudo cargar la actividad de Cozte");
+      setAssistantRuns(Array.isArray(data.runs) ? data.runs as AssistantRunSummary[] : []);
+      setAssistantRunsError(null);
+    } catch (cause) {
+      setAssistantRunsError(cause instanceof Error ? cause.message : "No se pudo cargar la actividad de Cozte");
+      if (!silent) toast.error(cause instanceof Error ? cause.message : "No se pudo cargar la actividad de Cozte");
+    } finally { setAssistantRunsLoading(false); }
+  }, [demo]);
   const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport,
     onFinish: ({ message, isError, isAbort }) => {
       void loadProfile();
       void loadProposals(true);
+      void loadAssistantRuns(true);
       if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && ["tool-proposeCostAction", "tool-proposeMaterialPrice", "tool-proposeExpenseAmount", "tool-proposeProductionProfile"].includes(part.type) && !!part.output && typeof part.output === "object" && (part.output as { applied?: boolean }).applied)) void onDataChanged();
       if (!isAbort && (isError || !message.parts.some((part) => part.type === "text" && part.text.trim()))) toast.error("Cozte no pudo completar esta respuesta. Tu mensaje quedó guardado; puedes reintentarlo.");
     },
@@ -139,16 +164,36 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
     } finally { setProposalsLoading(false); }
   }
 
+  async function loadAssistantRun(runId: string) {
+    if (demo || assistantRunDetails[runId] || loadingAssistantRunIds.current.has(runId)) return;
+    loadingAssistantRunIds.current.add(runId);
+    setAssistantRunLoading((current) => new Set(current).add(runId));
+    setAssistantRunErrors((current) => { const next = { ...current }; delete next[runId]; return next; });
+    try {
+      const response = await fetch(`/api/assistant/runs?id=${encodeURIComponent(runId)}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "No se pudo cargar el detalle de este turno");
+      if (!Array.isArray(data.events)) throw new Error("El detalle del turno llegó incompleto");
+      setAssistantRunDetails((current) => ({ ...current, [runId]: data as AssistantRunDetails }));
+    } catch (cause) {
+      setAssistantRunErrors((current) => ({ ...current, [runId]: cause instanceof Error ? cause.message : "No se pudo cargar el detalle" }));
+    } finally {
+      loadingAssistantRunIds.current.delete(runId);
+      setAssistantRunLoading((current) => { const next = new Set(current); next.delete(runId); return next; });
+    }
+  }
+
   React.useEffect(() => {
     if (demo) return;
     let active = true;
+    void loadAssistantRuns(true);
     Promise.all([fetch("/api/assistant", { cache: "no-store" }), fetch("/api/production-profile", { cache: "no-store" }), fetch("/api/assistant/proposals", { cache: "no-store" })]).then(async ([chatResponse, profileResponse, proposalResponse]) => {
       if (!chatResponse.ok || !profileResponse.ok || !proposalResponse.ok) throw new Error("No se pudo cargar Cozte");
       const [chat, process, proposalData] = await Promise.all([chatResponse.json(), profileResponse.json(), proposalResponse.json()]);
       if (active) { setMessages(chat.messages ?? []); setProfile(process); setProposals(Array.isArray(proposalData.proposals) ? proposalData.proposals : []); setDataSources(Array.isArray(proposalData.sources) ? proposalData.sources : []); }
     }).catch(() => { if (active) toast.error("No se pudieron cargar el chat y las propuestas guardadas"); }).finally(() => { if (active) { setLoading(false); setProposalsLoading(false); } });
     return () => { active = false; };
-  }, [demo, setMessages]);
+  }, [demo, loadAssistantRuns, setMessages]);
 
   async function send(text: string) {
     const value = text.trim();
@@ -387,6 +432,37 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
                 {profile.evaluableProducts.length ? <ul className="flex flex-col gap-1 text-xs">{profile.evaluableProducts.map((name) => { const cost = profile.costs.find((item) => item.product.toLocaleLowerCase() === name.toLocaleLowerCase())?.unitMinor; return <li key={name} className="flex items-center justify-between gap-2"><span>{name}</span><strong>{cost === null || cost === undefined ? "Costo pendiente" : `${formatProfileUnitCost(cost, profile.currency)} / unidad`}</strong></li>; })}</ul> : null}
                 {!profile.evaluableProducts.length && profile.gaps.length ? <p className="text-xs text-muted-foreground">Pendiente: {profile.gaps.slice(0, 3).join(" · ")}{profile.gaps.length > 3 ? "…" : ""}</p> : null}
               </section> : null}
+              <section aria-labelledby="cozte-tools-title" className="flex flex-col gap-3">
+                <div><div className="flex items-center justify-between gap-2"><h2 id="cozte-tools-title" className="text-sm font-semibold">Herramientas ejecutadas</h2><Badge variant="outline">{assistantRuns.length} turnos</Badge></div><p className="mt-1 text-xs text-muted-foreground">Abre un turno y luego una herramienta para revisar qué recibió y qué resultado devolvió.</p></div>
+                {assistantRunsLoading && !assistantRuns.length ? <p className="text-xs text-muted-foreground">Cargando ejecuciones…</p> : null}
+                {!assistantRunsLoading && assistantRunsError ? <p className="rounded-lg border border-destructive/30 px-3 py-3 text-xs text-destructive" role="alert">{assistantRunsError} <button type="button" className="underline underline-offset-2" onClick={() => void loadAssistantRuns()}>Reintentar</button></p> : null}
+                {!assistantRunsLoading && !assistantRunsError && !assistantRuns.length ? <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">Las herramientas que Cozte ejecute aparecerán aquí con su entrada y resultado.</p> : null}
+                <ol className="flex flex-col gap-2">
+                  {assistantRuns.map((run) => {
+                    const detail = assistantRunDetails[run.id];
+                    const executions = detail ? assistantToolExecutions(detail.events) : [];
+                    const userMessage = messages.find((message) => message.id === run.message_id && message.role === "user");
+                    return <li key={run.id}>
+                      <details className="rounded-lg border bg-card" onToggle={(event) => { if (event.currentTarget.open) void loadAssistantRun(run.id); }}>
+                        <summary className="cursor-pointer px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                          <span className="flex flex-col gap-1.5">
+                            <span className="flex items-center justify-between gap-2"><span className="text-xs font-medium">Turno · {formatProposalDate(run.started_at)}</span><Badge variant={assistantRunStatusVariant(run.status)}>{assistantRunStatusLabel(run.status)}</Badge></span>
+                            <span className="line-clamp-2 break-words text-xs text-muted-foreground">{chatTurnPreview(userMessage) ?? (detail ? executions.length ? `${executions.length} herramientas ejecutadas` : "Sin herramientas ejecutadas" : "Abrir para ver las herramientas de este turno")}</span>
+                          </span>
+                        </summary>
+                        <div className="flex flex-col gap-2 border-t px-3 py-3">
+                          {userMessage ? <Button type="button" size="xs" variant="ghost" className="self-start" onClick={() => openChatTurn(run.message_id)}>Ver turno en el chat</Button> : null}
+                          {assistantRunLoading.has(run.id) ? <p className="text-xs text-muted-foreground" role="status">Cargando detalles…</p> : null}
+                          {assistantRunErrors[run.id] ? <p className="text-xs text-destructive" role="alert">{assistantRunErrors[run.id]} <button type="button" className="underline underline-offset-2" onClick={() => void loadAssistantRun(run.id)}>Reintentar</button></p> : null}
+                          {detail && !executions.length ? <p className="text-xs text-muted-foreground">En este turno no se registraron ejecuciones de herramientas.</p> : null}
+                          {executions.map((execution) => <AssistantToolExecutionDetails key={execution.toolCallId} execution={execution} />)}
+                          {run.status === "failed" || run.status === "interrupted" ? <div className="flex flex-col gap-2"><p className="text-xs text-destructive">Este turno no terminó correctamente. Revisa el detalle para conocer el motivo.</p>{run.error_text ? <details className="rounded-md border border-destructive/30 px-2.5 py-2"><summary className="cursor-pointer text-xs font-medium">Detalle del fallo</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-[11px] text-muted-foreground">{run.error_text}</pre></details> : null}{detail?.events.filter((event) => event.kind === "request_error" || event.kind === "stream_error").map((event) => <AssistantToolPayload key={event.id} title={event.kind === "request_error" ? "Error al preparar la solicitud" : "Error de respuesta"} value={event.payload} />)}</div> : null}
+                        </div>
+                      </details>
+                    </li>;
+                  })}
+                </ol>
+              </section>
               <section aria-labelledby="cozte-activity-title" className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-2"><h2 id="cozte-activity-title" className="text-sm font-semibold">Propuestas y decisiones</h2>{proposalsLoading ? <span className="text-xs text-muted-foreground">Cargando…</span> : null}</div>
                 <div className="flex flex-wrap gap-1" aria-label="Filtrar actividad">
@@ -467,6 +543,67 @@ function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; o
       <Button type="button" size="sm" variant="outline" className="self-start" onClick={onOpen}>Ver propuesta y decisión</Button>
     </CardContent>
   </Card>;
+}
+
+function AssistantToolExecutionDetails({ execution }: { execution: ReturnType<typeof assistantToolExecutions>[number] }) {
+  const outcome = assistantToolOutcome(execution.output);
+  const failed = outcome.startsWith("Error:");
+  return <details className="rounded-md border bg-background">
+    <summary className="flex cursor-pointer items-start justify-between gap-2 px-2.5 py-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <span className="min-w-0"><strong className="block break-words">{assistantToolLabel(execution.toolName)}</strong><span className="mt-0.5 block break-words text-muted-foreground">{outcome}{execution.durationMs !== undefined ? ` · ${formatToolDuration(execution.durationMs)}` : ""}</span></span>
+      <Badge variant={failed ? "destructive" : execution.finishedAt ? "secondary" : "outline"}>{failed ? "Error" : execution.finishedAt ? "Lista" : "Sin respuesta"}</Badge>
+    </summary>
+    <div className="flex max-h-[min(24rem,55vh)] flex-col gap-2 overflow-auto border-t p-2.5">
+      {execution.repairReason ? <p className="rounded-md bg-muted/50 px-2.5 py-2 text-xs text-muted-foreground">Cozte tuvo que corregir el formato antes de continuar. Detalle: {execution.repairReason}</p> : null}
+      {execution.input !== undefined ? <AssistantToolPayload title="Datos enviados a la herramienta" value={execution.input} /> : <p className="text-xs text-muted-foreground">No se registraron datos de entrada.</p>}
+      {execution.output !== undefined ? <AssistantToolPayload title="Resultado" value={execution.output} /> : <p className="text-xs text-muted-foreground">No quedó un resultado registrado para esta ejecución.</p>}
+    </div>
+  </details>;
+}
+
+function AssistantToolPayload({ title, value }: { title: string; value: unknown }) {
+  let formatted: string;
+  try { formatted = JSON.stringify(value, null, 2) ?? String(value); }
+  catch { formatted = String(value); }
+  return <section className="flex flex-col gap-1">
+    <h4 className="text-[11px] font-semibold text-muted-foreground">{title}</h4>
+    <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 text-[11px] leading-relaxed">{formatted}</pre>
+  </section>;
+}
+
+function assistantToolLabel(name: string) {
+  const labels: Record<string, string> = {
+    inspectCostBase: "Revisar costos y producción",
+    calculateCostRule: "Calcular una regla de costo",
+    findMaterial: "Identificar un insumo",
+    proposeMaterialPrice: "Actualizar precio de insumo",
+    proposeExpenseAmount: "Actualizar gasto",
+    proposeProductionProfile: "Guardar avance de producción",
+    proposeCostAction: "Gestionar cambio de costos",
+  };
+  return labels[name] ?? "Otra herramienta";
+}
+
+function assistantRunStatusLabel(status: string) {
+  const labels: Record<string, string> = { completed: "Completado", failed: "Fallido", aborted: "Detenido", running: "En curso", interrupted: "Interrumpido" };
+  return labels[status] ?? "Registrado";
+}
+
+function assistantRunStatusVariant(status: string): "secondary" | "destructive" | "outline" {
+  if (status === "completed") return "secondary";
+  if (status === "failed" || status === "interrupted") return "destructive";
+  return "outline";
+}
+
+function chatTurnPreview(message: UIMessage | undefined) {
+  if (!message) return null;
+  const text = message.parts.filter((part) => part.type === "text").map((part) => part.text).join(" ").replace(/\s+/g, " ").trim();
+  if (text) return text.length > 110 ? `${text.slice(0, 107)}…` : text;
+  return message.parts.some((part) => part.type === "file") ? "Turno con archivos adjuntos" : "Turno sin texto";
+}
+
+function formatToolDuration(durationMs: number) {
+  return durationMs < 1000 ? `${Math.round(durationMs)} ms` : `${(durationMs / 1000).toFixed(1)} s`;
 }
 
 function dataSourceKindLabel(kind: AssistantDataSource["kind"]) {
