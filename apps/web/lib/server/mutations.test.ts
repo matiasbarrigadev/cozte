@@ -100,6 +100,29 @@ describe("planilla editable", () => {
     expect(presentation.details.sections.find((section) => section.title === "Cambio propuesto")?.lines).toContain("Composición inicial vacía: los insumos y consumos se cargarán por separado.");
   });
 
+  it("archiva un insumo y lo quita de los cálculos vigentes sin borrar el historial", () => {
+    const input = mutationSchema.parse({ ...common, action: "delete-material", id: "papel" });
+    const preview = previewMutation(demoState, input);
+    const presentation = mutationProposalPresentation(demoState, JSON.parse(JSON.stringify(input)) as Record<string, unknown>, preview.before, preview.after);
+
+    expect(preview.next.materials.some((item) => item.id === "papel")).toBe(false);
+    expect(preview.next.components.some((item) => item.materialId === "papel")).toBe(false);
+    expect(presentation.details.sections.find((section) => section.title === "Cambio propuesto")?.lines).toContain("Se quitará del catálogo, de las composiciones y de los costos vigentes; el historial se conserva.");
+  });
+
+  it("redistribuye los gastos manuales restantes al archivar un producto", () => {
+    const state = {
+      ...demoState,
+      expenses: [{ id: "manual", name: "Seguro", period: "2026-09", amountMinor: 10_000, allocationBasis: "manual" as const, allocationShares: { dura: 6000, blanda: 3000, bolsillo: 1000 }, category: "Servicios", version: 1 }],
+    };
+    const input = mutationSchema.parse({ ...common, action: "delete-product", id: "dura" });
+    const preview = previewMutation(state, input);
+
+    expect(preview.next.products.some((item) => item.id === "dura")).toBe(false);
+    expect(preview.next.expenses[0].allocationShares).toEqual({ blanda: 7500, bolsillo: 2500 });
+    expect(preview.after.every((item) => !item.warnings.includes("Falta actividad para repartir gastos por manual"))).toBe(true);
+  });
+
   it("convierte un insumo USD a la moneda base sin perder su importe original", () => {
     const quote = makeQuote("USD", "CLP", { CLP: 950 }, "2026-09-22T03:59:00.000Z", "FXRatesAPI")!;
     const state = { ...demoState, fxQuotes: { USD: quote } };

@@ -60,6 +60,10 @@ export function productionProfilePresentation(profile: ProductionProfile, gaps: 
 function mutationTitle(input: Record<string, unknown>, supplied?: string): string {
   if (input.action === "create-products" && Array.isArray(input.products)) return `Propuesta: Crear estos ${input.products.length} productos`;
   if (input.action === "create-product" && typeof input.name === "string") return `Propuesta: Crear producto ${input.name}`;
+  if (input.action === "delete-product" || input.action === "delete-material") {
+    const label = supplied?.trim().replace(/^propuesta:\s*/i, "");
+    return `Propuesta: ${label || `${input.action === "delete-product" ? "Eliminar producto" : "Eliminar insumo"} ${String(input.id)}`}`;
+  }
   if (input.action === "create-material" && typeof input.name === "string") return `Propuesta: Agregar insumo ${input.name}`;
   if (input.action === "create-expense" && typeof input.name === "string") return `Propuesta: Agregar gasto ${input.name}`;
   const label = supplied?.trim();
@@ -113,6 +117,15 @@ function mutationLines(state: DomainState, input: Record<string, unknown>): stri
       `Importe: ${shown(Number(input.amount))} ${String(input.currency)} · período ${String(input.period)}`,
       `Criterio de reparto: ${input.allocationBasis === "hours" ? "horas de producción" : input.allocationBasis === "units" ? "unidades aptas" : "porcentajes manuales"}`,
     ];
+    case "delete-product": return [
+      `Producto: ${product?.name ?? String(input.id)}`,
+      "Se quitará de los costos y cálculos vigentes; el historial se conserva.",
+      "Los gastos con reparto manual se normalizan según los porcentajes que tenían los productos restantes; si no queda una base válida, el costo se marca como pendiente de reparto.",
+    ];
+    case "delete-material": return [
+      `Insumo: ${material?.name ?? String(input.id)}`,
+      "Se quitará del catálogo, de las composiciones y de los costos vigentes; el historial se conserva.",
+    ];
     case "set-component": return [
       `Producto: ${product?.name ?? String(input.productId)}`,
       `Insumo: ${material?.name ?? String(input.materialId)}`,
@@ -160,7 +173,7 @@ export function mutationProposalPresentation(
     { title: "Resumen", lines: [brief] },
     { title: "Cambio propuesto", lines: changes },
     { title: "Impacto calculado", lines: impact.length ? impact : ["No cambia todavía un costo unitario calculable con los datos disponibles."] },
-    { title: "Control", lines: ["Nada se aplica hasta que apruebes esta propuesta.", ...(names.length ? ["Crear la ficha no inventa insumos ni consumos: esos se agregan y revisan aparte."] : [])] },
+    { title: "Control", lines: ["Nada se aplica hasta que apruebes esta propuesta.", ...(names.length ? ["Crear la ficha no inventa insumos ni consumos: esos se agregan y revisan aparte."] : []), ...(input.action === "delete-product" || input.action === "delete-material" ? ["No se borra el historial contable: solo se archiva este elemento para los costos futuros."] : [])] },
   ];
   return { title: mutationTitle(input, suppliedTitle), summary: brief, details: { sections } };
 }

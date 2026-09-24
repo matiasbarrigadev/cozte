@@ -20,7 +20,7 @@ export async function GET(request: Request) {
                  'Verificar precio de ' || m.name
           FROM materials m
           LEFT JOIN material_prices p ON p.material_id=m.id AND p.version=m.version
-          WHERE p.id IS NULL OR p.effective_date < date('now', '-30 days')
+          WHERE m.archived_at IS NULL AND (p.id IS NULL OR p.effective_date < date('now', '-30 days'))
           ON CONFLICT (organization_id, material_id, kind) DO UPDATE SET
             status='open', message=excluded.message, last_checked_at=CURRENT_TIMESTAMP, resolved_at=NULL`,
       },
@@ -30,7 +30,7 @@ export async function GET(request: Request) {
           WHERE kind='stale_price' AND status='open' AND material_id IN (
             SELECT m.id FROM materials m
             JOIN material_prices p ON p.material_id=m.id AND p.version=m.version
-            WHERE p.effective_date >= date('now', '-30 days')
+            WHERE m.archived_at IS NULL AND p.effective_date >= date('now', '-30 days')
           )`,
       },
     ]);

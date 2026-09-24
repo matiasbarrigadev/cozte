@@ -1,6 +1,6 @@
 import "server-only";
 import type { UIMessage } from "ai";
-import { calculateProductionCosts, changesEvaluatedProductCosts, emptyProductionProfile, evaluableProfileProducts, productionProfileSchema, profileGaps, validateProfileReferences, type ProductionProfile } from "@/lib/production-profile";
+import { calculateProductionCosts, changesEvaluatedProductCosts, emptyProductionProfile, evaluableProfileProducts, productionProfileReviewReason, productionProfileSchema, profileGaps, validateProfileReferences, type ProductionProfile } from "@/lib/production-profile";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery } from "./db";
 import { loadState } from "./state";
@@ -39,20 +39,17 @@ export async function saveProductionProfileDraft(principal: Principal, profile: 
   return loadProductionProfile(principal);
 }
 
-export async function saveEvaluatedProfileMetadata(principal: Principal, profile: ProductionProfile, expectedProfileRevision: number, expectedOrganizationRevision: number) {
+export async function saveProductionProfileDirectly(principal: Principal, profile: ProductionProfile, expectedProfileRevision: number, expectedOrganizationRevision: number) {
   if (principal.role === "viewer") throw new ApiError(403, "No tienes permiso para actualizar el mapa de producción");
   const state = await loadState(principal);
   const current = await loadProductionProfile(principal);
-  if (!current.confirmed || current.revision !== expectedProfileRevision || state.revision !== expectedOrganizationRevision) throw new ApiError(409, "El mapa o la base cambió; actualiza antes de guardar las clasificaciones");
+  if (current.revision !== expectedProfileRevision || state.revision !== expectedOrganizationRevision) throw new ApiError(409, "El mapa o la base cambió; actualiza antes de guardar las clasificaciones");
   const payload = JSON.stringify(productionProfileSchema.parse(profile));
-  const confirmedReady = evaluableProfileProducts(current.confirmed, state.organization.currency, state.fxQuotes);
-  const proposedReady = evaluableProfileProducts(profile, state.organization.currency, state.fxQuotes);
-  const sameProductSet = (left: string[], right: string[]) => left.length === right.length && left.every((name) => right.some((candidate) => candidate.toLocaleLowerCase() === name.toLocaleLowerCase()));
-  if (confirmedReady.length !== current.confirmed.products.length || proposedReady.length !== profile.products.length || !sameProductSet(confirmedReady, proposedReady) || changesEvaluatedProductCosts(current.confirmed, profile, state.organization.currency, state.fxQuotes)) throw new ApiError(400, "Este cambio requiere revisión humana porque no es solo una actualización descriptiva o de clasificación");
+  if (productionProfileReviewReason(current.draft ?? current.confirmed, profile)) throw new ApiError(400, "Quitar productos, insumos o gastos del mapa requiere confirmación humana");
   const costs = calculateProductionCosts(profile, state.organization.currency, state.fxQuotes);
   const categoryStatements = [
     { sql: "INSERT OR IGNORE INTO cost_categories (id, organization_id, name) SELECT lower(hex(randomblob(16))), ?, json_extract(value, '$.name') FROM json_each(?)", params: [principal.organizationId, JSON.stringify(profile.categories)] },
-    { sql: "UPDATE materials SET category=(SELECT json_extract(value, '$.category') FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(materials.name) LIMIT 1) WHERE organization_id=? AND EXISTS (SELECT 1 FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(materials.name))", params: [JSON.stringify(profile.inputs), principal.organizationId, JSON.stringify(profile.inputs)] },
+    { sql: "UPDATE materials SET category=(SELECT json_extract(value, '$.category') FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(materials.name) LIMIT 1) WHERE organization_id=? AND archived_at IS NULL AND EXISTS (SELECT 1 FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(materials.name))", params: [JSON.stringify(profile.inputs), principal.organizationId, JSON.stringify(profile.inputs)] },
     { sql: "UPDATE shared_expenses SET category=(SELECT json_extract(value, '$.category') FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(shared_expenses.name) LIMIT 1) WHERE organization_id=? AND EXISTS (SELECT 1 FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(shared_expenses.name))", params: [JSON.stringify(profile.recurringCosts), principal.organizationId, JSON.stringify(profile.recurringCosts)] },
   ];
   const assertionId = crypto.randomUUID();
@@ -62,11 +59,11 @@ export async function saveEvaluatedProfileMetadata(principal: Principal, profile
     { sql: "INSERT INTO assistant_proposal_assertions (id, valid) VALUES (?, (SELECT CASE WHEN (SELECT revision FROM organizations WHERE id=?)=? AND COALESCE((SELECT revision FROM production_profiles WHERE organization_id=?),0)=? THEN 1 ELSE 0 END))", params: [assertionId, principal.organizationId, expectedOrganizationRevision, principal.organizationId, expectedProfileRevision] },
     { sql: "INSERT INTO assistant_proposal_events (id, organization_id, proposal_id, actor_id, event_type, payload_json) SELECT lower(hex(randomblob(16))), organization_id, id, ?, 'superseded', ? FROM assistant_proposals WHERE organization_id=? AND kind='production-profile' AND status='pending'", params: [principal.userId, JSON.stringify({ reason: "Actualización de categorías o evidencia sin impacto en costos evaluados." }), principal.organizationId] },
     { sql: "UPDATE assistant_proposals SET status='superseded', decision_by=?, decision_note=?, decided_at=CURRENT_TIMESTAMP WHERE organization_id=? AND kind='production-profile' AND status='pending'", params: [principal.userId, "Actualizada sin cambiar costos evaluados", principal.organizationId] },
-    { sql: "UPDATE production_profiles SET confirmed_json=?, draft_json=NULL, revision=revision+1, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE organization_id=? AND revision=? AND confirmed_json IS NOT NULL RETURNING revision", params: [payload, principal.userId, principal.organizationId, expectedProfileRevision] },
+    { sql: "UPDATE production_profiles SET confirmed_json=?, draft_json=NULL, revision=revision+1, updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE organization_id=? AND revision=? RETURNING revision", params: [payload, principal.userId, principal.organizationId, expectedProfileRevision] },
     { sql: "INSERT INTO production_profile_snapshots (id, organization_id, revision, profile_json, costs_json, fx_context_json, actor_id) SELECT ?, organization_id, revision, confirmed_json, ?, ?, ? FROM production_profiles WHERE organization_id=? AND revision=? AND confirmed_json IS NOT NULL", params: [snapshotId, JSON.stringify(costs), JSON.stringify(state.fxQuotes ?? {}), principal.userId, principal.organizationId, expectedProfileRevision + 1] },
     ...categoryStatements,
     { sql: "UPDATE organizations SET revision=revision+1 WHERE id=?", params: [principal.organizationId] },
-    { sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, 'update-production-profile-metadata', ?, ?)", params: [crypto.randomUUID(), principal.organizationId, principal.userId, principal.organizationId, JSON.stringify({ source: "cozte", reason: "classification-only", revision: expectedProfileRevision + 1 })] },
+    { sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, 'update-production-profile', ?, ?)", params: [crypto.randomUUID(), principal.organizationId, principal.userId, principal.organizationId, JSON.stringify({ source: "cozte", reason: changesEvaluatedProductCosts(current.confirmed, profile, state.organization.currency, state.fxQuotes) ? "cost-update" : "map-update", revision: expectedProfileRevision + 1 })] },
     { sql: "DELETE FROM assistant_proposal_assertions WHERE id=?", params: [assertionId] },
   ]);
   if (!results[4]?.length) throw new ApiError(409, "El mapa cambió mientras se actualizaban las clasificaciones");
@@ -81,7 +78,7 @@ export async function confirmProductionProfile(principal: Principal, expectedRev
   if (errors.length) throw new ApiError(400, errors[0]);
   const categoryStatements = [
     { sql: "INSERT OR IGNORE INTO cost_categories (id, organization_id, name) SELECT lower(hex(randomblob(16))), ?, json_extract(value, '$.name') FROM json_each(?)", params: [principal.organizationId, JSON.stringify(current.draft.categories)] },
-    { sql: "UPDATE materials SET category=(SELECT json_extract(value, '$.category') FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(materials.name) LIMIT 1) WHERE organization_id=? AND EXISTS (SELECT 1 FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(materials.name))", params: [JSON.stringify(current.draft.inputs), principal.organizationId, JSON.stringify(current.draft.inputs)] },
+    { sql: "UPDATE materials SET category=(SELECT json_extract(value, '$.category') FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(materials.name) LIMIT 1) WHERE organization_id=? AND archived_at IS NULL AND EXISTS (SELECT 1 FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(materials.name))", params: [JSON.stringify(current.draft.inputs), principal.organizationId, JSON.stringify(current.draft.inputs)] },
     { sql: "UPDATE shared_expenses SET category=(SELECT json_extract(value, '$.category') FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(shared_expenses.name) LIMIT 1) WHERE organization_id=? AND EXISTS (SELECT 1 FROM json_each(?) WHERE lower(json_extract(value, '$.name'))=lower(shared_expenses.name))", params: [JSON.stringify(current.draft.recurringCosts), principal.organizationId, JSON.stringify(current.draft.recurringCosts)] },
   ];
   const proposalAssertionId = crypto.randomUUID();

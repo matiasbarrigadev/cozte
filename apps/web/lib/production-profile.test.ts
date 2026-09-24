@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allocateRecurringCost, calculateProductionCosts, changesEvaluatedProductCosts, emptyProductionProfile, evaluableProfileProducts, inputCostPerFinishedUnit, monthlyEquivalent, profileGaps, validateProfileReferences } from "./production-profile";
+import { allocateRecurringCost, calculateProductionCosts, changesEvaluatedProductCosts, emptyProductionProfile, evaluableProfileProducts, inputCostPerFinishedUnit, monthlyEquivalent, productionProfileReviewReason, profileGaps, validateProfileReferences } from "./production-profile";
 import { makeQuote } from "./currency";
 
 describe("production profile rules", () => {
@@ -44,6 +44,10 @@ describe("production profile rules", () => {
       inputs: [{ name: "Papel", category: "Materias primas", purchaseUnit: "resma", consumptionUnit: "hoja", unitsPerPurchase: 500, usage: [{ product: "Cuaderno", quantityPerBatch: 8000 }], pricePerPurchaseMinor: 10000, evidence: { quality: "measured" as const, source: "Factura", asOf: "2026-09-20" } }],
     };
     expect(evaluableProfileProducts(profile)).toEqual(["Cuaderno"]);
+    expect(productionProfileReviewReason(null, profile)).toBeNull();
+    expect(productionProfileReviewReason(profile, { ...profile, inputs: [{ ...profile.inputs[0], pricePerPurchaseMinor: 12000 }] })).toBeNull();
+    expect(productionProfileReviewReason(profile, { ...profile, products: [] })).toBe("remove-production-data");
+    expect(productionProfileReviewReason(profile, { ...profile, inputs: [] })).toBe("remove-production-data");
     expect(changesEvaluatedProductCosts(null, profile)).toBe(false);
     expect(changesEvaluatedProductCosts(profile, { ...profile, inputs: [{ ...profile.inputs[0], pricePerPurchaseMinor: 12000 }] })).toBe(true);
   });
@@ -57,6 +61,16 @@ describe("production profile rules", () => {
     };
     const categorized = { ...profile, categories: [{ name: "Insumos" }], inputs: [{ ...profile.inputs[0], category: "Insumos" }] };
     expect(changesEvaluatedProductCosts(profile, categorized)).toBe(false);
+  });
+  it("allows ordinary changes to evaluated costs but protects removals from the production map", () => {
+    const profile = {
+      ...emptyProductionProfile,
+      products: [{ name: "Cuaderno", finishedUnit: "unidad", goodUnitsPerBatch: 100, startedUnitsPerBatch: 100, normalScrapUnitsPerBatch: 0, batchesPerMonth: 2, hoursPerBatch: 20 }],
+      inputs: [{ name: "Papel", category: "Materias primas", purchaseUnit: "resma", consumptionUnit: "hoja", unitsPerPurchase: 500, usage: [{ product: "Cuaderno", quantityPerBatch: 8000 }], pricePerPurchaseMinor: 10000 }],
+      recurringCosts: [{ name: "Luz", category: "Servicios", frequency: "monthly" as const, amountMinor: 20000, allocation: "finished_units" as const, shares: [] }],
+    };
+    expect(productionProfileReviewReason(profile, { ...profile, recurringCosts: [{ ...profile.recurringCosts[0], amountMinor: 22000 }] })).toBeNull();
+    expect(productionProfileReviewReason(profile, { ...profile, recurringCosts: [] })).toBe("remove-production-data");
   });
   it("requests review only for recurring costs that actually reach an evaluated product", () => {
     const profile = {

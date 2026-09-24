@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { calculateCosts, convertToOrganizationCurrency, type DomainState } from "@/lib/domain";
+import { allocateMinor, calculateCosts, convertToOrganizationCurrency, type DomainState } from "@/lib/domain";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, type SqlStatement } from "./db";
@@ -42,6 +42,7 @@ export const mutationSchema = z.discriminatedUnion("action", [
     category: category.optional(), effectiveDate: z.iso.date().optional(),
     price: sourceAmount.optional(), currency: currency.optional(), source: z.string().trim().max(200).optional(),
   }),
+  common.extend({ action: z.literal("delete-material"), id }),
   common.extend({
     action: z.literal("update-material-meta"), id,
     field: z.enum(["name", "supplier", "purchaseUnit", "category"]),
@@ -61,6 +62,7 @@ export const mutationSchema = z.discriminatedUnion("action", [
     lotUnits: positive, salePriceMinor: money, salesVariableMinor: money,
     laborLotMinor: money, productionHoursMilli: z.number().int().min(0).max(1_000_000_000),
   }),
+  common.extend({ action: z.literal("delete-product"), id }),
   common.extend({
     action: z.literal("set-component"), productId: id, materialId: id,
     quantityMilli: z.number().int().min(0).max(1_000_000_000),
@@ -154,6 +156,12 @@ function projection(state: DomainState, input: Mutation): DomainState {
       }
       break;
     }
+    case "delete-material": {
+      if (!next.materials.some((item) => item.id === input.id)) throw new ApiError(404, "Insumo no encontrado");
+      next.materials = next.materials.filter((item) => item.id !== input.id);
+      next.components = next.components.filter((item) => item.materialId !== input.id);
+      break;
+    }
     case "create-products": {
       const existing = new Set(next.products.map((item) => item.name.toLocaleLowerCase()));
       for (const [index, product] of input.products.entries()) {
@@ -176,6 +184,18 @@ function projection(state: DomainState, input: Mutation): DomainState {
         salePriceMinor: input.salePriceMinor, salesVariableMinor: input.salesVariableMinor,
         laborLotMinor: input.laborLotMinor, productionHoursMilli: input.productionHoursMilli,
         version: product.version + 1 });
+      break;
+    }
+    case "delete-product": {
+      if (!next.products.some((item) => item.id === input.id)) throw new ApiError(404, "Producto no encontrado");
+      next.products = next.products.filter((item) => item.id !== input.id);
+      next.components = next.components.filter((item) => item.productId !== input.id);
+      for (const expense of next.expenses) {
+        if (expense.allocationBasis !== "manual" || !expense.allocationShares?.[input.id]) continue;
+        const remainingActivities = next.products.map((product) => ({ id: product.id, weight: expense.allocationShares?.[product.id] ?? 0 }));
+        const total = remainingActivities.reduce((sum, item) => sum + item.weight, 0);
+        expense.allocationShares = total > 0 ? allocateMinor(10_000, remainingActivities) : {};
+      }
       break;
     }
     case "set-component":
@@ -278,7 +298,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
   const organizationId = principal.organizationId;
   const actorId = principal.userId;
   const changeSetId = crypto.randomUUID();
-  const entityId = crypto.randomUUID();
+  const entityId = input.action === "delete-material" || input.action === "delete-product" ? input.id : crypto.randomUUID();
   const proposalAssertionId = options.assistantProposalId ? crypto.randomUUID() : null;
   const productEntityIds = input.action === "create-products" ? input.products.map((_, index) => index === 0 ? entityId : crypto.randomUUID()) : [entityId];
   const statements: SqlStatement[] = [
@@ -322,6 +342,9 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       if (input.price !== undefined) statements.push({ sql: "INSERT INTO material_prices (id, organization_id, material_id, version, amount_minor, source, effective_date, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, entityId, next.materials.find((item) => item.id === "new")!.priceMinor, input.source || "Carga manual", input.effectiveDate ?? new Date().toISOString().slice(0, 10), actorId, ...fxFields(input.currency ?? next.organization.currency, toNativeMilli(input.price))] });
       next.materials.find((item) => item.id === "new")!.id = entityId;
       break;
+    case "delete-material":
+      statements.push({ sql: "UPDATE materials SET archived_at=CURRENT_TIMESTAMP, version=version+1 WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [input.id, organizationId] });
+      break;
     case "update-material-meta": {
       const column = { name: "name", supplier: "supplier", purchaseUnit: "purchase_unit", category: "category" }[input.field];
       statements.push({ sql: `UPDATE materials SET ${column}=? WHERE id=? AND organization_id=?`, params: [input.value, input.id, organizationId] });
@@ -337,6 +360,16 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       break;
     case "update-product":
       statements.push({ sql: "UPDATE products SET name=?, lot_units=?, sale_price_minor=?, sales_variable_minor=?, labor_lot_minor=?, production_hours_milli=?, version=version+1 WHERE id=? AND organization_id=?", params: [input.name, input.lotUnits, input.salePriceMinor, input.salesVariableMinor, input.laborLotMinor, input.productionHoursMilli, input.id, organizationId] });
+      break;
+    case "delete-product":
+      statements.push({ sql: "UPDATE products SET archived_at=CURRENT_TIMESTAMP, version=version+1 WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [input.id, organizationId] });
+      for (const expense of state.expenses) {
+        if (expense.allocationBasis !== "manual") continue;
+        const updated = next.expenses.find((item) => item.id === expense.id);
+        if (updated && JSON.stringify(updated.allocationShares ?? {}) !== JSON.stringify(expense.allocationShares ?? {})) {
+          statements.push({ sql: "UPDATE shared_expenses SET allocation_shares_json=? WHERE id=? AND organization_id=?", params: [JSON.stringify(updated.allocationShares ?? {}), expense.id, organizationId] });
+        }
+      }
       break;
     case "set-component":
       if (input.quantityMilli === 0) statements.push({ sql: "DELETE FROM product_materials WHERE product_id=? AND material_id=? AND product_id IN (SELECT id FROM products WHERE organization_id=?)", params: [input.productId, input.materialId, organizationId] });
@@ -363,7 +396,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       if (!previous) throw new ApiError(404, "Categoría no encontrada");
       statements.push(
         { sql: "UPDATE cost_categories SET name=? WHERE id=? AND organization_id=?", params: [input.name, input.id, organizationId] },
-        { sql: "UPDATE materials SET category=? WHERE organization_id=? AND lower(category)=lower(?)", params: [input.name, organizationId, previous.name] },
+        { sql: "UPDATE materials SET category=? WHERE organization_id=? AND archived_at IS NULL AND lower(category)=lower(?)", params: [input.name, organizationId, previous.name] },
         { sql: "UPDATE shared_expenses SET category=? WHERE organization_id=? AND lower(category)=lower(?)", params: [input.name, organizationId, previous.name] },
       );
       if (profile.confirmed || profile.draft) {

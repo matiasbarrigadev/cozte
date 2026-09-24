@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeCozteProductAction } from "./cozte-product-input";
+import { missingCozteProductFields, normalizeCozteProductAction } from "./cozte-product-input";
 
 describe("normalizeCozteProductAction", () => {
   it("converts user-facing product fields into the cost engine units", () => {
@@ -20,5 +20,15 @@ describe("normalizeCozteProductAction", () => {
       { name: "Tofu 300 g", productionHoursMilli: 500, salePriceMinor: 2000 },
       { name: "Tofu 500 g", productionHoursMilli: 750, salePriceMinor: 3000 },
     ] });
+  });
+});
+
+describe("missingCozteProductFields", () => {
+  it("treats null/omitted facts as missing but preserves confirmed zeroes", () => {
+    expect(missingCozteProductFields({ lotUnits: 12, salePrice: 0, salesVariablePerUnit: 0, laborCostPerLot: null })).toEqual([
+      "trabajo directo por lote",
+      "horas de producción por lote",
+    ]);
+    expect(missingCozteProductFields({ lotUnits: 12, salePrice: 0, salesVariablePerUnit: 0, laborCostPerLot: 0, productionHoursPerLot: 0 })).toEqual([]);
   });
 });

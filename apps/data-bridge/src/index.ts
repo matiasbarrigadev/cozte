@@ -78,6 +78,45 @@ function validStatements(input: unknown): input is { statements: Statement[] } {
   });
 }
 
+function countSqlBindings(sql: string): number {
+  let count = 0;
+  let quote: "single" | "double" | "backtick" | "bracket" | null = null;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i];
+    const next = sql[i + 1];
+
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") { blockComment = false; i++; }
+      continue;
+    }
+    if (quote) {
+      const closing = quote === "single" ? "'" : quote === "double" ? '"' : quote === "backtick" ? "`" : "]";
+      if (char === closing) {
+        if (next === closing) i++;
+        else quote = null;
+      }
+      continue;
+    }
+
+    if (char === "-" && next === "-") { lineComment = true; i++; continue; }
+    if (char === "/" && next === "*") { blockComment = true; i++; continue; }
+    if (char === "'") quote = "single";
+    else if (char === '"') quote = "double";
+    else if (char === "`") quote = "backtick";
+    else if (char === "[") quote = "bracket";
+    else if (char === "?") count++;
+  }
+
+  return count;
+}
+
 export default {
   async fetch(request: Request, env: BridgeEnv): Promise<Response> {
     const url = new URL(request.url);
@@ -105,9 +144,21 @@ export default {
       const results = await env.DB.batch(prepared);
       return json({ results: results.map((result) => result.results) });
     } catch (error) {
-      console.error("D1 bridge query failed", error);
-      const conflict = error instanceof Error && /constraint|unique/i.test(error.message);
-      return json({ error: conflict ? "Conflict" : "Database operation failed" }, conflict ? 409 : 500);
+      const requestId = crypto.randomUUID();
+      const message = error instanceof Error ? error.message : String(error);
+      const conflict = /constraint|unique/i.test(message);
+      console.error("D1 bridge query failed", JSON.stringify({
+        requestId,
+        statementCount: input.statements.length,
+        operations: input.statements.map(({ sql }) => sql.trim().split(/\s+/, 1)[0].toUpperCase()),
+        bindings: input.statements.map(({ sql, params }, index) => ({
+          index,
+          placeholders: countSqlBindings(sql),
+          provided: params?.length ?? 0,
+        })),
+        error: message.slice(0, 1000),
+      }));
+      return json({ error: conflict ? "Conflict" : "Database operation failed", requestId }, conflict ? 409 : 500);
     }
   },
 } satisfies ExportedHandler<BridgeEnv>;

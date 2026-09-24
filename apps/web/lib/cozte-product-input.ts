@@ -1,5 +1,20 @@
 type ProductInput = Record<string, unknown>;
 
+const requiredProductLabels = {
+  lotUnits: "unidades vendibles por lote",
+  salePrice: "precio de venta por unidad",
+  salesVariablePerUnit: "gasto variable por unidad",
+  laborCostPerLot: "trabajo directo por lote",
+  productionHoursPerLot: "horas de producción por lote",
+} as const;
+
+/** Lists facts still needed before an operational product card can be created. */
+export function missingCozteProductFields(product: ProductInput): string[] {
+  return Object.entries(requiredProductLabels)
+    .filter(([field]) => product[field] == null)
+    .map(([, label]) => label);
+}
+
 function toOperationalProduct(product: ProductInput): ProductInput {
   const next = { ...product };
   if (typeof product.salePrice === "number") next.salePriceMinor = product.salePrice;

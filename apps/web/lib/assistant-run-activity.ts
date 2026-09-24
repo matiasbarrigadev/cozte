@@ -8,9 +8,7 @@ export function assistantToolOutcome(output: unknown): string {
   if (!result) return "Completada";
   if (typeof result.error === "string") return `Error: ${result.error}`;
   if (result.kind === "profile-draft") {
-    return Array.isArray(result.evaluableProducts) && result.evaluableProducts.length
-      ? "Producto listo para evaluación; requiere revisión"
-      : "Avance guardado como borrador";
+    return "Avance guardado en el mapa";
   }
   if (result.applied === true) return "Cambio aplicado y guardado";
   const proposal = record(result.proposal);

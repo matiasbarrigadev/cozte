@@ -45,7 +45,7 @@ async function recordCozteWorkflowError(runId: string, error: unknown): Promise<
   await addAssistantEvent(runId, "stream_error", { error: errorDetails(error) });
 }
 
-const cozteToolNames = ["inspectCostBase", "calculateCostRule", "findMaterial", "proposeMaterialPrice", "proposeExpenseAmount", "proposeProductionProfile", "proposeCostAction"];
+const cozteToolNames = ["inspectCostBase", "calculateCostRule", "findMaterial", "updateMaterialPrice", "updateExpenseAmount", "updateProductionMap", "applyCostAction", "proposeMaterialPrice", "proposeExpenseAmount", "proposeProductionProfile", "proposeCostAction"];
 
 async function repairCozteToolCall({ toolCall, error }: { toolCall: { type: "tool-call"; toolCallId: string; toolName: string; input: string }; error: { message: string } }): Promise<{ type: "tool-call"; toolCallId: string; toolName: string; input: string } | null> {
   "use step";

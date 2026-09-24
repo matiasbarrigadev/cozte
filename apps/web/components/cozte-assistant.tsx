@@ -7,8 +7,6 @@ import { useChat } from "@ai-sdk/react";
 import { WorkflowChatTransport } from "@ai-sdk/workflow/client";
 import { isToolUIPart, type UIMessage } from "ai";
 import { toast } from "sonner";
-import type { ProductionProfile } from "@/lib/production-profile";
-import type { Currency } from "@/lib/currency";
 import type { AssistantProposal } from "@/lib/server/assistant-proposals";
 import type { AssistantDataSource } from "@/lib/server/assistant-trace";
 import type { ProposalSection } from "@/lib/proposal-presentation";
@@ -30,7 +28,6 @@ import { AnimatedIcon } from "@/components/animated-icon";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, getCozteAttachmentKind, getCozteAttachmentMaxBytes, getCozteAttachmentMediaType } from "@/lib/cozte-assistant-attachments";
 import { cn } from "cn";
 
-type ProfileResponse = { confirmed: ProductionProfile | null; draft: ProductionProfile | null; revision: number; organizationRevision: number; currency: Currency; costs: { product: string; unitMinor: number | null; warnings: string[] }[]; gaps: string[]; evaluableProducts: string[]; catalog?: { actions: { key: string; label: string; details: string; action: Record<string, unknown> }[]; missingProducts: string[]; issues: string[] } };
 type PersistedToolExecution = { messageId: string; runId: string; toolCallId: string; toolName: string; status: "running" | "completed" | "failed" };
 const ACTIVE_WORKFLOW_STORAGE_KEY = "cozte-active-workflow-run";
 const suggestions = [
@@ -39,20 +36,18 @@ const suggestions = [
   "Cambió mi proceso",
 ];
 
-export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataChanged: () => Promise<void> }) {
+export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boolean; onDataChanged: () => Promise<void>; onOpenCosts: () => void }) {
   const [input, setInput] = React.useState("");
   const [attachments, setAttachments] = React.useState<File[]>([]);
   const [preparing, setPreparing] = React.useState(false);
   const [draggingFiles, setDraggingFiles] = React.useState(false);
   const fileInput = React.useRef<HTMLInputElement>(null);
   const { voiceState, analyser, start: startDictation, pause: pauseDictation } = useVoiceDictation(setInput);
-  const [profile, setProfile] = React.useState<ProfileResponse | null>(null);
   const [proposals, setProposals] = React.useState<AssistantProposal[]>([]);
   const [dataSources, setDataSources] = React.useState<AssistantDataSource[]>([]);
   const [toolExecutions, setToolExecutions] = React.useState<PersistedToolExecution[]>([]);
   const [resumeExistingWorkflow, setResumeExistingWorkflow] = React.useState(false);
   const [mobilePanel, setMobilePanel] = React.useState<"chat" | "activity">("chat");
-  const [activityFilter, setActivityFilter] = React.useState<"all" | "pending" | "decisions" | "updates">("all");
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
   const [adjustmentNote, setAdjustmentNote] = React.useState("");
   const [busyProposalId, setBusyProposalId] = React.useState<string | null>(null);
@@ -79,9 +74,8 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
   }), []);
   const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport, resume: resumeExistingWorkflow,
     onFinish: ({ message, isError, isAbort }) => {
-      void loadProfile();
       void loadProposals(true);
-      if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && ["tool-proposeCostAction", "tool-proposeMaterialPrice", "tool-proposeExpenseAmount", "tool-proposeProductionProfile"].includes(part.type) && !!part.output && typeof part.output === "object" && (part.output as { applied?: boolean }).applied)) void onDataChanged();
+      if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && ["tool-applyCostAction", "tool-updateMaterialPrice", "tool-updateExpenseAmount", "tool-updateProductionMap", "tool-proposeCostAction", "tool-proposeMaterialPrice", "tool-proposeExpenseAmount", "tool-proposeProductionProfile"].includes(part.type) && !!part.output && typeof part.output === "object" && (part.output as { applied?: boolean }).applied)) void onDataChanged();
       if (!isAbort && (isError || !message.parts.some((part) => part.type === "text" && part.text.trim()))) toast.error("Cozte no pudo completar esta respuesta. Tu mensaje quedó guardado; puedes reintentarlo.");
     },
     onError: () => toast.error("No se pudo conectar con Cozte. Revisa tu conexión y vuelve a intentar."),
@@ -139,15 +133,6 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
     addAttachments(clipboardFiles);
   }
 
-  async function loadProfile() {
-    if (demo) return;
-    try {
-      const response = await fetch("/api/production-profile", { cache: "no-store" });
-      if (!response.ok) throw new Error("No se pudo cargar el mapa de producción");
-      setProfile(await response.json());
-    } catch (cause) { toast.error(cause instanceof Error ? cause.message : "No se pudo cargar el mapa"); }
-  }
-
   async function loadProposals(silent = false) {
     if (demo) return;
     try {
@@ -164,13 +149,12 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
   React.useEffect(() => {
     if (demo) return;
     let active = true;
-    Promise.all([fetch("/api/assistant", { cache: "no-store" }), fetch("/api/production-profile", { cache: "no-store" }), fetch("/api/assistant/proposals", { cache: "no-store" })]).then(async ([chatResponse, profileResponse, proposalResponse]) => {
-      if (!chatResponse.ok || !profileResponse.ok || !proposalResponse.ok) throw new Error("No se pudo cargar Cozte");
-      const [chat, process, proposalData] = await Promise.all([chatResponse.json(), profileResponse.json(), proposalResponse.json()]);
+    Promise.all([fetch("/api/assistant", { cache: "no-store" }), fetch("/api/assistant/proposals", { cache: "no-store" })]).then(async ([chatResponse, proposalResponse]) => {
+      if (!chatResponse.ok || !proposalResponse.ok) throw new Error("No se pudo cargar Cozte");
+      const [chat, proposalData] = await Promise.all([chatResponse.json(), proposalResponse.json()]);
       if (active) {
         setMessages(chat.messages ?? []);
         setToolExecutions(Array.isArray(chat.toolExecutions) ? chat.toolExecutions : []);
-        setProfile(process);
         setProposals(Array.isArray(proposalData.proposals) ? proposalData.proposals : []);
         setDataSources(Array.isArray(proposalData.sources) ? proposalData.sources : []);
         if (typeof chat.activeWorkflowRunId === "string" && chat.activeWorkflowRunId) {
@@ -189,7 +173,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
     if ((!value && !attachments.length) || demo || status !== "ready" || loading || preparing || voiceState !== "idle") return;
     setPreparing(true);
     try {
-      let message = value || (attachments.length ? "Revisa los archivos adjuntos como evidencia de costos de producción. Pregúntame por los datos que falten y guárdalos en el mapa de trabajo; no cargues precios a la base operativa sin que te lo pida. Pide aprobación solo si un producto completo inicia evaluación o cambia un costo que afecte productos ya evaluados." : "");
+      let message = value || (attachments.length ? "Revisa los archivos adjuntos como evidencia de costos de producción. Pregúntame por los datos que falten y guárdalos en el mapa de trabajo; no cargues precios a la base operativa sin que te lo pida. Aplica directamente los cambios; pide confirmación solo antes de eliminar productos, insumos o gastos." : "");
       let files: FileList | undefined;
       const spreadsheets = attachments.filter((file) => getCozteAttachmentKind(file) === "spreadsheet");
       if (spreadsheets.length) {
@@ -236,7 +220,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
       if (!response.ok) {
         throw new Error(data.error ?? "La propuesta cambió. Actualicé su estado; vuelve a revisarla.");
       }
-      await Promise.all([loadProposals(true), loadProfile()]);
+      await loadProposals(true);
       if (data.needsReview) {
         toast.message("La base de costos cambió. Actualicé la propuesta; revisa el impacto nuevo antes de aprobarla.");
         return;
@@ -252,7 +236,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
         void sendMessage({ text: `Actualización automática: el equipo descartó “${proposal.title}”. No apliques ese cambio. Continúa con la información vigente y pregunta solo si hace falta una alternativa.` }).catch(() => toast.error("La decisión quedó registrada, pero Cozte no pudo recibir la actualización automática. Escríbele para continuar."));
       }
     } catch (cause) {
-      await Promise.all([loadProposals(true), loadProfile()]);
+      await loadProposals(true);
       toast.error(cause instanceof Error ? cause.message : "No se pudo actualizar la propuesta");
     }
     finally { busyProposalIds.current.delete(proposal.id); setBusyProposalId(null); }
@@ -279,23 +263,6 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
     } finally { busyProposalIds.current.delete(proposal.id); setBusyProposalId(null); }
   }
 
-  async function proposeCatalogAction(action: Record<string, unknown>, label: string) {
-    if (demo || !profile) return;
-    try {
-      const response = await fetch("/api/assistant/proposals", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mutation: { ...action, expectedRevision: profile.organizationRevision, idempotencyKey: crypto.randomUUID() } }) });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "No se pudo preparar la propuesta");
-      await Promise.all([loadProposals(true), loadProfile()]);
-      if (data.applied) {
-        await onDataChanged();
-        toast.success(`${label}: cambio aplicado y auditado`);
-      } else toast.success(`${label}: propuesta guardada para revisión`);
-    } catch (cause) {
-      await loadProposals(true);
-      toast.error(cause instanceof Error ? cause.message : "No se pudo preparar la propuesta");
-    }
-  }
-
   function openChatTurn(messageId: string) {
     setSelectedProposalId(null);
     setMobilePanel("chat");
@@ -305,24 +272,18 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
   const pendingProposals = proposals.filter((proposal) => proposal.status === "pending");
   const selectedProposal = proposals.find((proposal) => proposal.id === selectedProposalId) ?? null;
   const canApprove = (proposal: AssistantProposal) => proposal.status === "pending" && !(proposal.details.blockers?.length);
-  const visibleProposals = proposals.filter((proposal) => {
-    if (activityFilter === "pending") return proposal.status === "pending";
-    if (activityFilter === "decisions") return proposal.status === "approved" || proposal.status === "rejected" || proposal.status === "superseded";
-    if (activityFilter === "updates") return proposal.status === "stale";
-    return true;
-  }).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const latestUserMessageIndex = messages.findLastIndex((message) => message.role === "user");
+  const latestUserMessageId = latestUserMessageIndex >= 0 ? messages[latestUserMessageIndex]?.id ?? null : null;
+  const currentTurnProposals = latestUserMessageId ? proposals.filter((proposal) => proposal.status === "pending" && proposal.sourceMessageId === latestUserMessageId) : [];
+  const currentTurnSources = dataSources.filter((source) => source.messageId === latestUserMessageId);
+  const currentTurnExecutions = latestUserMessageId ? toolExecutions.filter((execution) => execution.messageId === latestUserMessageId) : [];
+  const liveCurrentTurnTools = latestUserMessageIndex < 0 ? [] : messages.slice(latestUserMessageIndex + 1).flatMap((message) => message.role === "assistant" ? message.parts.filter(isToolUIPart).filter((part) => isActionToolName(part.type.slice("tool-".length))).map((part) => ({ part, toolName: part.type.slice("tool-".length) })) : []);
+  const liveToolCallIds = new Set(liveCurrentTurnTools.map(({ part }) => part.toolCallId));
+  const currentTurnActions = currentTurnExecutions.filter((execution) => isActionToolName(execution.toolName) && !liveToolCallIds.has(execution.toolCallId));
   const proposalsAfterMessage = new Map<string, AssistantProposal[]>();
-  let latestUserMessageId: string | null = null;
-  const placedProposalIds = new Set<string>();
-  for (const message of messages) {
-    if (message.role === "user") latestUserMessageId = message.id;
-    if (message.role === "assistant" && latestUserMessageId) {
-      const turnProposals = proposals.filter((proposal) => proposal.sourceMessageId === latestUserMessageId && !placedProposalIds.has(proposal.id));
-      if (turnProposals.length) {
-        proposalsAfterMessage.set(message.id, turnProposals);
-        turnProposals.forEach((proposal) => placedProposalIds.add(proposal.id));
-      }
-    }
+  if (latestUserMessageId) {
+    const latestAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant" && messages.findIndex((item) => item.id === message.id) > latestUserMessageIndex);
+    if (latestAssistantMessage && currentTurnProposals.length) proposalsAfterMessage.set(latestAssistantMessage.id, currentTurnProposals);
   }
   const toolsByAssistantMessage = new Map<string, PersistedToolExecution[]>();
   let toolTurnUserMessageId: string | null = null;
@@ -333,8 +294,6 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
       if (executions.length) toolsByAssistantMessage.set(message.id, executions);
     }
   }
-  const catalogHasActions = Boolean(profile?.confirmed && ((profile.catalog?.actions.length ?? 0) > 0 || (profile.catalog?.missingProducts.length ?? 0) > 0 || (profile.catalog?.issues.length ?? 0) > 0));
-
   return <>
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -343,7 +302,7 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
       </div>
       <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1 lg:hidden" role="tablist" aria-label="Secciones de Cozte">
         <button id="cozte-chat-tab" type="button" role="tab" aria-selected={mobilePanel === "chat"} aria-controls="cozte-chat-panel" onClick={() => setMobilePanel("chat")} className={cn("rounded-md px-3 py-2 text-sm font-medium transition-colors", mobilePanel === "chat" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Chat</button>
-        <button id="cozte-activity-tab" type="button" role="tab" aria-selected={mobilePanel === "activity"} aria-controls="cozte-activity-panel" onClick={() => setMobilePanel("activity")} className={cn("flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors", mobilePanel === "activity" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Propuestas y actividad{pendingProposals.length ? <Badge variant="secondary">{pendingProposals.length}</Badge> : null}</button>
+        <button id="cozte-activity-tab" type="button" role="tab" aria-selected={mobilePanel === "activity"} aria-controls="cozte-activity-panel" onClick={() => setMobilePanel("activity")} className={cn("flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors", mobilePanel === "activity" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Acciones de este turno{currentTurnActions.length + liveCurrentTurnTools.length + currentTurnProposals.length ? <Badge variant="secondary">{currentTurnActions.length + liveCurrentTurnTools.length + currentTurnProposals.length}</Badge> : null}</button>
       </div>
 
       <div className="grid min-h-0 gap-3 lg:grid-cols-[minmax(0,1fr)_18rem]">
@@ -410,53 +369,29 @@ export function CozteAssistant({ demo, onDataChanged }: { demo: boolean; onDataC
           </Card>
         </section>
 
-        <aside id="cozte-activity-panel" role="tabpanel" aria-labelledby="cozte-activity-tab" aria-label="Propuestas, decisiones y fuentes" className={cn("min-w-0", mobilePanel === "activity" ? "flex" : "hidden lg:flex")}>
+        <aside id="cozte-activity-panel" role="tabpanel" aria-labelledby="cozte-activity-tab" aria-label="Acciones del turno actual" className={cn("min-w-0", mobilePanel === "activity" ? "flex" : "hidden lg:flex")}>
           <Card className="flex h-[calc(100dvh-13rem)] min-h-[30rem] w-full min-w-0 flex-col gap-0 overflow-hidden py-0 lg:h-[calc(100dvh-11rem)]">
             <CardHeader className="shrink-0 border-b px-4 py-4">
-              <div className="flex items-center justify-between gap-2"><h2 className="text-base font-semibold">Actividad de Cozte</h2><Badge variant="outline">{pendingProposals.length} pendientes</Badge></div>
-              <CardDescription>Propuestas, decisiones y fuentes, en un mismo lugar.</CardDescription>
+              <div className="flex items-center justify-between gap-2"><h2 className="text-base font-semibold">Este turno</h2><Badge variant="outline">{currentTurnActions.length + liveCurrentTurnTools.length} acciones</Badge></div>
+              <CardDescription>Lo que Cozte hizo ahora y los datos que usó.</CardDescription>
             </CardHeader>
             <CardContent className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3 py-4">
-              {profile?.draft ? <section aria-label="Estado del mapa de producción" className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3">
-                <div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">Mapa de producción</h2><Badge variant={pendingProposals.some((proposal) => proposal.kind === "production-profile") ? "outline" : profile.evaluableProducts.length ? "secondary" : "outline"}>{pendingProposals.some((proposal) => proposal.kind === "production-profile") ? "Revisión pendiente" : profile.evaluableProducts.length ? "Listo para evaluar" : "En armado"}</Badge></div>
-                <p className="text-xs text-muted-foreground">{profile.evaluableProducts.length ? `Puede iniciar evaluación: ${profile.evaluableProducts.join(", ")}.` : "Los datos parciales se guardan sin pedir aprobación. El permiso aparece al completar un producto para evaluación."}</p>
-                {profile.evaluableProducts.length ? <ul className="flex flex-col gap-1 text-xs">{profile.evaluableProducts.map((name) => { const cost = profile.costs.find((item) => item.product.toLocaleLowerCase() === name.toLocaleLowerCase())?.unitMinor; return <li key={name} className="flex items-center justify-between gap-2"><span>{name}</span><strong>{cost === null || cost === undefined ? "Costo pendiente" : `${formatProfileUnitCost(cost, profile.currency)} / unidad`}</strong></li>; })}</ul> : null}
-                {!profile.evaluableProducts.length && profile.gaps.length ? <p className="text-xs text-muted-foreground">Pendiente: {profile.gaps.slice(0, 3).join(" · ")}{profile.gaps.length > 3 ? "…" : ""}</p> : null}
-              </section> : null}
-              <section aria-labelledby="cozte-activity-title" className="flex flex-col gap-3">
-                <div className="flex items-center justify-between gap-2"><h2 id="cozte-activity-title" className="text-sm font-semibold">Propuestas y decisiones</h2>{proposalsLoading ? <span className="text-xs text-muted-foreground">Cargando…</span> : null}</div>
-                <div className="flex flex-wrap gap-1" aria-label="Filtrar actividad">
-                  {([{ key: "all", label: "Todo" }, { key: "pending", label: "Pendientes" }, { key: "decisions", label: "Decisiones" }, { key: "updates", label: "Por ajustar" }] as const).map((filter) => <Button key={filter.key} type="button" size="xs" variant={activityFilter === filter.key ? "secondary" : "ghost"} aria-pressed={activityFilter === filter.key} onClick={() => setActivityFilter(filter.key)}>{filter.label}</Button>)}
-                </div>
-                {!proposalsLoading && visibleProposals.length === 0 ? <p className="rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">{activityFilter === "all" ? "Cuando Cozte prepare una propuesta, aparecerá aquí y junto a su respuesta en el chat." : "No hay elementos en este filtro."}</p> : null}
+              <section aria-labelledby="cozte-current-actions-title" className="flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-2"><h2 id="cozte-current-actions-title" className="text-sm font-semibold">Acciones ejecutadas</h2>{loading && !messages.length ? <span className="text-xs text-muted-foreground">Cargando…</span> : null}</div>
+                {!currentTurnActions.length && !liveCurrentTurnTools.length ? <p className="rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">En este turno Cozte todavía no hizo cambios.</p> : null}
                 <ol className="flex flex-col gap-2">
-                  {visibleProposals.map((proposal) => <li key={proposal.id}>
-                    <button type="button" className="flex w-full flex-col gap-2 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setSelectedProposalId(proposal.id)}>
-                      <span className="flex w-full items-start justify-between gap-2"><strong className="min-w-0 text-sm leading-snug">{proposal.title}</strong><ProposalStatusBadge status={proposal.status} changeRequested={proposal.changeRequest !== null} /></span>
-                      <span className="line-clamp-2 text-xs text-muted-foreground">{proposal.summary}</span>
-                      <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><time dateTime={proposal.createdAt}>{formatProposalDate(proposal.createdAt)}</time>{proposal.sources.length ? <Badge variant="outline">{proposal.sources.length} {proposal.sources.length === 1 ? "fuente" : "fuentes"}</Badge> : null}</span>
-                    </button>
-                  </li>)}
+                  {liveCurrentTurnTools.map(({ part, toolName }) => <li key={part.toolCallId}><AssistantMessageToolTag toolName={toolName} input={part.input} output={part.state === "output-available" ? part.output : undefined} errorText={part.state === "output-error" ? part.errorText : undefined} onEdit={(prompt) => { setInput(prompt); setMobilePanel("chat"); window.setTimeout(() => document.getElementById("cozte-message")?.focus(), 0); }} /></li>)}
+                  {currentTurnActions.map((execution) => <li key={`${execution.runId}:${execution.toolCallId}`}><AssistantMessageToolTag toolName={execution.toolName} persisted={execution} onEdit={(prompt) => { setInput(prompt); setMobilePanel("chat"); window.setTimeout(() => document.getElementById("cozte-message")?.focus(), 0); }} /></li>)}
                 </ol>
+                <Button type="button" size="sm" variant="outline" onClick={onOpenCosts}>Abrir costos editables</Button>
               </section>
 
-              <section aria-labelledby="cozte-sources-title" className="flex flex-col gap-3 border-t pt-4">
-                <div><h2 id="cozte-sources-title" className="text-sm font-semibold">Fuentes de datos</h2><p className="mt-1 text-xs text-muted-foreground">Archivos adjuntos y el turno donde se usaron.</p></div>
-                {!dataSources.length ? <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">Los adjuntos se conservan cifrados en la ejecución para que Cozte pueda reanudarla; el historial guarda el texto y el nombre del archivo. El extracto leído de Excel sí queda en la conversación.</p> : null}
-                <ol className="flex flex-col gap-2">
-                  {dataSources.map((source) => <li key={source.id} className="rounded-lg border p-3">
-                    <div className="flex min-w-0 flex-col gap-1"><span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{dataSourceKindLabel(source.kind)}</span><strong className="break-all text-sm">{source.label}</strong><span className="text-xs text-muted-foreground"><time dateTime={source.createdAt}>{formatProposalDate(source.createdAt)}</time>{source.mediaType ? ` · ${source.mediaType}` : ""}</span></div>
-                    <Button type="button" size="xs" variant="ghost" className="mt-2" onClick={() => openChatTurn(source.messageId)}>Ver turno del chat</Button>
-                  </li>)}
-                </ol>
-              </section>
+              {proposalsLoading ? <p className="text-xs text-muted-foreground">Revisando acciones que requieren confirmación…</p> : currentTurnProposals.length ? <section className="flex flex-col gap-2 border-t pt-4" aria-label="Confirmaciones necesarias"><h2 className="text-sm font-semibold">Necesita tu confirmación</h2>{currentTurnProposals.map((proposal) => <button key={proposal.id} type="button" className="flex w-full flex-col gap-2 rounded-lg border bg-card p-3 text-left hover:bg-muted/50" onClick={() => setSelectedProposalId(proposal.id)}><strong className="text-sm">{proposal.title}</strong><span className="text-xs text-muted-foreground">{proposal.summary}</span><span className="text-xs font-medium">Revisar y confirmar</span></button>)}</section> : null}
 
-              {catalogHasActions && profile?.confirmed ? <section aria-labelledby="cozte-map-actions-title" className="flex flex-col gap-3 border-t pt-4">
-                <div><h2 id="cozte-map-actions-title" className="text-sm font-semibold">Acciones del mapa</h2><p className="mt-1 text-xs text-muted-foreground">Los avances sin impacto en productos evaluados no piden aprobación. La revisión se activa al completar un producto o cambiar costos que lo afectan.</p></div>
-                {profile.catalog?.missingProducts.length ? <div className="flex flex-col gap-2 rounded-lg border p-3 text-xs"><strong>Productos fuera de la planilla</strong><p className="text-muted-foreground">Faltan datos de lote, venta, mano de obra u horas. Cozte no los completará con ceros.</p><Button size="sm" variant="outline" disabled={demo || status !== "ready"} onClick={() => void send("Preparemos la propuesta para crear en Costos de producción las fichas de " + profile.catalog?.missingProducts.join(", ") + ". Primero dime qué datos faltan y no uses ceros para desconocidos.")}>Completar fichas con Cozte</Button></div> : null}
-                {profile.catalog?.issues.length ? <ul className="list-inside list-disc text-xs text-muted-foreground">{profile.catalog.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}
-                <div className="flex flex-col gap-2">{profile.catalog?.actions.map((item) => <div key={item.key} className="flex flex-col gap-2 rounded-lg border p-3 text-xs"><div><strong>{item.label}</strong><p className="mt-1 text-muted-foreground">{item.details}</p></div><Button size="sm" variant="outline" className="self-start" disabled={demo} onClick={() => void proposeCatalogAction(item.action, item.label)}>Aplicar o revisar</Button></div>)}</div>
-              </section> : null}
+              <section className="flex flex-col gap-3 border-t pt-4" aria-labelledby="cozte-current-sources-title">
+                <div><h2 id="cozte-current-sources-title" className="text-sm font-semibold">Archivos de este turno</h2><p className="mt-1 text-xs text-muted-foreground">Las imágenes, PDF y planillas que compartiste ahora.</p></div>
+                {!currentTurnSources.length ? <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">No adjuntaste archivos en este turno.</p> : <ol className="flex flex-col gap-2">{currentTurnSources.map((source) => <li key={source.id} className="rounded-lg border p-3"><span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{dataSourceKindLabel(source.kind)}</span><strong className="mt-1 block break-all text-sm">{source.label}</strong>{source.mediaType ? <span className="mt-1 block text-xs text-muted-foreground">{source.mediaType}</span> : null}</li>)}</ol>}
+              </section>
             </CardContent>
           </Card>
         </aside>
@@ -505,7 +440,7 @@ function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; o
   </Card>;
 }
 
-function AssistantMessageToolTag({ toolName, input, output, errorText, persisted }: { toolName: string; input?: unknown; output?: unknown; errorText?: string; persisted?: PersistedToolExecution }) {
+function AssistantMessageToolTag({ toolName, input, output, errorText, persisted, onEdit }: { toolName: string; input?: unknown; output?: unknown; errorText?: string; persisted?: PersistedToolExecution; onEdit?: (prompt: string) => void }) {
   const [details, setDetails] = React.useState<{ input?: unknown; output?: unknown; durationMs?: number; error?: string } | null>(null);
   const [loadingDetails, setLoadingDetails] = React.useState(false);
   const [detailsError, setDetailsError] = React.useState<string | null>(null);
@@ -547,18 +482,61 @@ function AssistantMessageToolTag({ toolName, input, output, errorText, persisted
       {resolvedInput !== undefined ? <AssistantToolPayload title="Datos que usó Cozte" value={resolvedInput} /> : !loadingDetails ? <p className="text-xs text-muted-foreground">No quedaron datos de entrada registrados.</p> : null}
       {resolvedOutput !== undefined ? <AssistantToolPayload title="Resultado" value={resolvedOutput} /> : persisted?.status === "running" ? <p className="text-xs text-muted-foreground">Esta herramienta todavía está trabajando.</p> : !loadingDetails ? <p className="text-xs text-muted-foreground">No quedó un resultado para mostrar.</p> : null}
       {details?.durationMs !== undefined ? <p className="text-[11px] text-muted-foreground">Duración: {(details.durationMs / 1000).toFixed(1)} s</p> : null}
+      {onEdit && resolvedInput !== undefined ? <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => onEdit(buildActionEditPrompt(toolName, resolvedInput, resolvedOutput))}>Ajustar con Cozte</Button> : null}
     </div>
   </details>;
 }
 
 function AssistantToolPayload({ title, value }: { title: string; value: unknown }) {
-  let formatted: string;
-  try { formatted = JSON.stringify(value, null, 2) ?? String(value); }
-  catch { formatted = String(value); }
+  const rows = toolPayloadRows(value);
   return <section className="flex flex-col gap-1">
     <h4 className="text-[11px] font-semibold text-muted-foreground">{title}</h4>
-    <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 text-[11px] leading-relaxed">{formatted}</pre>
+    {rows.length ? <dl className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] gap-x-2 gap-y-1 rounded-md bg-muted/50 p-2 text-[11px] leading-relaxed">{rows.map(([label, content], index) => <React.Fragment key={`${label}-${index}`}><dt className="text-muted-foreground">{label}</dt><dd className="break-words font-medium">{content}</dd></React.Fragment>)}</dl> : <p className="rounded-md bg-muted/50 p-2 text-[11px]">Sin datos adicionales.</p>}
   </section>;
+}
+
+function toolPayloadRows(value: unknown, prefix = "", depth = 0): [string, string][] {
+  if (value === null || value === undefined) return prefix ? [[prefix, "Sin dato"]] : [];
+  if (Array.isArray(value)) return value.flatMap((item, index) => toolPayloadRows(item, `${prefix ? `${prefix} · ` : ""}${Array.isArray(value) && value.length > 1 ? `Elemento ${index + 1}` : ""}`.trim(), depth + 1)).slice(0, 24);
+  if (typeof value === "object") {
+    const labels: Record<string, string> = { action: "Tipo de cambio", label: "Acción", brief: "Detalle", name: "Nombre", supplier: "Proveedor", purchaseUnit: "Unidad de compra", category: "Categoría", price: "Precio", amount: "Importe", currency: "Moneda", source: "Fuente", effectiveDate: "Fecha efectiva", period: "Período", allocationBasis: "Forma de reparto", basis: "Forma de reparto", shares: "Porcentajes acordados", products: "Productos", product: "Producto", productName: "Producto", materialName: "Insumo", expenseName: "Gasto", lotUnits: "Unidades por lote", salePrice: "Precio de venta por unidad", salesVariablePerUnit: "Gasto variable por unidad", laborCostPerLot: "Trabajo por lote", productionHoursPerLot: "Horas por lote", quantityMilli: "Cantidad por producto", quantityInPurchaseUnits: "Cantidad por producto", frequency: "Frecuencia", amountMinor: "Importe", monthlyMinor: "Equivalente mensual", directPerFinishedUnitMinor: "Costo directo por unidad", error: "Resultado" };
+    return Object.entries(value as Record<string, unknown>).flatMap(([key, item]) => {
+      if (["id", "materialId", "expenseId", "productId", "cloneProductId", "expectedRevision", "idempotencyKey"].includes(key) || item === undefined) return [];
+      const label = labels[key] ?? key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (character) => character.toLocaleUpperCase());
+      const translated = translateToolValue(key, item);
+      if (translated !== null) return [[prefix ? `${prefix} · ${label}` : label, translated] as [string, string]];
+      if (depth > 2) return [];
+      return toolPayloadRows(item, prefix ? `${prefix} · ${label}` : label, depth + 1);
+    }).slice(0, 24);
+  }
+  const label = prefix || "Dato";
+  return [[label, String(value)]];
+}
+
+function translateToolValue(key: string, value: unknown): string | null {
+  if (value === null) return "Sin dato";
+  if (typeof value === "object") return null;
+  if (key === "action" && typeof value === "string") {
+    const actions: Record<string, string> = { "create-category": "Crear categoría", "rename-category": "Renombrar categoría", "create-material": "Crear insumo", "delete-material": "Eliminar insumo", "update-material-meta": "Editar datos del insumo", "create-expense": "Crear gasto", "update-expense-meta": "Editar datos del gasto", "update-expense-allocation": "Cambiar reparto del gasto", "set-component": "Actualizar consumo del producto", "create-product": "Crear producto", "create-products": "Crear productos", "update-product": "Editar producto", "delete-product": "Eliminar producto" };
+    return actions[value] ?? value;
+  }
+  if (["allocationBasis", "basis"].includes(key) && typeof value === "string") return ({ hours: "Por horas de producción", units: "Por unidades del lote", manual: "Por porcentajes acordados" } as Record<string, string>)[value] ?? value;
+  if (typeof value === "boolean") return value ? "Sí" : "No";
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(", ");
+  return String(value);
+}
+
+function buildActionEditPrompt(toolName: string, input: unknown, output: unknown): string {
+  const inputRecord = input && typeof input === "object" ? input as Record<string, unknown> : {};
+  const change = inputRecord.change && typeof inputRecord.change === "object" ? inputRecord.change as Record<string, unknown> : inputRecord;
+  const outputRecord = output && typeof output === "object" ? output as Record<string, unknown> : {};
+  const entity = [change.name, change.productName, change.materialName, change.expenseName, outputRecord.materialName, outputRecord.expenseName].find((item): item is string => typeof item === "string" && item.trim().length > 0);
+  const label = assistantToolLabel(toolName).toLocaleLowerCase();
+  return `Quiero ajustar ${entity ? `“${entity}”` : `la acción de ${label}`} que hiciste en este turno. Revisa los datos actuales y dime qué campos puedo cambiar; luego aplica el ajuste que te indique. `;
+}
+
+function isActionToolName(name: string) {
+  return ["updateMaterialPrice", "updateExpenseAmount", "updateProductionMap", "applyCostAction", "proposeMaterialPrice", "proposeExpenseAmount", "proposeProductionProfile", "proposeCostAction"].includes(name);
 }
 
 function assistantToolLabel(name: string) {
@@ -566,10 +544,14 @@ function assistantToolLabel(name: string) {
     inspectCostBase: "Revisar costos y producción",
     calculateCostRule: "Calcular una regla de costo",
     findMaterial: "Identificar un insumo",
+    updateMaterialPrice: "Actualizar precio de insumo",
+    updateExpenseAmount: "Actualizar gasto",
+    updateProductionMap: "Guardar avance de producción",
+    applyCostAction: "Cambios de costos",
     proposeMaterialPrice: "Actualizar precio de insumo",
     proposeExpenseAmount: "Actualizar gasto",
-    proposeProductionProfile: "Guardar avance de producción",
-    proposeCostAction: "Gestionar cambio de costos",
+    proposeProductionProfile: "Actualizar producción",
+    proposeCostAction: "Cambios de costos",
   };
   return labels[name] ?? "Otra herramienta";
 }
@@ -644,8 +626,4 @@ function formatProposalDate(value: string) {
   const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? `${value.replace(" ", "T")}Z` : value;
   const date = new Date(normalized);
   return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat("es", { dateStyle: "medium", timeStyle: "short" }).format(date);
-}
-
-function formatProfileUnitCost(value: number, currency: Currency) {
-  return new Intl.NumberFormat("es", { style: "currency", currency, maximumFractionDigits: currency === "CLP" || currency === "ARS" ? 0 : 2 }).format(value);
 }

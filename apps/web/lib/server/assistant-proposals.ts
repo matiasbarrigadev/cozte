@@ -2,13 +2,13 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { DomainState } from "@/lib/domain";
-import { changesEvaluatedProductCosts, emptyProductionProfile, evaluableProfileProducts, profileGaps, productionProfileSchema, validateProfileReferences, type ProductionProfile } from "@/lib/production-profile";
+import { changesEvaluatedProductCosts, evaluableProfileProducts, productionProfileReviewReason, profileGaps, productionProfileSchema, validateProfileReferences, type ProductionProfile } from "@/lib/production-profile";
 import { mutationSchema, previewMutation, commitMutation, type Mutation } from "./mutations";
 import { calculateProductionCosts } from "@/lib/production-profile";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery } from "./db";
 import { loadState } from "./state";
-import { loadProductionProfile, confirmProductionProfile, saveEvaluatedProfileMetadata, saveProductionProfileDraft } from "./production-profile";
+import { loadProductionProfile, confirmProductionProfile, saveProductionProfileDirectly, saveProductionProfileDraft } from "./production-profile";
 import { mutationProposalPresentation, productionProfilePresentation, type ProposalDetails } from "@/lib/proposal-presentation";
 import { getAssistantRunMessageIds, listAssistantDataSources, type AssistantDataSource } from "./assistant-trace";
 import { mutationNeedsHumanReview } from "@/lib/cost-approval-policy";
@@ -318,20 +318,14 @@ export async function createProductionProfileProposal(
   const expectedProfileRevision = options.profileRevision ?? existingProfile.revision;
   const { gaps, referenceErrors, presentation } = profileOptions(profile, state);
   const evaluableProducts = evaluableProfileProducts(profile, state.organization.currency, state.fxQuotes);
-  const confirmedEvaluable = new Set(evaluableProfileProducts(existingProfile.confirmed ?? emptyProductionProfile, state.organization.currency, state.fxQuotes).map((name) => name.toLocaleLowerCase()));
-  const newlyEvaluable = evaluableProducts.filter((name) => !confirmedEvaluable.has(name.toLocaleLowerCase()));
+  const reviewReason = productionProfileReviewReason(existingProfile.draft ?? existingProfile.confirmed, profile);
   const impactsEvaluatedProduct = changesEvaluatedProductCosts(existingProfile.confirmed, profile, state.organization.currency, state.fxQuotes);
-  if (!newlyEvaluable.length && !impactsEvaluatedProduct) {
+  if (!reviewReason) {
     const currentJson = JSON.stringify(existingProfile.draft ?? existingProfile.confirmed);
     if (currentJson === JSON.stringify(profile)) return { kind: "profile-draft", status: "unchanged", draftRevision: existingProfile.revision, gaps, referenceErrors, evaluableProducts };
-    const confirmedProducts = existingProfile.confirmed?.products.map((item) => item.name) ?? [];
-    const proposedProducts = profile.products.map((item) => item.name);
-    const confirmedReady = evaluableProfileProducts(existingProfile.confirmed ?? emptyProductionProfile, state.organization.currency, state.fxQuotes);
-    const metadataOnly = !!existingProfile.confirmed && confirmedReady.length === confirmedProducts.length && evaluableProducts.length === proposedProducts.length
-      && confirmedProducts.length === proposedProducts.length && confirmedProducts.every((name) => proposedProducts.some((candidate) => candidate.toLocaleLowerCase() === name.toLocaleLowerCase()));
-    if (metadataOnly) {
-      const saved = await saveEvaluatedProfileMetadata(principal, profile, expectedProfileRevision, state.revision);
-      return { kind: "profile-metadata", applied: true, status: "applied", draftRevision: saved.revision, gaps, referenceErrors, evaluableProducts };
+    if (existingProfile.confirmed || evaluableProducts.length > 0) {
+      const saved = await saveProductionProfileDirectly(principal, profile, expectedProfileRevision, state.revision);
+      return { kind: existingProfile.confirmed ? "profile-update" : "profile-evaluated", applied: true, status: "applied", profileRevision: saved.revision, gaps, referenceErrors, evaluableProducts, costUpdated: impactsEvaluatedProduct };
     }
     const saved = await saveProductionProfileDraft(principal, profile, expectedProfileRevision, state.revision);
     return { kind: "profile-draft", status: "building", draftRevision: saved.revision, gaps, referenceErrors, evaluableProducts };
@@ -361,7 +355,7 @@ export async function createProductionProfileProposal(
   }
   const row = await getRow(principal, proposalId);
   if (!row) throw new Error("La propuesta de producción se guardó, pero no se pudo recuperar");
-  return { ...toolResult(row), gaps, referenceErrors, evaluableProducts, reviewReason: impactsEvaluatedProduct ? "Afecta productos ya evaluados" : "Producto completo listo para evaluación" };
+  return { ...toolResult(row), gaps, referenceErrors, evaluableProducts, reviewReason: "Eliminar productos, insumos o gastos del mapa de producción" };
 }
 
 async function markProposalStale(principal: Principal, proposalId: string, reason: string) {
@@ -471,8 +465,8 @@ export async function decideAssistantProposal(
 
 export async function proposeCatalogMutation(principal: Principal, rawMutation: unknown): Promise<Record<string, unknown>> {
   const parsed = mutationSchema.parse(rawMutation);
-  const [state, profile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
+  const state = await loadState(principal);
   const mutation = mutationSchema.parse({ ...parsed, expectedRevision: state.revision }) as Mutation;
-  if (!mutationNeedsHumanReview(state, mutation, [profile.confirmed])) return { applied: true, result: await commitMutation(principal, mutation, { source: "user" }) };
+  if (!mutationNeedsHumanReview(mutation)) return { applied: true, result: await commitMutation(principal, mutation, { source: "user" }) };
   return createMutationProposal(principal, mutation, { stateSnapshot: state });
 }

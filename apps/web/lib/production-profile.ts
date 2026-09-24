@@ -140,6 +140,24 @@ export function evaluableProfileProducts(profile: ProductionProfile, base: Curre
   }).map((product) => product.name);
 }
 
+export type ProductionProfileReviewReason = "remove-production-data";
+
+/** Human review is reserved for removing a product, input, or recurring cost from the active production map. */
+export function productionProfileReviewReason(
+  current: ProductionProfile | null,
+  proposed: ProductionProfile,
+): ProductionProfileReviewReason | null {
+  if (!current) return null;
+  const hasRemoval = <T extends { name: string }>(before: T[], after: T[]) => {
+    const retained = new Set(after.map((item) => item.name.trim().toLocaleLowerCase()));
+    return before.some((item) => !retained.has(item.name.trim().toLocaleLowerCase()));
+  };
+  if (hasRemoval(current.products, proposed.products)
+    || hasRemoval(current.inputs, proposed.inputs)
+    || hasRemoval(current.recurringCosts, proposed.recurringCosts)) return "remove-production-data";
+  return null;
+}
+
 function profileProductCostFingerprint(profile: ProductionProfile, productName: string): string {
   const key = productName.toLocaleLowerCase();
   const product = profile.products.find((item) => item.name.toLocaleLowerCase() === key);

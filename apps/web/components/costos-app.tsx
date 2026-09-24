@@ -259,7 +259,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
             </>}
           </> : null}
 
-          {view === "asistente" ? <CozteAssistant demo={demo} onDataChanged={refresh} /> : null}
+          {view === "asistente" ? <CozteAssistant demo={demo} onDataChanged={refresh} onOpenCosts={() => setView("planilla")} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
         </main>

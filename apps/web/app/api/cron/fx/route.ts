@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   try {
     const publication = await officialFxTable();
     const organizations = await dbQuery<{ id: string }>(`SELECT id FROM organizations o WHERE EXISTS (
-      SELECT 1 FROM material_prices p JOIN materials m ON m.id=p.material_id WHERE m.organization_id=o.id AND p.version=m.version AND p.currency IS NOT NULL AND p.currency<>o.currency
+      SELECT 1 FROM material_prices p JOIN materials m ON m.id=p.material_id WHERE m.organization_id=o.id AND m.archived_at IS NULL AND p.version=m.version AND p.currency IS NOT NULL AND p.currency<>o.currency
     ) OR EXISTS (SELECT 1 FROM shared_expenses e WHERE e.organization_id=o.id AND e.currency IS NOT NULL AND e.currency<>o.currency) LIMIT 100`);
     let snapshotted = 0;
     for (const organization of organizations) {

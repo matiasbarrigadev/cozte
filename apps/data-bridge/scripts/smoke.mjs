@@ -14,8 +14,13 @@ async function batch(statements) {
 const unauthorized = await fetch(url, { method: "POST", body: "{}" });
 assert.equal(unauthorized.status, 401);
 
+let response = await batch([{ sql: "INSERT INTO cozte_smoke_missing_table (id) VALUES (?)", params: [randomUUID()] }]);
+assert.equal(response.status, 500);
+const diagnostic = await response.json();
+assert.match(diagnostic.requestId, /^[0-9a-f-]{36}$/i, "database failures should return a safe correlation ID");
+
 const organizationId = `smoke-${randomUUID()}`;
-let response = await batch([{ sql: "INSERT INTO organizations (id, name) VALUES (?, ?)", params: [organizationId, "Smoke test"] }]);
+response = await batch([{ sql: "INSERT INTO organizations (id, name) VALUES (?, ?)", params: [organizationId, "Smoke test"] }]);
 assert.equal(response.status, 200);
 
 const changeId = randomUUID();
