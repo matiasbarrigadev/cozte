@@ -45,6 +45,15 @@ export type SharedExpense = {
   fxMissing?: boolean;
 };
 
+export type ProductionWorkMap = {
+  isDraft: boolean;
+  products: { name: string; finishedUnit: string; goodUnitsPerBatch: number | null; startedUnitsPerBatch: number | null; normalScrapUnitsPerBatch: number | null; batchesPerMonth: number | null; hoursPerBatch: number | null }[];
+  costs: { product: string; unitMinor: number | null }[];
+  evaluableProducts: string[];
+  inputs: { name: string; consumptionUnit: string; usage: { product: string; quantityPerBatch: number | null }[] }[];
+  recurringCosts: { name: string; allocation: "production_hours" | "finished_units" | "manual_percentage"; shares: { product: string; percent: number }[] }[];
+};
+
 export type DomainState = {
   revision: number;
   activePeriod: string;
@@ -55,6 +64,7 @@ export type DomainState = {
   components: Component[];
   expenses: SharedExpense[];
   categories?: { id: string; name: string }[];
+  productionWork?: ProductionWorkMap | null;
 };
 
 export type CostLine = {

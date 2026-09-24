@@ -8,8 +8,10 @@ describe("mapa hacia catálogo de costos", () => {
     const profile: ProductionProfile = { ...emptyProductionProfile, products: [{ name: "Producto nuevo", finishedUnit: "unidad", goodUnitsPerBatch: 10, startedUnitsPerBatch: 10, normalScrapUnitsPerBatch: 0, batchesPerMonth: 1, hoursPerBatch: 2 }], inputs: [{ name: "Pegamento", category: "Materias primas", purchaseUnit: "litro", consumptionUnit: "ml", unitsPerPurchase: 1000, usage: [], pricePerPurchaseMinor: null }], recurringCosts: [{ name: "Arriendo", category: "Instalaciones", frequency: "quarterly", amountMinor: 90000, allocation: "production_hours", shares: [] }] };
     const result = profileCatalogSuggestions(profile, demoState);
     expect(result.missingProducts).toEqual(["Producto nuevo"]);
-    expect(result.actions.find((item) => item.key === "material:Pegamento")?.action).toMatchObject({ action: "create-material", price: undefined });
-    expect(result.actions.find((item) => item.key === "expense:Arriendo")?.action).toMatchObject({ action: "create-expense", amount: 30000, allocationBasis: "hours" });
+    expect(result.actions.find((item) => item.key === "material:Pegamento")?.action).toMatchObject({ action: "create-material", name: "Pegamento" });
+    expect(result.actions.find((item) => item.key === "material:Pegamento")?.action).not.toHaveProperty("price");
+    expect(result.actions.some((item) => item.key === "expense:Arriendo")).toBe(false);
+    expect(result.issues).toContain("Faltan fichas de Producto nuevo para sincronizar el reparto de Arriendo");
     expect(demoState.materials.some((item) => item.name === "Pegamento")).toBe(false);
   });
 

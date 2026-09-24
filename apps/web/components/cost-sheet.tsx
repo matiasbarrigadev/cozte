@@ -65,7 +65,7 @@ function EditableMoney({ value, label, onCommit, disabled }: {
     }} />;
 }
 
-export function CostSheet({ state, draft, draftReady, draftStatus, canReview, busy, demo, onRetryDraft, onMaterialPrice, onExpenseAmount, onMaterialCurrency, onExpenseCurrency, onMetaChange, onCategoryCreate, onCategoryRename, onAllocationChange, onUsageChange, onAddMaterial, onAddExpense, onReview, onDiscard }: {
+export function CostSheet({ state, draft, draftReady, draftStatus, canReview, busy, demo, onOpenCozte, onRetryDraft, onMaterialPrice, onExpenseAmount, onMaterialCurrency, onExpenseCurrency, onMetaChange, onCategoryCreate, onCategoryRename, onAllocationChange, onUsageChange, onAddMaterial, onAddExpense, onReview, onDiscard }: {
   state: DomainState;
   draft: Draft;
   draftReady: boolean;
@@ -73,6 +73,7 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   canReview: boolean;
   busy: boolean;
   demo: boolean;
+  onOpenCozte: () => void;
   onRetryDraft: () => void;
   onMaterialPrice: (id: string, value: number) => void;
   onExpenseAmount: (id: string, value: number) => void;
@@ -116,6 +117,9 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   const selectedCategory = category === "all" || categories.includes(category) ? category : "all";
   const normalizedQuery = query.trim().toLocaleLowerCase("es");
   const matches = (name: string, group: string) => (selectedCategory === "all" || group === selectedCategory) && (!normalizedQuery || `${name} ${group}`.toLocaleLowerCase("es").includes(normalizedQuery));
+  const entityKey = (name: string) => name.trim().toLocaleLowerCase("es");
+  const productionInput = (item: Material) => state.productionWork?.inputs.find((input) => entityKey(input.name) === entityKey(item.name));
+  const productionExpense = (item: SharedExpense) => state.productionWork?.recurringCosts.find((cost) => entityKey(cost.name) === entityKey(item.name));
   const materials = kind === "expenses" ? [] : state.materials.filter((item) => matches(`${item.name} ${item.supplier}`, item.category));
   const visibleExpenses = kind === "materials" ? [] : expenses.filter((item) => matches(item.name, item.category));
   const changedMaterialIds = state.materials.filter((item) => draft.materialCurrencies[item.id] !== undefined || (draft.materials[item.id] !== undefined && draft.materials[item.id] !== (item.nativeAmountMilli == null ? item.priceMinor : item.nativeAmountMilli / 1000)));
@@ -132,7 +136,9 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   const canEdit = !busy && draftReady;
 
   function materialRow(item: Material) {
-    const affected = new Set(state.components.filter((part) => part.materialId === item.id).map((part) => part.productId)).size;
+    const operationalProducts = new Set(state.components.filter((part) => part.materialId === item.id).map((part) => state.products.find((product) => product.id === part.productId)?.name).filter((name): name is string => Boolean(name)));
+    const mapInput = productionInput(item);
+    const mapUsage = mapInput?.usage ?? [];
     const pending = changedMaterialIds.some((entry) => entry.id === item.id);
     const selectedCurrency = draft.materialCurrencies[item.id] ?? item.currency ?? state.organization.currency;
     const displayAmount = draft.materials[item.id] ?? (draft.materialCurrencies[item.id] ? null : item.nativeAmountMilli == null ? item.priceMinor : item.nativeAmountMilli / 1000);
@@ -143,13 +149,19 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
       <TableCell className={cn(sheetCellClass, "min-w-32")}><EditableText value={item.purchaseUnit} label={`Unidad de ${item.name}`} disabled={!canEdit} onCommit={(value) => onMetaChange({ action: "update-material-meta", id: item.id, field: "purchaseUnit", value })} /></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-28")}><NativeSelect aria-label={`Moneda de ${item.name}`} value={selectedCurrency} disabled={!canEdit} className={sheetSelectClass} onChange={(event) => onMaterialCurrency(item.id, event.target.value as Currency)}>{supportedCurrencies.map((code) => <NativeSelectOption key={code} value={code}>{code}</NativeSelectOption>)}</NativeSelect></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-36")}><EditableMoney value={displayAmount} label={`Precio de ${item.name}`} disabled={!canEdit} onCommit={(value) => onMaterialPrice(item.id, value)} />{selectedCurrency !== state.organization.currency ? <span className="block px-3 pb-1 text-right text-[11px] text-muted-foreground">{state.fxQuotes?.[selectedCurrency]?.asOf ? `${state.fxQuotes[selectedCurrency]?.source} ${state.fxQuotes[selectedCurrency]?.asOf}` : "Cotización pendiente"}</span> : null}</TableCell>
-      <TableCell className={sheetCellClass}><Button size="sm" variant="ghost" className="h-11 w-full justify-start rounded-none px-3" disabled={!canEdit} onClick={() => openUsage(item)}>{affected} producto{affected === 1 ? "" : "s"} · Editar consumo</Button></TableCell>
+       <TableCell className={cn(sheetCellClass, "min-w-56")}><div className="space-y-1 p-2"><Button size="sm" variant="ghost" className="h-8 w-full justify-start rounded-md px-2" disabled={!canEdit} onClick={() => openUsage(item)}>{operationalProducts.size} en planilla · Editar consumo</Button>{operationalProducts.size ? <p className="px-2 text-xs text-muted-foreground">{[...operationalProducts].join(", ")}</p> : null}{mapUsage.length ? <div className="rounded-md bg-muted/50 px-2 py-1.5"><p className="text-xs font-medium">Mapa Cozte · {mapUsage.length} producto{mapUsage.length === 1 ? "" : "s"}</p><p className="text-xs text-muted-foreground">{mapUsage.map((usage) => `${usage.product}: ${usage.quantityPerBatch === null ? "consumo pendiente" : `${usage.quantityPerBatch} ${mapInput?.consumptionUnit ?? ""} por lote`}`).join(" · ")}</p><Button size="sm" variant="link" className="h-7 px-0 text-xs" onClick={onOpenCozte}>Revisar mapa con Cozte</Button></div> : null}{!operationalProducts.size && !mapUsage.length ? <p className="px-2 text-xs text-muted-foreground">Sin producto asociado</p> : null}</div></TableCell>
       <TableCell className={cn(sheetCellClass, "px-3")}>{pending ? <Badge variant="secondary">Borrador</Badge> : <span className="text-muted-foreground">Vigente</span>}</TableCell>
     </TableRow>;
   }
 
   function expenseRow(item: SharedExpense) {
     const affected = state.products.filter((product) => expenseAppliesTo(item, product.id)).length;
+    const mapCost = productionExpense(item);
+    const mapProducts = (state.productionWork?.products ?? []).filter((product) => mapCost && (mapCost.allocation === "manual_percentage"
+      ? (mapCost.shares.find((share) => entityKey(share.product) === entityKey(product.name))?.percent ?? 0) > 0
+      : mapCost.allocation === "production_hours"
+        ? (product.hoursPerBatch ?? 0) > 0 && (product.batchesPerMonth ?? 0) > 0
+        : (product.goodUnitsPerBatch ?? 0) > 0 && (product.batchesPerMonth ?? 0) > 0));
     const pending = changedExpenseIds.some((entry) => entry.id === item.id);
     const selectedCurrency = draft.expenseCurrencies[item.id] ?? item.currency ?? state.organization.currency;
     const displayAmount = draft.expenses[item.id] ?? (draft.expenseCurrencies[item.id] ? null : item.nativeAmountMilli == null ? item.amountMinor : item.nativeAmountMilli / 1000);
@@ -160,7 +172,7 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
       <TableCell className={cn(sheetCellClass, "min-w-32")}><Button size="sm" variant="ghost" className="h-11 w-full justify-start rounded-none px-3" disabled={!canEdit} onClick={() => openAllocation(item)}><Settings2 data-icon="inline-start" />{item.allocationBasis === "hours" ? "Por horas" : item.allocationBasis === "units" ? "Por unidades" : "Porcentajes"}</Button></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-28")}><NativeSelect aria-label={`Moneda de ${item.name}`} value={selectedCurrency} disabled={!canEdit} className={sheetSelectClass} onChange={(event) => onExpenseCurrency(item.id, event.target.value as Currency)}>{supportedCurrencies.map((code) => <NativeSelectOption key={code} value={code}>{code}</NativeSelectOption>)}</NativeSelect></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-36")}><EditableMoney value={displayAmount} label={`Monto de ${item.name}`} disabled={!canEdit} onCommit={(value) => onExpenseAmount(item.id, value)} />{selectedCurrency !== state.organization.currency ? <span className="block px-3 pb-1 text-right text-[11px] text-muted-foreground">{state.fxQuotes?.[selectedCurrency]?.asOf ? `${state.fxQuotes[selectedCurrency]?.source} ${state.fxQuotes[selectedCurrency]?.asOf}` : "Cotización pendiente"}</span> : null}</TableCell>
-      <TableCell className={cn(sheetCellClass, "px-3")}><Badge variant="secondary">{affected} producto{affected === 1 ? "" : "s"}</Badge></TableCell>
+       <TableCell className={cn(sheetCellClass, "min-w-52 px-3 py-2")}><div className="space-y-1"><Badge variant="secondary">Planilla · {affected} producto{affected === 1 ? "" : "s"}</Badge>{mapCost ? <div className="rounded-md bg-muted/50 px-2 py-1.5"><p className="text-xs font-medium">Mapa Cozte · {mapCost.allocation === "manual_percentage" ? "porcentajes" : mapCost.allocation === "production_hours" ? "por horas" : "por unidades"}</p><p className="text-xs text-muted-foreground">{mapProducts.length ? mapProducts.map((product) => product.name).join(", ") : "Reparto pendiente de definir"}</p><Button size="sm" variant="link" className="h-7 px-0 text-xs" onClick={onOpenCozte}>Revisar reparto con Cozte</Button></div> : null}</div></TableCell>
       <TableCell className={cn(sheetCellClass, "px-3")}>{pending ? <Badge variant="secondary">Borrador</Badge> : <span className="text-muted-foreground">Vigente</span>}</TableCell>
     </TableRow>;
   }

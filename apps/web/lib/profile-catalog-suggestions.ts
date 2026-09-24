@@ -10,11 +10,12 @@ export function profileCatalogSuggestions(profile: ProductionProfile | null, sta
   const actions: CatalogSuggestion[] = [];
   const issues: string[] = [];
   const missingProducts = profile.products.filter((item) => !state.products.some((product) => sameName(product.name, item.name))).map((item) => item.name);
+  const everyProfileProductExists = missingProducts.length === 0;
   for (const input of profile.inputs) {
     const material = state.materials.find((item) => sameName(item.name, input.name));
     if (!material) {
       const price = input.pricePerPurchase ?? input.pricePerPurchaseMinor ?? undefined;
-      actions.push({ key: `material:${input.name}`, label: `Agregar ${input.name}`, details: `${input.category} · por ${input.purchaseUnit}${price === undefined ? " · precio pendiente" : ` · ${price} ${input.priceCurrency ?? state.organization.currency}`}`, action: { action: "create-material", name: input.name, supplier: "", purchaseUnit: input.purchaseUnit, category: input.category, price, currency: input.priceCurrency ?? state.organization.currency, source: input.evidence?.source ?? "Mapa de producción" } });
+      actions.push({ key: `material:${input.name}`, label: `Agregar ${input.name}`, details: `${input.category} · por ${input.purchaseUnit}${price === undefined ? " · precio pendiente" : ` · ${price} ${input.priceCurrency ?? state.organization.currency}`}`, action: { action: "create-material", name: input.name, supplier: "", purchaseUnit: input.purchaseUnit, category: input.category, ...(price === undefined ? {} : { price }), currency: input.priceCurrency ?? state.organization.currency, source: input.evidence?.source ?? "Mapa de producción" } });
       continue;
     }
     if (input.unitsPerPurchase === null) { if (input.usage.length) issues.push(`Falta la conversión de compra para ${input.name}`); continue; }
@@ -32,6 +33,10 @@ export function profileCatalogSuggestions(profile: ProductionProfile | null, sta
     }
   }
   for (const cost of profile.recurringCosts) {
+    if (!everyProfileProductExists) {
+      issues.push(`Faltan fichas de ${missingProducts.join(", ")} para sincronizar el reparto de ${cost.name}`);
+      continue;
+    }
     const expense = state.expenses.find((item) => item.period === state.activePeriod && sameName(item.name, cost.name));
     const basis = cost.allocation === "production_hours" ? "hours" : cost.allocation === "finished_units" ? "units" : "manual";
     const shares = Object.fromEntries(cost.shares.flatMap((share) => { const product = state.products.find((item) => sameName(item.name, share.product)); return product ? [[product.id, Math.round(share.percent * 100)]] : []; }));

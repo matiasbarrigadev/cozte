@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { OrganizationSwitcher, UserButton, useOrganization } from "@clerk/nextjs";
 import { toast } from "sonner";
-import { calculateCosts, convertToOrganizationCurrency, type DomainState, type Product, type ProductCost } from "@/lib/domain";
+import { calculateCosts, convertToOrganizationCurrency, type DomainState, type Product, type ProductCost, type ProductionWorkMap } from "@/lib/domain";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,12 +29,7 @@ import { CozteLogo } from "./cozte-logo";
 type Dashboard = DomainState & {
   costs: ProductCost[];
   alerts: { id: string; material_id: string; message: string; first_detected_at: string }[];
-  productionWork?: {
-    isDraft: boolean;
-    products: { name: string; finishedUnit: string; goodUnitsPerBatch: number | null; batchesPerMonth: number | null }[];
-    costs: { product: string; unitMinor: number | null }[];
-    evaluableProducts: string[];
-  } | null;
+  productionWork?: ProductionWorkMap | null;
 };
 type View = "dashboard" | "producto" | "planilla" | "revision" | "comprobantes" | "asistente" | "historial";
 type Draft = { materials: Record<string, number>; expenses: Record<string, number>; materialCurrencies: Record<string, Currency>; expenseCurrencies: Record<string, Currency>; source: string; effectiveDate: string };
@@ -255,7 +250,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
           </> : null}
 
           {view === "planilla" ? <>
-            <CostSheet state={state} draft={draft} draftReady={draftReady} draftStatus={draftStatus} canReview={clientPreview !== null} busy={busy} demo={demo}
+            <CostSheet state={state} draft={draft} draftReady={draftReady} draftStatus={draftStatus} canReview={clientPreview !== null} busy={busy} demo={demo} onOpenCozte={() => setView("asistente")}
               onRetryDraft={() => { if (draftReady) { setDraftStatus("saving"); setDraft((current) => ({ ...current })); } else { setDraftStatus("loading"); setDraftLoadAttempt((current) => current + 1); } }}
               onMaterialPrice={(id, value) => { if (!demo) setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [id]: value } })); setReview(null); }}
               onExpenseAmount={(id, value) => { if (!demo) setDraftStatus("saving"); setDraft((current) => ({ ...current, expenses: { ...current.expenses, [id]: value } })); setReview(null); }}

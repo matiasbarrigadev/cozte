@@ -22,7 +22,7 @@ export async function loadProductionProfile(principal: Principal) {
   const confirmed = row?.confirmed_json ? productionProfileSchema.parse(JSON.parse(row.confirmed_json)) : null;
   const draft = row?.draft_json ? productionProfileSchema.parse(JSON.parse(row.draft_json)) : null;
   const working = draft ?? confirmed ?? emptyProductionProfile;
-  return { confirmed, draft, revision: row?.revision ?? 0, organizationRevision: state.revision, currency: state.organization.currency, confirmedRevision: snapshots[0]?.revision ?? null, gaps: profileGaps(working), costs: calculateProductionCosts(working, state.organization.currency, state.fxQuotes), evaluableProducts: evaluableProfileProducts(working, state.organization.currency, state.fxQuotes), catalog: profileCatalogSuggestions(confirmed, state), fxQuotes: state.fxQuotes };
+  return { confirmed, draft, revision: row?.revision ?? 0, organizationRevision: state.revision, currency: state.organization.currency, confirmedRevision: snapshots[0]?.revision ?? null, gaps: profileGaps(working), costs: calculateProductionCosts(working, state.organization.currency, state.fxQuotes), evaluableProducts: evaluableProfileProducts(working, state.organization.currency, state.fxQuotes), catalog: profileCatalogSuggestions(draft ?? confirmed, state), fxQuotes: state.fxQuotes };
 }
 
 export async function saveProductionProfileDraft(principal: Principal, profile: ProductionProfile, expectedProfileRevision: number, expectedOrganizationRevision: number) {

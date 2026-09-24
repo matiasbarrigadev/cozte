@@ -101,9 +101,11 @@ export async function loadDashboard(principal: Principal) {
       : null;
   const productionWork = workingProfile?.products.length ? {
     isDraft: Boolean(profileRow?.draft_json),
-    products: workingProfile.products.map(({ name, finishedUnit, goodUnitsPerBatch, batchesPerMonth }) => ({ name, finishedUnit, goodUnitsPerBatch, batchesPerMonth })),
+    products: workingProfile.products.map(({ name, finishedUnit, goodUnitsPerBatch, startedUnitsPerBatch, normalScrapUnitsPerBatch, batchesPerMonth, hoursPerBatch }) => ({ name, finishedUnit, goodUnitsPerBatch, startedUnitsPerBatch, normalScrapUnitsPerBatch, batchesPerMonth, hoursPerBatch })),
     costs: calculateProductionCosts(workingProfile, state.organization.currency, state.fxQuotes).map(({ product, unitMinor }) => ({ product, unitMinor })),
     evaluableProducts: evaluableProfileProducts(workingProfile, state.organization.currency, state.fxQuotes),
+    inputs: workingProfile.inputs.map(({ name, consumptionUnit, usage }) => ({ name, consumptionUnit, usage })),
+    recurringCosts: workingProfile.recurringCosts.map(({ name, allocation, shares }) => ({ name, allocation, shares })),
   } : null;
   return { ...state, costs: calculateCosts(state), alerts, productionWork };
 }
