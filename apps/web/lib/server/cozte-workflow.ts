@@ -91,7 +91,6 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     maxOutputTokens: 2500,
     providerOptions: { gateway: { only: ["minimax"] } },
     repairToolCall: repairCozteToolCall,
-    prepareStep: ({ stepNumber }) => stepNumber === 0 ? { toolChoice: { type: "tool", toolName: "inspectCostBase" } } : undefined,
   });
 
   try {
