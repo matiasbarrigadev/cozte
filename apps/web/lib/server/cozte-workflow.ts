@@ -3,13 +3,14 @@ import { isStepCount, type ModelMessage, type UIMessage } from "ai";
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
-import { verifiedCozteResponse } from "@/lib/cozte-response-verifier";
 import type { Principal } from "./auth";
 import { saveConversation } from "./production-profile";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked } from "./assistant-trace";
 import { createCozteTools } from "./cozte-agent-tools";
 
 export const COZTE_MAX_AGENT_STEPS = 48;
+export const COZTE_MAX_OUTPUT_TOKENS = 32_768;
+export const COZTE_REASONING_EFFORT = "xhigh" as const;
 
 export type CozteWorkflowInput = {
   principal: Principal;
@@ -88,7 +89,8 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     instructions: input.instructions,
     tools,
     stopWhen: isStepCount(COZTE_MAX_AGENT_STEPS),
-    maxOutputTokens: 2500,
+    maxOutputTokens: COZTE_MAX_OUTPUT_TOKENS,
+    reasoning: COZTE_REASONING_EFFORT,
     providerOptions: { gateway: { only: ["minimax"] } },
     repairToolCall: repairCozteToolCall,
   });
@@ -97,10 +99,9 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     const result = await agent.stream({ messages: input.messages, writable });
     const finalModelMessage = [...result.messages].reverse().find((message) => message.role === "assistant");
     const content = finalModelMessage?.content;
-    const rawResponseText = typeof content === "string" ? content : Array.isArray(content)
+    const responseText = typeof content === "string" ? content : Array.isArray(content)
       ? content.filter((part) => part.type === "text").map((part) => "text" in part ? part.text : "").join("")
       : "";
-    const responseText = verifiedCozteResponse(rawResponseText, result.steps.flatMap((step) => step.toolResults.map((item) => ({ toolName: item.toolName, input: item.input, output: item.output }))));
     const status: FinalizeInput["status"] = "error" in result || !responseText.trim() ? "failed" : "completed";
     const assistantMessage: UIMessage = { id: `assistant-${input.runId}`, role: "assistant", parts: responseText.trim() ? [{ type: "text", text: responseText }] : [] };
     const messages = responseText.trim() ? [...input.persistedMessages, assistantMessage] : input.persistedMessages;

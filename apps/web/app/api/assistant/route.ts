@@ -9,9 +9,8 @@ import { addAssistantEvent, errorDetails, finishAssistantRun, getActiveAssistant
 import { loadProductionProfile } from "@/lib/server/production-profile";
 import { loadState } from "@/lib/server/state";
 import { buildCozteInstructions, createCozteTools } from "@/lib/server/cozte-agent-tools";
-import { cozteAssistantWorkflow, COZTE_MAX_AGENT_STEPS } from "@/lib/server/cozte-workflow";
+import { cozteAssistantWorkflow, COZTE_MAX_AGENT_STEPS, COZTE_MAX_OUTPUT_TOKENS, COZTE_REASONING_EFFORT } from "@/lib/server/cozte-workflow";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, COZTE_SPREADSHEET_MEDIA_TYPE, prepareCozteModelMessages } from "@/lib/cozte-assistant-attachments";
-import { createCozteVerifiedStreamTransform } from "@/lib/cozte-response-verifier";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -60,7 +59,7 @@ const incomingSchema = z.object({
 
 function persistableMessages(messages: UIMessage[]): UIMessage[] {
   return messages.map((message) => {
-    const textParts = message.parts.filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text").map((part) => ({ type: "text" as const, text: part.text.slice(0, 2000) }));
+    const textParts = message.parts.filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text").map((part) => ({ type: "text" as const, text: part.text.slice(0, 8000) }));
     if (textParts.length) return { id: message.id, role: message.role, parts: textParts } as UIMessage;
     if (message.role === "user") {
       const files = message.parts.filter((part): part is Extract<typeof part, { type: "file" }> => part.type === "file");
@@ -96,18 +95,18 @@ export async function POST(request: Request) {
     const candidateRunId = crypto.randomUUID();
     const tools = createCozteTools(principal, candidateRunId);
     const incoming: UIMessage = { id: message.id, role: "user", parts: message.parts };
-    const validated = await validateUIMessages({ messages: [...previous.slice(-22), incoming], tools });
+    const validated = await validateUIMessages({ messages: [...previous, incoming], tools });
     const instructions = buildCozteInstructions(state, profileState);
     const modelMessages = prepareCozteModelMessages(await convertToModelMessages(validated));
     const safeMessages = persistableMessages(validated);
-    const settings = { model: "minimax/minimax-m3", provider: "gateway", providerOptions: { gateway: { only: ["minimax"] } }, maxOutputTokens: 2500, maxSteps: COZTE_MAX_AGENT_STEPS, timeoutMs: null, durable: true, attachmentsPersistedAs: "workflow input only; files are excluded from conversation and tool trace" };
+    const settings = { model: "minimax/minimax-m3", provider: "gateway", providerOptions: { gateway: { only: ["minimax"] } }, reasoning: COZTE_REASONING_EFFORT, maxOutputTokens: COZTE_MAX_OUTPUT_TOKENS, maxSteps: COZTE_MAX_AGENT_STEPS, timeoutMs: null, durable: true, attachmentsPersistedAs: "workflow input only; files are excluded from conversation and tool trace" };
     runId = candidateRunId;
     await startAssistantRun(principal, runId, message.id, settings, { messageId: message.id, parts: message.parts.map((part) => part.type === "file" ? { type: "file", filename: part.filename, mediaType: part.mediaType, bytesApprox: attachmentBytes(part.url) } : part) });
     await saveConversation(principal, safeMessages);
     const workflowRun = await start(cozteAssistantWorkflow, [{ principal, runId, instructions, messages: modelMessages, persistedMessages: safeMessages }]);
     await linkAssistantWorkflowRun(principal, runId, workflowRun.runId);
     return createUIMessageStreamResponse({
-      stream: workflowRun.readable.pipeThrough(createCozteVerifiedStreamTransform()).pipeThrough(createModelCallToUIChunkTransform()),
+      stream: workflowRun.readable.pipeThrough(createModelCallToUIChunkTransform()),
       headers: { "x-workflow-run-id": workflowRun.runId, "x-cozte-run-id": runId },
     });
   } catch (error) {

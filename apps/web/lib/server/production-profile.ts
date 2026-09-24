@@ -5,6 +5,7 @@ import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery } from "./db";
 import { loadState } from "./state";
 import { profileCatalogSuggestions } from "@/lib/profile-catalog-suggestions";
+import { compactCozteConversation, COZTE_MAX_HISTORY_MESSAGES } from "@/lib/cozte-conversation-memory";
 
 type ProfileRow = { confirmed_json: string | null; draft_json: string | null; revision: number };
 type ConversationRow = { messages_json: string };
@@ -105,14 +106,10 @@ export async function loadConversation(principal: Principal): Promise<UIMessage[
   if (!rows[0]) return [];
   const data: unknown = JSON.parse(rows[0].messages_json);
   if (!Array.isArray(data)) return [];
-  return data.filter((item): item is UIMessage => !!item && typeof item === "object" && typeof item.id === "string" && (item.role === "user" || item.role === "assistant") && Array.isArray(item.parts)).slice(-24);
+  return data.filter((item): item is UIMessage => !!item && typeof item === "object" && typeof item.id === "string" && (item.role === "user" || item.role === "assistant") && Array.isArray(item.parts)).slice(-COZTE_MAX_HISTORY_MESSAGES);
 }
 
 export async function saveConversation(principal: Principal, messages: UIMessage[]): Promise<void> {
-  const reduced = messages.slice(-20).map((message) => ({
-    id: message.id,
-    role: message.role,
-    parts: message.parts.filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text").map((part) => ({ type: "text" as const, text: part.text.slice(0, 2000) })),
-  })).filter((message) => message.parts.length);
+  const reduced = compactCozteConversation(messages);
   await dbBatch([{ sql: "INSERT INTO assistant_conversations (organization_id, user_id, messages_json) VALUES (?, ?, ?) ON CONFLICT (organization_id, user_id) DO UPDATE SET messages_json=excluded.messages_json, updated_at=CURRENT_TIMESTAMP", params: [principal.organizationId, principal.userId, JSON.stringify(reduced)] }]);
 }

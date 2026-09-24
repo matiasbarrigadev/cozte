@@ -3,7 +3,6 @@ import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
 import { getRun } from "workflow/api";
 import { apiFailure, requirePrincipal } from "@/lib/server/auth";
 import { getAssistantWorkflowRun } from "@/lib/server/assistant-trace";
-import { createCozteVerifiedStreamTransform } from "@/lib/cozte-response-verifier";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -20,7 +19,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ runI
     const startIndex = Number(startIndexRaw);
     if (!Number.isSafeInteger(startIndex)) return Response.json({ error: "Posición de reanudación inválida" }, { status: 400 });
     const run = await getRun(runId);
-    const readable = run.getReadable({ startIndex: 0 }).pipeThrough(createCozteVerifiedStreamTransform()).pipeThrough(createModelCallToUIChunkTransform({ uiStartIndex: startIndex }));
+    const readable = run.getReadable({ startIndex: 0 }).pipeThrough(createModelCallToUIChunkTransform({ uiStartIndex: startIndex }));
     return createUIMessageStreamResponse({ stream: readable, headers: { "x-workflow-run-id": runId } });
   } catch (error) { return apiFailure(error); }
 }
