@@ -24,6 +24,7 @@ const newProduct = z.object({
   name, lotUnits: positive, salePriceMinor: money,
   salesVariableMinor: money, laborLotMinor: money,
   productionHoursMilli: z.number().int().min(0).max(1_000_000_000),
+  batchesPerMonthMilli: z.number().int().min(1).max(1_000_000_000).nullable().optional(),
   cloneProductId: id.optional(),
 });
 
@@ -61,11 +62,17 @@ export const mutationSchema = z.discriminatedUnion("action", [
     action: z.literal("update-product"), id, name,
     lotUnits: positive, salePriceMinor: money, salesVariableMinor: money,
     laborLotMinor: money, productionHoursMilli: z.number().int().min(0).max(1_000_000_000),
+    batchesPerMonthMilli: z.number().int().min(1).max(1_000_000_000).nullable().optional(),
   }),
   common.extend({ action: z.literal("delete-product"), id }),
   common.extend({
     action: z.literal("set-component"), productId: id, materialId: id,
     quantityMilli: z.number().int().min(0).max(1_000_000_000),
+  }),
+  common.extend({
+    action: z.literal("set-components"), productId: id,
+    items: z.array(z.object({ materialId: id, quantityMilli: z.number().int().min(0).max(1_000_000_000) })).min(1).max(40)
+      .refine((items) => new Set(items.map((item) => item.materialId)).size === items.length, "Cada insumo debe aparecer una sola vez"),
   }),
   common.extend({
     action: z.literal("create-expense"), name, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
@@ -150,7 +157,7 @@ function projection(state: DomainState, input: Mutation): DomainState {
       if (input.cloneProductId && !next.products.some((item) => item.id === input.cloneProductId)) throw new ApiError(404, "Producto base no encontrado");
       next.products.push({ id: "new", name: input.name, lotUnits: input.lotUnits,
         salePriceMinor: input.salePriceMinor, salesVariableMinor: input.salesVariableMinor,
-        laborLotMinor: input.laborLotMinor, productionHoursMilli: input.productionHoursMilli, version: 1 });
+        laborLotMinor: input.laborLotMinor, productionHoursMilli: input.productionHoursMilli, batchesPerMonthMilli: input.batchesPerMonthMilli ?? null, version: 1 });
       if (input.cloneProductId) {
         next.components.push(...next.components.filter((item) => item.productId === input.cloneProductId).map((item) => ({ ...item, productId: "new" })));
       }
@@ -170,7 +177,7 @@ function projection(state: DomainState, input: Mutation): DomainState {
         existing.add(product.name.toLocaleLowerCase());
         next.products.push({ id: `new:${index}`, name: product.name, lotUnits: product.lotUnits,
           salePriceMinor: product.salePriceMinor, salesVariableMinor: product.salesVariableMinor,
-          laborLotMinor: product.laborLotMinor, productionHoursMilli: product.productionHoursMilli, version: 1 });
+          laborLotMinor: product.laborLotMinor, productionHoursMilli: product.productionHoursMilli, batchesPerMonthMilli: product.batchesPerMonthMilli ?? null, version: 1 });
         if (product.cloneProductId) {
           next.components.push(...next.components.filter((item) => item.productId === product.cloneProductId).map((item) => ({ ...item, productId: `new:${index}` })));
         }
@@ -183,6 +190,7 @@ function projection(state: DomainState, input: Mutation): DomainState {
       Object.assign(product, { name: input.name, lotUnits: input.lotUnits,
         salePriceMinor: input.salePriceMinor, salesVariableMinor: input.salesVariableMinor,
         laborLotMinor: input.laborLotMinor, productionHoursMilli: input.productionHoursMilli,
+        batchesPerMonthMilli: input.batchesPerMonthMilli === undefined ? product.batchesPerMonthMilli ?? null : input.batchesPerMonthMilli,
         version: product.version + 1 });
       break;
     }
@@ -203,6 +211,14 @@ function projection(state: DomainState, input: Mutation): DomainState {
       next.components = next.components.filter((item) => item.productId !== input.productId || item.materialId !== input.materialId);
       if (input.quantityMilli > 0) next.components.push({ productId: input.productId, materialId: input.materialId, quantityMilli: input.quantityMilli });
       break;
+    case "set-components": {
+      if (!next.products.some((item) => item.id === input.productId)) throw new ApiError(404, "Producto no encontrado");
+      for (const item of input.items) if (!next.materials.some((material) => material.id === item.materialId)) throw new ApiError(404, "Insumo no encontrado");
+      const touched = new Set(input.items.map((item) => item.materialId));
+      next.components = next.components.filter((item) => item.productId !== input.productId || !touched.has(item.materialId));
+      for (const item of input.items) if (item.quantityMilli > 0) next.components.push({ productId: input.productId, materialId: item.materialId, quantityMilli: item.quantityMilli });
+      break;
+    }
     case "create-expense":
       if (!next.categories?.some((item) => item.name.toLocaleLowerCase() === (input.category ?? "Gastos generales").toLocaleLowerCase())) next.categories = [...next.categories ?? [], { id: "new-category", name: input.category ?? "Gastos generales" }];
       if (input.period < next.activePeriod) throw new ApiError(400, "El período es anterior al costeo activo");
@@ -351,7 +367,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       break;
     }
     case "create-product":
-      statements.push({ sql: "INSERT INTO products (id, organization_id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.lotUnits, input.salePriceMinor, input.salesVariableMinor, input.laborLotMinor, input.productionHoursMilli] });
+      statements.push({ sql: "INSERT INTO products (id, organization_id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli, batches_per_month_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.lotUnits, input.salePriceMinor, input.salesVariableMinor, input.laborLotMinor, input.productionHoursMilli, input.batchesPerMonthMilli ?? null] });
       if (input.cloneProductId) {
         for (const component of state.components.filter((item) => item.productId === input.cloneProductId)) statements.push({ sql: "INSERT INTO product_materials (product_id, material_id, quantity_milli) VALUES (?, ?, ?)", params: [entityId, component.materialId, component.quantityMilli] });
       }
@@ -359,7 +375,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       for (const component of next.components) if (component.productId === "new") component.productId = entityId;
       break;
     case "update-product":
-      statements.push({ sql: "UPDATE products SET name=?, lot_units=?, sale_price_minor=?, sales_variable_minor=?, labor_lot_minor=?, production_hours_milli=?, version=version+1 WHERE id=? AND organization_id=?", params: [input.name, input.lotUnits, input.salePriceMinor, input.salesVariableMinor, input.laborLotMinor, input.productionHoursMilli, input.id, organizationId] });
+      statements.push({ sql: "UPDATE products SET name=?, lot_units=?, sale_price_minor=?, sales_variable_minor=?, labor_lot_minor=?, production_hours_milli=?, batches_per_month_milli=?, version=version+1 WHERE id=? AND organization_id=?", params: [input.name, input.lotUnits, input.salePriceMinor, input.salesVariableMinor, input.laborLotMinor, input.productionHoursMilli, next.products.find((item) => item.id === input.id)!.batchesPerMonthMilli ?? null, input.id, organizationId] });
       break;
     case "delete-product":
       statements.push({ sql: "UPDATE products SET archived_at=CURRENT_TIMESTAMP, version=version+1 WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [input.id, organizationId] });
@@ -374,6 +390,12 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
     case "set-component":
       if (input.quantityMilli === 0) statements.push({ sql: "DELETE FROM product_materials WHERE product_id=? AND material_id=? AND product_id IN (SELECT id FROM products WHERE organization_id=?)", params: [input.productId, input.materialId, organizationId] });
       else statements.push({ sql: "INSERT INTO product_materials (product_id, material_id, quantity_milli) VALUES (?, ?, ?) ON CONFLICT (product_id, material_id) DO UPDATE SET quantity_milli=excluded.quantity_milli", params: [input.productId, input.materialId, input.quantityMilli] });
+      break;
+    case "set-components":
+      for (const item of input.items) {
+        if (item.quantityMilli === 0) statements.push({ sql: "DELETE FROM product_materials WHERE product_id=? AND material_id=? AND product_id IN (SELECT id FROM products WHERE organization_id=?)", params: [input.productId, item.materialId, organizationId] });
+        else statements.push({ sql: "INSERT INTO product_materials (product_id, material_id, quantity_milli) VALUES (?, ?, ?) ON CONFLICT (product_id, material_id) DO UPDATE SET quantity_milli=excluded.quantity_milli", params: [input.productId, item.materialId, item.quantityMilli] });
+      }
       break;
     case "create-expense":
       statements.push(
@@ -414,7 +436,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
     case "create-products":
       for (const [index, product] of input.products.entries()) {
         const productId = productEntityIds[index];
-        statements.push({ sql: "INSERT INTO products (id, organization_id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params: [productId, organizationId, product.name, product.lotUnits, product.salePriceMinor, product.salesVariableMinor, product.laborLotMinor, product.productionHoursMilli] });
+        statements.push({ sql: "INSERT INTO products (id, organization_id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli, batches_per_month_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [productId, organizationId, product.name, product.lotUnits, product.salePriceMinor, product.salesVariableMinor, product.laborLotMinor, product.productionHoursMilli, product.batchesPerMonthMilli ?? null] });
         if (product.cloneProductId) {
           for (const component of next.components.filter((item) => item.productId === product.cloneProductId)) statements.push({ sql: "INSERT INTO product_materials (product_id, material_id, quantity_milli) VALUES (?, ?, ?)", params: [productId, component.materialId, component.quantityMilli] });
         }
@@ -437,7 +459,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       components: next.components.filter((item) => item.productId === cost.productId),
       materials: next.materials.filter((item) => next.components.some((component) => component.productId === cost.productId && component.materialId === item.id)),
       expenses: next.expenses.filter((item) => item.period === next.activePeriod),
-      allocationPeers: next.products.map((item) => ({ id: item.id, lotUnits: item.lotUnits, productionHoursMilli: item.productionHoursMilli })),
+      allocationPeers: next.products.map((item) => ({ id: item.id, lotUnits: item.lotUnits, productionHoursMilli: item.productionHoursMilli, batchesPerMonthMilli: item.batchesPerMonthMilli ?? null })),
       activePeriod: next.activePeriod,
       baseCurrency: next.organization.currency,
       fxQuotes: Object.fromEntries([...usedCurrencies].filter((code) => code !== next.organization.currency).map((code) => [code, next.fxQuotes?.[code]])),
@@ -445,7 +467,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       productionProfileRevision: profile.confirmedRevision,
     };
     const productId = cost.productId === "new" ? entityId : cost.productId.startsWith("new:") ? productEntityIds[Number(cost.productId.slice(4))] ?? entityId : cost.productId;
-    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent, JSON.stringify(cost.lines), JSON.stringify(cost.warnings), JSON.stringify(snapshotContext)] });
+    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent === null ? null : String(cost.estimatedMarginPercent), JSON.stringify(cost.lines), JSON.stringify(cost.warnings), JSON.stringify(snapshotContext)] });
   }
   const result = { revision: next.revision, entityId, ...(input.action === "create-products" ? { entityIds: productEntityIds } : {}), before, after: calculateCosts(next) };
   if (options.assistantProposalId) {

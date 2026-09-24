@@ -158,7 +158,8 @@ export default {
         })),
         error: message.slice(0, 1000),
       }));
-      return json({ error: conflict ? "Conflict" : "Database operation failed", requestId }, conflict ? 409 : 500);
+      // The caller is the HMAC-authenticated app server, so a short cause keeps failures diagnosable there.
+      return json({ error: conflict ? "Conflict" : "Database operation failed", requestId, cause: message.replace(/\s+/g, " ").slice(0, 240) }, conflict ? 409 : 500);
     }
   },
 } satisfies ExportedHandler<BridgeEnv>;

@@ -3,14 +3,33 @@ import { isStepCount, type ModelMessage, type UIMessage } from "ai";
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
+import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
+import { compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
+import { correctionMessage, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import type { Principal } from "./auth";
 import { saveConversation } from "./production-profile";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked } from "./assistant-trace";
 import { createCozteTools } from "./cozte-agent-tools";
 
-export const COZTE_MAX_AGENT_STEPS = 48;
-export const COZTE_MAX_OUTPUT_TOKENS = 32_768;
-export const COZTE_REASONING_EFFORT = "xhigh" as const;
+export type CozteAgentSettings = {
+  model: string;
+  fallbackModels: string[];
+  reasoning: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  maxSteps: number;
+  maxOutputTokens: number;
+};
+
+/** Reads the model configuration outside the workflow sandbox, where environment variables are available. */
+export function cozteAgentSettings(env: Record<string, string | undefined> = process.env): CozteAgentSettings {
+  const reasoning = env.COZTE_REASONING_EFFORT;
+  return {
+    model: env.COZTE_MODEL?.trim() || "minimax/minimax-m3",
+    fallbackModels: (env.COZTE_FALLBACK_MODELS ?? "").split(",").map((item) => item.trim()).filter(Boolean),
+    reasoning: reasoning === "none" || reasoning === "minimal" || reasoning === "low" || reasoning === "high" || reasoning === "xhigh" ? reasoning : "medium",
+    maxSteps: 24,
+    maxOutputTokens: 16_000,
+  };
+}
 
 export type CozteWorkflowInput = {
   principal: Principal;
@@ -18,6 +37,7 @@ export type CozteWorkflowInput = {
   instructions: string;
   messages: ModelMessage[];
   persistedMessages: UIMessage[];
+  settings: CozteAgentSettings;
 };
 
 type FinalizeInput = {
@@ -28,6 +48,8 @@ type FinalizeInput = {
   error?: string;
   responseText?: string;
 };
+
+type StepLike = { text: string; toolCalls: { toolCallId: string; toolName: string; input: unknown }[]; toolResults: { toolCallId: string; toolName: string; output: unknown }[] };
 
 async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   "use step";
@@ -42,18 +64,37 @@ async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   }
 }
 
-async function recordCozteWorkflowError(runId: string, error: unknown): Promise<void> {
+async function recordCozteEvent(runId: string, kind: string, payload: unknown): Promise<void> {
   "use step";
-  await addAssistantEvent(runId, "stream_error", { error: errorDetails(error) });
+  await addAssistantEvent(runId, kind, payload);
 }
 
-const cozteToolNames = ["inspectCostBase", "calculateCostRule", "findMaterial", "updateMaterialPrice", "updateExpenseAmount", "updateProductionMap", "upsertProductDraft", "applyCostAction"];
+/** Ends the UI stream once the answer has been accepted. */
+async function closeCozteStream(writable: WritableStream<ModelCallStreamPart>): Promise<void> {
+  "use step";
+  const writer = writable.getWriter();
+  try { await writer.write({ type: "finish" } as unknown as ModelCallStreamPart); }
+  finally { writer.releaseLock(); }
+  await writable.close();
+}
+
+/** Replaces the unverified last step on screen with an answer built only from tool receipts. */
+async function writeReceiptAnswer(writable: WritableStream<ModelCallStreamPart>, text: string, id: string): Promise<void> {
+  "use step";
+  const writer = writable.getWriter();
+  try {
+    await writer.write({ type: "reset-step" });
+    await writer.write({ type: "text-start", id } as ModelCallStreamPart);
+    await writer.write({ type: "text-delta", id, text } as ModelCallStreamPart);
+    await writer.write({ type: "text-end", id } as ModelCallStreamPart);
+  } finally { writer.releaseLock(); }
+}
 
 async function repairCozteToolCall({ toolCall, error }: { toolCall: { type: "tool-call"; toolCallId: string; toolName: string; input: string }; error: { message: string } }): Promise<{ type: "tool-call"; toolCallId: string; toolName: string; input: string } | null> {
   "use step";
-  if (!cozteToolNames.includes(toolCall.toolName)) return null;
+  if (!(COZTE_TOOL_NAMES as string[]).includes(toolCall.toolName)) return null;
   const repaired = repairCozteToolInput(toolCall.toolName, toolCall.input);
-  if (!repaired) return null;
+  if (!repaired || repaired === toolCall.input) return null;
   const { workflowRunId } = getWorkflowMetadata();
   await addAssistantWorkflowEvent(workflowRunId, "tool_input_repaired", { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, reason: error.message })
     .catch((traceError) => console.error("Cozte repair trace failed", errorDetails(traceError)));
@@ -63,6 +104,47 @@ async function repairCozteToolCall({ toolCall, error }: { toolCall: { type: "too
 async function checkCozteWorkflowLink(input: { principal: Principal; runId: string; workflowRunId: string }): Promise<boolean> {
   "use step";
   return isAssistantWorkflowLinked(input.principal, input.runId, input.workflowRunId);
+}
+
+function toolRecords(steps: StepLike[]): TurnToolRecord[] {
+  return steps.flatMap((step) => step.toolResults.map((result) => ({
+    name: result.toolName,
+    ok: cozteToolSucceeded(result.output),
+    write: COZTE_WRITE_TOOLS.has(result.toolName),
+    output: result.output,
+  })));
+}
+
+/** The persisted assistant turn: real tool calls with compact receipts, then the accepted answer. */
+function assistantTurn(runId: string, steps: StepLike[], text: string): UIMessage {
+  const parts: UIMessage["parts"] = [];
+  for (const step of steps) {
+    for (const call of step.toolCalls) {
+      const result = step.toolResults.find((item) => item.toolCallId === call.toolCallId);
+      if (!result) continue;
+      parts.push({ type: `tool-${call.toolName}`, toolCallId: call.toolCallId, state: "output-available", input: call.input, output: compactToolOutputForHistory(call.toolName, result.output) } as UIMessage["parts"][number]);
+    }
+  }
+  if (text.trim()) parts.push({ type: "text", text });
+  return { id: `assistant-${runId}`, role: "assistant", parts };
+}
+
+/** Deterministic fallback when the model cannot produce an answer consistent with its receipts. */
+function receiptAnswer(records: TurnToolRecord[]): string {
+  const done = records.filter((item) => item.write && item.ok).flatMap((item) => {
+    const output = item.output as Record<string, unknown>;
+    return Array.isArray(output.done) ? output.done.map(String) : [];
+  });
+  const failed = records.filter((item) => item.write && !item.ok).map((item) => {
+    const output = item.output as Record<string, unknown> | null;
+    return typeof output?.error === "string" ? output.error : "Un cambio no se pudo guardar.";
+  });
+  const lines = [
+    done.length ? `Esto quedó guardado: ${done.join("; ")}.` : "En este turno no guardé cambios.",
+    failed.length ? `No se guardó: ${[...new Set(failed)].join(" ")}` : "",
+    "Si quieres, dime qué dato registrar y lo intento de nuevo.",
+  ];
+  return lines.filter(Boolean).join(" ");
 }
 
 export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise<void> {
@@ -81,33 +163,61 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     return;
   }
   const writable = getWritable<ModelCallStreamPart>();
-  const userMessages = input.persistedMessages.filter((message) => message.role === "user").slice(-8)
-    .flatMap((message) => message.parts.filter((part) => part.type === "text").map((part) => part.text));
-  const tools = createCozteTools(input.principal, input.runId, userMessages);
+  const { settings } = input;
   const agent = new WorkflowAgent({
-    model: "minimax/minimax-m3",
+    model: settings.model,
     instructions: input.instructions,
-    tools,
-    stopWhen: isStepCount(COZTE_MAX_AGENT_STEPS),
-    maxOutputTokens: COZTE_MAX_OUTPUT_TOKENS,
-    reasoning: COZTE_REASONING_EFFORT,
-    providerOptions: { gateway: { only: ["minimax"] } },
+    tools: createCozteTools(input.principal, input.runId),
+    stopWhen: isStepCount(settings.maxSteps),
+    maxOutputTokens: settings.maxOutputTokens,
+    reasoning: settings.reasoning,
+    ...(settings.fallbackModels.length ? { providerOptions: { gateway: { models: settings.fallbackModels } } } : {}),
     repairToolCall: repairCozteToolCall,
   });
 
   try {
-    const result = await agent.stream({ messages: input.messages, writable });
-    const finalModelMessage = [...result.messages].reverse().find((message) => message.role === "assistant");
-    const content = finalModelMessage?.content;
-    const responseText = typeof content === "string" ? content : Array.isArray(content)
-      ? content.filter((part) => part.type === "text").map((part) => "text" in part ? part.text : "").join("")
-      : "";
-    const status: FinalizeInput["status"] = "error" in result || !responseText.trim() ? "failed" : "completed";
-    const assistantMessage: UIMessage = { id: `assistant-${input.runId}`, role: "assistant", parts: responseText.trim() ? [{ type: "text", text: responseText }] : [] };
-    const messages = responseText.trim() ? [...input.persistedMessages, assistantMessage] : input.persistedMessages;
-    await finalizeCozteRun({ principal: input.principal, runId: input.runId, messages, status, error: "error" in result ? errorDetails(result.error) : status === "failed" ? "empty_response" : undefined, responseText });
+    const first = await agent.stream({ messages: input.messages, writable, preventClose: true, sendFinish: false });
+    const steps: StepLike[] = [...first.steps];
+    let text = first.steps.at(-1)?.text ?? "";
+    let verification: Verification = verifyCozteResponse(text, toolRecords(steps));
+    let modelError = "error" in first ? errorDetails(first.error) : undefined;
+
+    if (!verification.ok && !modelError) {
+      await recordCozteEvent(input.runId, "answer_rejected", { pass: 1, issues: verification.issues, response: text.slice(0, 4000) });
+      const mustUseTools = verification.mustUseTools;
+      try {
+        // The correction's first model step resets the rejected text on screen before streaming the new answer.
+        const second = await agent.stream({
+          messages: [...(first.messages as ModelMessage[]).filter((message) => message.role !== "system"), { role: "user", content: correctionMessage(verification) }],
+          writable, preventClose: true, sendFinish: false,
+          stopWhen: isStepCount(Math.max(4, Math.floor(settings.maxSteps / 2))),
+          prepareStep: ({ stepNumber }) => stepNumber === 0 && mustUseTools ? { toolChoice: "required" } : undefined,
+        });
+        steps.push(...second.steps);
+        text = second.steps.at(-1)?.text ?? "";
+        verification = verifyCozteResponse(text, toolRecords(steps));
+        if ("error" in second) modelError = errorDetails(second.error);
+      } catch (error) {
+        modelError = errorDetails(error);
+      }
+    }
+
+    const records = toolRecords(steps);
+    if (!verification.ok || modelError) {
+      await recordCozteEvent(input.runId, "answer_replaced", { issues: verification.issues, modelError, response: text.slice(0, 4000) });
+      text = receiptAnswer(records);
+      await writeReceiptAnswer(writable, text, `receipt-${input.runId}`);
+    }
+    await closeCozteStream(writable);
+    const assistantMessage = assistantTurn(input.runId, steps, text);
+    await finalizeCozteRun({
+      principal: input.principal, runId: input.runId,
+      messages: [...input.persistedMessages, assistantMessage],
+      status: modelError && !records.length ? "failed" : "completed",
+      error: modelError, responseText: text,
+    });
   } catch (error) {
-    await recordCozteWorkflowError(input.runId, error).catch((traceError) => console.error("Cozte workflow error trace failed", errorDetails(traceError)));
+    await recordCozteEvent(input.runId, "stream_error", { error: errorDetails(error) }).catch((traceError) => console.error("Cozte workflow error trace failed", errorDetails(traceError)));
     await finalizeCozteRun({ principal: input.principal, runId: input.runId, messages: input.persistedMessages, status: "failed", error: errorDetails(error) }).catch(() => {});
     throw error;
   }

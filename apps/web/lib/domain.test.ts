@@ -88,6 +88,41 @@ describe("motor de costos", () => {
     expect(calculateCosts(withOldPeriod).map((item) => item.unitMinor)).toEqual([3010, 2440, 1860]);
   });
 
+  it("reparte el gasto del mes entre todos los lotes del mes", () => {
+    const tofu: DomainState = {
+      revision: 1, activePeriod: "2026-09", organization: { id: "o", name: "Tofu", currency: "ARS" },
+      products: [
+        { id: "t500", name: "Tofu 500g", lotUnits: 112, salePriceMinor: 0, salesVariableMinor: 0, laborLotMinor: 0, productionHoursMilli: 6000, batchesPerMonthMilli: 23000, version: 1 },
+        { id: "t300", name: "Tofu 300g", lotUnits: 93, salePriceMinor: 0, salesVariableMinor: 0, laborLotMinor: 0, productionHoursMilli: 6000, batchesPerMonthMilli: 23000, version: 1 },
+      ],
+      materials: [{ id: "soja", name: "Soja", supplier: "", purchaseUnit: "kg", category: "Insumos", priceMinor: 1293, source: "Factura", effectiveDate: "2026-09-20", version: 1 }],
+      components: [{ productId: "t500", materialId: "soja", quantityMilli: 39200 }, { productId: "t300", materialId: "soja", quantityMilli: 19530 }],
+      expenses: [{ id: "mo", name: "Mano de obra", period: "2026-09", amountMinor: 1_600_000, allocationBasis: "hours", category: "Sueldos", version: 1 }],
+    };
+    const [t500, t300] = calculateCosts(tofu);
+    expect(t500.monthly.sharedMinor + t300.monthly.sharedMinor).toBe(1_600_000);
+    // 800.000 del mes / 23 lotes = 34.783 por lote, no 800.000 en un solo lote.
+    expect(t500.lines.find((line) => line.kind === "shared_expense")!.amountMinor).toBe(34783);
+    expect(t500.unitMinor).toBe(Math.round((Math.round(1293 * 39.2) + 34783) / 112));
+    expect(t500.quality).toBe("complete");
+    expect(t500.monthly.units).toBe(2576);
+  });
+
+  it("marca como estimado el costo que supone un lote al mes", () => {
+    const [first] = calculateCosts(state);
+    expect(first.quality).toBe("estimated");
+    expect(first.assumptions.join(" ")).toMatch(/1 lote al mes/);
+    expect(first.economics?.contributionUnitMinor).toBe(5500 - 490 - first.perUnit!.materialMinor - first.perUnit!.laborMinor);
+  });
+
+  it("ofrece el costo parcial conocido cuando falta un precio", () => {
+    const missing = structuredClone(state);
+    missing.materials[0].priceMinor = null;
+    const [first] = calculateCosts(missing);
+    expect(first.quality).toBe("incomplete");
+    expect(first.partialUnitMinor).toBeGreaterThan(0);
+  });
+
   it("al iniciar otro período no arrastra gastos del anterior", () => {
     const nextMonth = structuredClone(state);
     nextMonth.activePeriod = "2026-10";

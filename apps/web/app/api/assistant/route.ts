@@ -8,8 +8,11 @@ import { reserveAssistantRequest } from "@/lib/server/assistant-limits";
 import { addAssistantEvent, errorDetails, finishAssistantRun, getActiveAssistantWorkflow, listAssistantToolExecutions, linkAssistantWorkflowRun, startAssistantRun } from "@/lib/server/assistant-trace";
 import { loadProductionProfile } from "@/lib/server/production-profile";
 import { loadState } from "@/lib/server/state";
-import { buildCozteInstructions, createCozteTools } from "@/lib/server/cozte-agent-tools";
-import { cozteAssistantWorkflow, COZTE_MAX_AGENT_STEPS, COZTE_MAX_OUTPUT_TOKENS, COZTE_REASONING_EFFORT } from "@/lib/server/cozte-workflow";
+import { createCozteTools, cozteToolInputSchemas } from "@/lib/server/cozte-agent-tools";
+import { buildCozteInstructions } from "@/lib/server/cozte-instructions";
+import { loadCozteNotes } from "@/lib/server/cozte-notes";
+import { cozteAgentSettings, cozteAssistantWorkflow } from "@/lib/server/cozte-workflow";
+import { compactCozteConversation } from "@/lib/cozte-conversation-memory";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, COZTE_SPREADSHEET_MEDIA_TYPE, prepareCozteModelMessages } from "@/lib/cozte-assistant-attachments";
 
 export const runtime = "nodejs";
@@ -57,16 +60,26 @@ const incomingSchema = z.object({
   }),
 });
 
+/** Files stay out of the stored conversation; a short note keeps the reference. */
 function persistableMessages(messages: UIMessage[]): UIMessage[] {
-  return messages.map((message) => {
-    const textParts = message.parts.filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text").map((part) => ({ type: "text" as const, text: part.text.slice(0, 8000) }));
-    if (textParts.length) return { id: message.id, role: message.role, parts: textParts } as UIMessage;
-    if (message.role === "user") {
-      const files = message.parts.filter((part): part is Extract<typeof part, { type: "file" }> => part.type === "file");
-      if (files.length) return { id: message.id, role: message.role, parts: [{ type: "text" as const, text: `Adjuntó ${files.map((file) => file.filename || (file.mediaType.startsWith("image/") ? "una imagen" : "un archivo")).join(", ")}.` }] } as UIMessage;
-    }
-    return { id: message.id, role: message.role, parts: [] } as UIMessage;
-  }).filter((message) => message.parts.length > 0);
+  return compactCozteConversation(messages.map((message) => {
+    if (message.role !== "user" || message.parts.some((part) => part.type === "text")) return message;
+    const files = message.parts.filter((part): part is Extract<typeof part, { type: "file" }> => part.type === "file");
+    return files.length ? { ...message, parts: [{ type: "text" as const, text: `Adjuntó ${files.map((file) => file.filename || (file.mediaType.startsWith("image/") ? "una imagen" : "un archivo")).join(", ")}.` }] } : message;
+  }));
+}
+
+/** Past tool calls are replayed to the model; drop any that no longer match the current tool schemas. */
+function replayableHistory(messages: UIMessage[]): UIMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    parts: message.parts.filter((part) => {
+      if (!part.type.startsWith("tool-")) return true;
+      const name = part.type.slice("tool-".length) as keyof typeof cozteToolInputSchemas;
+      const schema = cozteToolInputSchemas[name];
+      return Boolean(schema) && "input" in part && schema.safeParse(part.input).success && "state" in part && part.state === "output-available";
+    }),
+  })).filter((message) => message.parts.length > 0);
 }
 
 export async function GET() {
@@ -89,21 +102,23 @@ export async function POST(request: Request) {
     if (Number(request.headers.get("content-length") ?? 0) > 17_000_000) throw new ApiError(413, "El mensaje o los archivos adjuntos superan el límite de tamaño");
     const { message } = incomingSchema.parse(await request.json());
     if (!message.parts.some((part) => part.type === "text") && !message.parts.some((part) => part.type === "file")) throw new ApiError(400, "Escribe un mensaje o adjunta una imagen");
-    const [state, profileState, previous] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadConversation(principal)]);
+    const [state, profileState, stored, notes] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadConversation(principal), loadCozteNotes(principal)]);
+    const previous = replayableHistory(stored);
     if (previous.at(-1)?.id === message.id) throw new ApiError(409, "Ese mensaje ya fue recibido");
     await reserveAssistantRequest(principal);
     const candidateRunId = crypto.randomUUID();
     const tools = createCozteTools(principal, candidateRunId);
     const incoming: UIMessage = { id: message.id, role: "user", parts: message.parts };
     const validated = await validateUIMessages({ messages: [...previous, incoming], tools });
-    const instructions = buildCozteInstructions(state, profileState);
+    const instructions = buildCozteInstructions({ state, notes, legacyProfile: profileState.draft ?? profileState.confirmed });
     const modelMessages = prepareCozteModelMessages(await convertToModelMessages(validated));
     const safeMessages = persistableMessages(validated);
-    const settings = { model: "minimax/minimax-m3", provider: "gateway", providerOptions: { gateway: { only: ["minimax"] } }, reasoning: COZTE_REASONING_EFFORT, maxOutputTokens: COZTE_MAX_OUTPUT_TOKENS, maxSteps: COZTE_MAX_AGENT_STEPS, timeoutMs: null, durable: true, attachmentsPersistedAs: "workflow input only; files are excluded from conversation and tool trace" };
+    const agentSettings = cozteAgentSettings();
+    const settings = { ...agentSettings, provider: "gateway", harness: "cozte-v2-verified", durable: true, attachmentsPersistedAs: "workflow input only; files are excluded from conversation and tool trace" };
     runId = candidateRunId;
     await startAssistantRun(principal, runId, message.id, settings, { messageId: message.id, parts: message.parts.map((part) => part.type === "file" ? { type: "file", filename: part.filename, mediaType: part.mediaType, bytesApprox: attachmentBytes(part.url) } : part) });
     await saveConversation(principal, safeMessages);
-    const workflowRun = await start(cozteAssistantWorkflow, [{ principal, runId, instructions, messages: modelMessages, persistedMessages: safeMessages }]);
+    const workflowRun = await start(cozteAssistantWorkflow, [{ principal, runId, instructions, messages: modelMessages, persistedMessages: safeMessages, settings: agentSettings }]);
     await linkAssistantWorkflowRun(principal, runId, workflowRun.runId);
     return createUIMessageStreamResponse({
       stream: workflowRun.readable.pipeThrough(createModelCallToUIChunkTransform()),

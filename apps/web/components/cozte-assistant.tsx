@@ -11,6 +11,7 @@ import type { AssistantProposal } from "@/lib/server/assistant-proposals";
 import type { AssistantDataSource } from "@/lib/server/assistant-trace";
 import type { ProposalSection } from "@/lib/proposal-presentation";
 import { assistantToolOutcome } from "@/lib/assistant-run-activity";
+import { COZTE_COST_WRITE_TOOLS, COZTE_TOOL_LABELS, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -75,11 +76,7 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
   const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport, resume: resumeExistingWorkflow,
     onFinish: ({ message, isError, isAbort }) => {
       void loadProposals(true);
-      if (message.parts.some((part) => {
-        if (!isToolUIPart(part) || part.state !== "output-available" || !["tool-applyCostAction", "tool-updateMaterialPrice", "tool-updateExpenseAmount", "tool-updateProductionMap", "tool-upsertProductDraft", "tool-proposeCostAction", "tool-proposeMaterialPrice", "tool-proposeExpenseAmount", "tool-proposeProductionProfile"].includes(part.type) || !part.output || typeof part.output !== "object") return false;
-        const output = part.output as { applied?: boolean; status?: string };
-        return output.applied === true || output.status === "building";
-      })) void onDataChanged();
+      if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && COZTE_COST_WRITE_TOOLS.has(part.type.slice("tool-".length)) && cozteToolSucceeded(part.output))) void onDataChanged();
       if (!isAbort && (isError || !message.parts.some((part) => part.type === "text" && part.text.trim()))) toast.error("Cozte no pudo completar esta respuesta. Tu mensaje quedó guardado; puedes reintentarlo.");
     },
     onError: () => toast.error("No se pudo conectar con Cozte. Revisa tu conexión y vuelve a intentar."),
@@ -534,27 +531,17 @@ function buildActionEditPrompt(toolName: string, input: unknown, output: unknown
   const inputRecord = input && typeof input === "object" ? input as Record<string, unknown> : {};
   const change = inputRecord.change && typeof inputRecord.change === "object" ? inputRecord.change as Record<string, unknown> : inputRecord;
   const outputRecord = output && typeof output === "object" ? output as Record<string, unknown> : {};
-  const entity = [change.name, change.productName, change.materialName, change.expenseName, outputRecord.materialName, outputRecord.expenseName].find((item): item is string => typeof item === "string" && item.trim().length > 0);
+  const entity = [change.name, change.product, change.material, change.expense, change.item, change.productName, change.materialName, change.expenseName, outputRecord.materialName, outputRecord.expenseName].find((item): item is string => typeof item === "string" && item.trim().length > 0);
   const label = assistantToolLabel(toolName).toLocaleLowerCase();
   return `Quiero ajustar ${entity ? `“${entity}”` : `la acción de ${label}`} que hiciste en este turno. Revisa los datos actuales y dime qué campos puedo cambiar; luego aplica el ajuste que te indique. `;
 }
 
 function isActionToolName(name: string) {
-  return ["updateMaterialPrice", "updateExpenseAmount", "updateProductionMap", "upsertProductDraft", "applyCostAction"].includes(name);
+  return COZTE_WRITE_TOOLS.has(name);
 }
 
 function assistantToolLabel(name: string) {
-  const labels: Record<string, string> = {
-    inspectCostBase: "Revisar costos y producción",
-    calculateCostRule: "Calcular una regla de costo",
-    findMaterial: "Identificar un insumo",
-    updateMaterialPrice: "Actualizar precio de insumo",
-    updateExpenseAmount: "Actualizar gasto",
-    updateProductionMap: "Guardar avance de producción",
-    upsertProductDraft: "Guardar avance de producto",
-    applyCostAction: "Cambios de costos",
-  };
-  return labels[name] ?? "Otra herramienta";
+  return (COZTE_TOOL_LABELS as Record<string, string>)[name] ?? "Otra herramienta";
 }
 
 function dataSourceKindLabel(kind: AssistantDataSource["kind"]) {

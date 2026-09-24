@@ -38,11 +38,13 @@ export async function dbBatch<T extends Record<string, unknown> = Record<string,
   if (response.status === 409) throw new ApiError(409, "Los datos cambiaron. Actualiza la página antes de continuar");
   if (!response.ok) {
     let requestId = "";
+    let cause = "";
     try {
       const body: unknown = await response.json();
       if (body && typeof body === "object" && "requestId" in body && typeof body.requestId === "string") requestId = body.requestId;
+      if (body && typeof body === "object" && "cause" in body && typeof body.cause === "string") cause = body.cause;
     } catch { /* Keep the HTTP status when the bridge returns a non-JSON error. */ }
-    throw new Error(`D1 bridge failed (${response.status})${requestId ? ` [${requestId}]` : ""}`);
+    throw new Error(`D1 bridge failed (${response.status})${requestId ? ` [${requestId}]` : ""}${cause ? `: ${cause}` : ""}`);
   }
   const data: unknown = await response.json();
   if (!data || typeof data !== "object" || !("results" in data) || !Array.isArray(data.results)) {

@@ -8,6 +8,8 @@ export type Product = {
   salesVariableMinor: number;
   laborLotMinor: number;
   productionHoursMilli: number;
+  /** Lots produced in a normal month, in thousandths; null when the business has not said it yet. */
+  batchesPerMonthMilli?: number | null;
   version: number;
 };
 
@@ -75,14 +77,32 @@ export type CostLine = {
   quantityMilli?: number;
 };
 
+export type CostQuality = "complete" | "estimated" | "incomplete";
+
 export type ProductCost = {
   productId: string;
   totalLotMinor: number | null;
   unitMinor: number | null;
   estimatedMarginPercent: number | null;
   lines: CostLine[];
+  /** Blocking gaps: while any exists the unit cost is not presented as a number. */
   warnings: string[];
+  /** Non-blocking simplifications the estimate relies on; each one lowers confidence. */
+  assumptions: string[];
+  quality: CostQuality;
+  /** Per-unit cost of the parts that are known, useful while the full cost is incomplete. */
+  partialUnitMinor: number;
+  perUnit: { materialMinor: number; laborMinor: number; sharedMinor: number } | null;
+  monthly: { batchesMilli: number; units: number; sharedMinor: number; assumedBatches: boolean; sharedByExpense: Record<string, number> };
+  economics: { variableUnitMinor: number; contributionUnitMinor: number; breakEvenUnitsPerMonth: number | null } | null;
 };
+
+const ASSUMED_BATCHES_MILLI = 1000;
+
+function productBatchesMilli(product: Product): { batchesMilli: number; assumed: boolean } {
+  const value = product.batchesPerMonthMilli;
+  return value != null && value > 0 ? { batchesMilli: value, assumed: false } : { batchesMilli: ASSUMED_BATCHES_MILLI, assumed: true };
+}
 
 export function convertToOrganizationCurrency(state: DomainState, nativeAmountMilli: number, currency: Currency): number | null {
   if (currency === state.organization.currency) return Math.round(nativeAmountMilli / 1000);
@@ -130,6 +150,15 @@ export function allocateMinor(
   return Object.fromEntries(allocations.map((item) => [item.id, item.minor]));
 }
 
+/**
+ * Costs every product for the active period.
+ *
+ * Shared expenses are monthly amounts. Each one is split across products by
+ * monthly activity (hours or good units per lot × lots per month, or agreed
+ * percentages) and then spread over that product's lots, so a lot only carries
+ * its own share of the month. A product without monthly volume is costed as if
+ * it made one lot per month and the estimate says so in `assumptions`.
+ */
 export function calculateCosts(
   state: DomainState,
   proposedMaterials: Record<string, number> = {},
@@ -143,29 +172,41 @@ export function calculateCosts(
     list.push(item);
     components.set(item.productId, list);
   }
+  const volume = new Map(state.products.map((product) => [product.id, productBatchesMilli(product)]));
 
-  // Pilot assumption: one lot of each active product in the selected period.
-  const expenseAllocation: Record<string, number> = Object.fromEntries(
-    state.products.map((product) => [product.id, 0]),
-  );
-  const unallocatedExpenseBases: string[] = [];
-  const missingExpenseFx = state.expenses.some((expense) => expense.period === state.activePeriod && expense.fxMissing);
-  for (const expense of state.expenses.filter((item) => item.period === state.activePeriod)) {
+  const monthlyShared: Record<string, number> = Object.fromEntries(state.products.map((product) => [product.id, 0]));
+  const sharedByExpense: Record<string, Record<string, number>> = Object.fromEntries(state.products.map((product) => [product.id, {}]));
+  const unallocatedExpenses: string[] = [];
+  const periodExpenses = state.expenses.filter((item) => item.period === state.activePeriod);
+  const missingExpenseFx = periodExpenses.some((expense) => expense.fxMissing);
+  let sharedExpensesActive = false;
+  for (const expense of periodExpenses) {
     const amount = proposedExpenses[expense.id] ?? expense.amountMinor;
     if (amount === 0) continue;
-    const activities = state.products.map((product) => ({ id: product.id, weight: expense.allocationBasis === "hours" ? product.productionHoursMilli : expense.allocationBasis === "units" ? product.lotUnits : expense.allocationShares?.[product.id] ?? 0 }));
+    sharedExpensesActive = true;
+    const activities = state.products.map((product) => {
+      const { batchesMilli } = volume.get(product.id)!;
+      const weight = expense.allocationBasis === "hours" ? product.productionHoursMilli * batchesMilli
+        : expense.allocationBasis === "units" ? product.lotUnits * batchesMilli
+        : expense.allocationShares?.[product.id] ?? 0;
+      return { id: product.id, weight };
+    });
     const totalActivity = activities.reduce((sum, item) => sum + item.weight, 0);
-    if (totalActivity <= 0 || (expense.allocationBasis === "manual" && totalActivity !== 10000)) {
-      unallocatedExpenseBases.push(expense.name);
+    if (totalActivity <= 0 || (expense.allocationBasis === "manual" && activities.reduce((sum, item) => sum + (expense.allocationShares?.[item.id] ?? 0), 0) !== 10000)) {
+      unallocatedExpenses.push(expense.name);
       continue;
     }
     const split = allocateMinor(amount, activities);
-    for (const product of state.products) expenseAllocation[product.id] += split[product.id];
+    for (const product of state.products) {
+      monthlyShared[product.id] += split[product.id];
+      if (split[product.id]) sharedByExpense[product.id][expense.id] = split[product.id];
+    }
   }
 
   return state.products.map((product) => {
     const lines: CostLine[] = [];
-    const warnings: string[] = unallocatedExpenseBases.map((basis) => `Falta actividad para repartir gastos por ${basis}`);
+    const warnings: string[] = unallocatedExpenses.map((name) => `Falta la base para repartir ${name}: horas por lote, unidades por lote o porcentajes que sumen 100 %`);
+    const assumptions: string[] = [];
     if (missingExpenseFx) warnings.push("Falta cotización vigente para un gasto compartido");
     for (const component of components.get(product.id) ?? []) {
       const material = materials.get(component.materialId);
@@ -186,32 +227,51 @@ export function calculateCosts(
         amountMinor: roundRatio(BigInt(price) * BigInt(component.quantityMilli), 1000n),
       });
     }
+    const { batchesMilli, assumed } = volume.get(product.id)!;
+    if (assumed && sharedExpensesActive) assumptions.push(`Supone 1 lote al mes de ${product.name}; con los lotes reales por mes el reparto de gastos compartidos será más preciso`);
+    if (!(components.get(product.id)?.length)) assumptions.push(`${product.name} aún no tiene insumos registrados en su receta`);
+    const sharedLotMinor = roundRatio(BigInt(monthlyShared[product.id] ?? 0) * 1000n, BigInt(batchesMilli));
     lines.push({ kind: "labor", label: "Trabajo directo", amountMinor: product.laborLotMinor });
-    lines.push({
-      kind: "shared_expense",
-      label: "Gastos compartidos asignados",
-      amountMinor: expenseAllocation[product.id] ?? 0,
-    });
+    lines.push({ kind: "shared_expense", label: "Gastos compartidos asignados", amountMinor: sharedLotMinor });
     if (product.lotUnits <= 0) warnings.push("El lote no tiene unidades vendibles");
+    const lotUnits = Math.max(product.lotUnits, 1);
+    const materialLotMinor = lines.filter((line) => line.kind === "material").reduce((sum, line) => sum + line.amountMinor, 0);
+    const knownLotMinor = lines.reduce((sum, line) => sum + line.amountMinor, 0);
+    const monthly = {
+      batchesMilli,
+      units: roundRatio(BigInt(lotUnits) * BigInt(batchesMilli), 1000n),
+      sharedMinor: monthlyShared[product.id] ?? 0,
+      assumedBatches: assumed,
+      sharedByExpense: sharedByExpense[product.id] ?? {},
+    };
+    const partialUnitMinor = roundRatio(BigInt(knownLotMinor), BigInt(lotUnits));
     if (warnings.length) {
       return {
-        productId: product.id,
-        totalLotMinor: null,
-        unitMinor: null,
-        estimatedMarginPercent: null,
-        lines,
-        warnings,
+        productId: product.id, totalLotMinor: null, unitMinor: null, estimatedMarginPercent: null,
+        lines, warnings, assumptions, quality: "incomplete", partialUnitMinor, perUnit: null, monthly, economics: null,
       };
     }
-    const totalLotMinor = lines.reduce((sum, line) => sum + line.amountMinor, 0);
-    const unitMinor = roundRatio(BigInt(totalLotMinor), BigInt(product.lotUnits));
+    const totalLotMinor = knownLotMinor;
+    const unitMinor = roundRatio(BigInt(totalLotMinor), BigInt(lotUnits));
+    const perUnit = {
+      materialMinor: roundRatio(BigInt(materialLotMinor), BigInt(lotUnits)),
+      laborMinor: roundRatio(BigInt(product.laborLotMinor), BigInt(lotUnits)),
+      sharedMinor: roundRatio(BigInt(sharedLotMinor), BigInt(lotUnits)),
+    };
     const estimatedMarginPercent = product.salePriceMinor > 0
-      ? Math.round(
-          ((product.salePriceMinor - product.salesVariableMinor - unitMinor) /
-            product.salePriceMinor) *
-            1000,
-        ) / 10
+      ? Math.round(((product.salePriceMinor - product.salesVariableMinor - unitMinor) / product.salePriceMinor) * 1000) / 10
       : null;
-    return { productId: product.id, totalLotMinor, unitMinor, estimatedMarginPercent, lines, warnings };
+    // Contribution treats lot-driven costs as variable and the shared month as fixed.
+    const variableUnitMinor = perUnit.materialMinor + perUnit.laborMinor + product.salesVariableMinor;
+    const contributionUnitMinor = product.salePriceMinor - variableUnitMinor;
+    const economics = product.salePriceMinor > 0 ? {
+      variableUnitMinor,
+      contributionUnitMinor,
+      breakEvenUnitsPerMonth: contributionUnitMinor > 0 ? Math.ceil(monthly.sharedMinor / contributionUnitMinor) : null,
+    } : null;
+    return {
+      productId: product.id, totalLotMinor, unitMinor, estimatedMarginPercent, lines, warnings, assumptions,
+      quality: assumptions.length ? "estimated" : "complete", partialUnitMinor, perUnit, monthly, economics,
+    };
   });
 }

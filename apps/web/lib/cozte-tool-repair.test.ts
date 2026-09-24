@@ -2,21 +2,21 @@ import { describe, expect, it } from "vitest";
 import { repairCozteToolInput } from "./cozte-tool-repair";
 
 describe("Cozte tool argument repair", () => {
-  it("converts numeric strings from small models without changing text values", () => {
-    expect(JSON.parse(repairCozteToolInput("updateMaterialPrice", '{"materialId":"mat-1","amount":"58.5","currency":"ARS","source":"Factura 58.5"}')!)).toEqual({ materialId: "mat-1", amount: 58.5, currency: "ARS", source: "Factura 58.5" });
+  it("converts numeric strings without changing text values", () => {
+    expect(JSON.parse(repairCozteToolInput("saveMaterial", '{"material":"Bolsa","price":"58.5","currency":"ARS","priceSource":"Factura 58.5"}')!)).toEqual({ material: "Bolsa", price: 58.5, currency: "ARS", priceSource: "Factura 58.5" });
   });
 
-  it("unwraps a serialized/XML-wrapped change object", () => {
-    const repaired = repairCozteToolInput("applyCostAction", '{"label":"Agregar bolsa","brief":"Registrar el nuevo empaque","change":"<action>{\\"action\\":\\"create-material\\",\\"name\\":\\"Bolsa\\",\\"supplier\\":\\"Proveedor\\",\\"purchaseUnit\\":\\"unidad\\",\\"category\\":\\"Packaging\\",\\"price\\":\\"120.5\\",\\"currency\\":\\"ARS\\"}</action>"}');
-    expect(JSON.parse(repaired!).change).toEqual({ action: "create-material", name: "Bolsa", supplier: "Proveedor", purchaseUnit: "unidad", category: "Packaging", price: 120.5, currency: "ARS" });
+  it("parses lists that arrive as serialized strings", () => {
+    const repaired = repairCozteToolInput("saveRecipe", '{"product":"Tofu 300g","items":"[{\\"material\\":\\"Soja\\",\\"quantity\\":\\"0.21\\",\\"per\\":\\"unit\\"}]"}');
+    expect(JSON.parse(repaired!)).toEqual({ product: "Tofu 300g", items: [{ material: "Soja", quantity: 0.21, per: "unit" }] });
   });
 
-  it("wraps an action object when the model omitted the change envelope", () => {
-    const repaired = repairCozteToolInput("applyCostAction", '{"action":"create-material","name":"Tela","supplier":"Proveedor","purchaseUnit":"metro","category":"Insumos","price":23}');
-    expect(JSON.parse(repaired!)).toMatchObject({ label: "Actualizar Tela", change: { action: "create-material", name: "Tela", price: 23 } });
+  it("unwraps fenced JSON and textual nulls in numeric fields", () => {
+    const repaired = repairCozteToolInput("saveProduct", '```json\n{"name":"Tofu 500g","goodUnitsPerLot":"112","salePrice":"null"}\n```');
+    expect(JSON.parse(repaired!)).toEqual({ name: "Tofu 500g", goodUnitsPerLot: 112, salePrice: null });
   });
 
   it("declines to repair unstructured text", () => {
-    expect(repairCozteToolInput("applyCostAction", "no tengo datos suficientes")).toBeNull();
+    expect(repairCozteToolInput("saveProduct", "no tengo datos suficientes")).toBeNull();
   });
 });

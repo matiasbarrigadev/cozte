@@ -48,6 +48,7 @@ export function EntityDialog({ kind, product, products, categories, onClose, onS
       name: String(data.get("name") ?? "").trim(), lotUnits: integer("lotUnits"), salePriceMinor: integer("salePriceMinor"),
       salesVariableMinor: integer("salesVariableMinor"), laborLotMinor: integer("laborLotMinor"),
       productionHoursMilli: Math.round(Number(data.get("productionHours") ?? 0) * 1000),
+      batchesPerMonthMilli: data.get("batchesPerMonth") === "" ? null : Math.round(Number(data.get("batchesPerMonth")) * 1000),
     };
     if (await onSave(action)) onClose();
   }
@@ -74,7 +75,8 @@ export function EntityDialog({ kind, product, products, categories, onClose, onS
       {kind === "product" || kind === "edit-product" ? <FieldGroup>
         {kind === "product" ? <Field><FieldLabel htmlFor="clone-product">Copiar composición de</FieldLabel><NativeSelect id="clone-product" name="cloneProductId" className="w-full"><NativeSelectOption value="">Empezar vacío</NativeSelectOption>{products.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.name}</NativeSelectOption>)}</NativeSelect></Field> : null}
         <Field><FieldLabel htmlFor="product-name">Producto</FieldLabel><Input id="product-name" name="name" required minLength={2} defaultValue={product?.name} placeholder="Ej. Cuaderno A5 · tapa dura" /></Field>
-        <div className="grid gap-4 sm:grid-cols-2"><Field><FieldLabel htmlFor="lot-units">Unidades por lote</FieldLabel><Input id="lot-units" name="lotUnits" type="number" min="1" required defaultValue={product?.lotUnits ?? 100} /></Field><Field><FieldLabel htmlFor="sale-price">Precio de venta ({currency})</FieldLabel><Input id="sale-price" name="salePriceMinor" type="number" min="0" required defaultValue={product?.salePriceMinor ?? 0} /></Field></div>
+        <div className="grid gap-4 sm:grid-cols-2"><Field><FieldLabel htmlFor="lot-units">Unidades por lote</FieldLabel><Input id="lot-units" name="lotUnits" type="number" min="1" required defaultValue={product?.lotUnits ?? 100} /></Field><Field><FieldLabel htmlFor="batches-month">Lotes al mes</FieldLabel><Input id="batches-month" name="batchesPerMonth" type="number" min="0.001" step="0.001" placeholder="Reparte bien los gastos del mes" defaultValue={product?.batchesPerMonthMilli != null ? product.batchesPerMonthMilli / 1000 : ""} /></Field></div>
+        <Field><FieldLabel htmlFor="sale-price">Precio de venta ({currency})</FieldLabel><Input id="sale-price" name="salePriceMinor" type="number" min="0" defaultValue={product?.salePriceMinor ?? 0} /><p className="text-xs text-muted-foreground">Déjalo en 0 si aún no lo defines; no cambia el costo de fabricar.</p></Field>
         <div className="grid gap-4 sm:grid-cols-2"><Field><FieldLabel htmlFor="sales-variable">Venta variable por unidad</FieldLabel><Input id="sales-variable" name="salesVariableMinor" type="number" min="0" defaultValue={product?.salesVariableMinor ?? 0} /></Field><Field><FieldLabel htmlFor="labor-lot">Trabajo directo por lote</FieldLabel><Input id="labor-lot" name="laborLotMinor" type="number" min="0" defaultValue={product?.laborLotMinor ?? 0} /></Field></div>
         <Field><FieldLabel htmlFor="production-hours">Horas de producción por lote</FieldLabel><Input id="production-hours" name="productionHours" type="number" min="0" step="0.001" defaultValue={(product?.productionHoursMilli ?? 0) / 1000} /></Field>
       </FieldGroup> : null}
