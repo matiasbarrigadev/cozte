@@ -445,7 +445,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       productionProfileRevision: profile.confirmedRevision,
     };
     const productId = cost.productId === "new" ? entityId : cost.productId.startsWith("new:") ? productEntityIds[Number(cost.productId.slice(4))] ?? entityId : cost.productId;
-    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent, JSON.stringify(cost.lines), JSON.stringify(snapshotContext)] });
+    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent, JSON.stringify(cost.lines), JSON.stringify(cost.warnings), JSON.stringify(snapshotContext)] });
   }
   const result = { revision: next.revision, entityId, ...(input.action === "create-products" ? { entityIds: productEntityIds } : {}), before, after: calculateCosts(next) };
   if (options.assistantProposalId) {

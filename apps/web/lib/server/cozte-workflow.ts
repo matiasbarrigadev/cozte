@@ -3,6 +3,7 @@ import { isStepCount, type ModelMessage, type UIMessage } from "ai";
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
+import { verifiedCozteResponse } from "@/lib/cozte-response-verifier";
 import type { Principal } from "./auth";
 import { saveConversation } from "./production-profile";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked } from "./assistant-trace";
@@ -45,7 +46,7 @@ async function recordCozteWorkflowError(runId: string, error: unknown): Promise<
   await addAssistantEvent(runId, "stream_error", { error: errorDetails(error) });
 }
 
-const cozteToolNames = ["inspectCostBase", "calculateCostRule", "findMaterial", "updateMaterialPrice", "updateExpenseAmount", "updateProductionMap", "applyCostAction", "proposeMaterialPrice", "proposeExpenseAmount", "proposeProductionProfile", "proposeCostAction"];
+const cozteToolNames = ["inspectCostBase", "calculateCostRule", "findMaterial", "updateMaterialPrice", "updateExpenseAmount", "updateProductionMap", "upsertProductDraft", "applyCostAction"];
 
 async function repairCozteToolCall({ toolCall, error }: { toolCall: { type: "tool-call"; toolCallId: string; toolName: string; input: string }; error: { message: string } }): Promise<{ type: "tool-call"; toolCallId: string; toolName: string; input: string } | null> {
   "use step";
@@ -79,7 +80,9 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     return;
   }
   const writable = getWritable<ModelCallStreamPart>();
-  const tools = createCozteTools(input.principal, input.runId);
+  const userMessages = input.persistedMessages.filter((message) => message.role === "user").slice(-8)
+    .flatMap((message) => message.parts.filter((part) => part.type === "text").map((part) => part.text));
+  const tools = createCozteTools(input.principal, input.runId, userMessages);
   const agent = new WorkflowAgent({
     model: "minimax/minimax-m3",
     instructions: input.instructions,
@@ -88,15 +91,17 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     maxOutputTokens: 2500,
     providerOptions: { gateway: { only: ["minimax"] } },
     repairToolCall: repairCozteToolCall,
+    prepareStep: ({ stepNumber }) => stepNumber === 0 ? { toolChoice: { type: "tool", toolName: "inspectCostBase" } } : undefined,
   });
 
   try {
     const result = await agent.stream({ messages: input.messages, writable });
     const finalModelMessage = [...result.messages].reverse().find((message) => message.role === "assistant");
     const content = finalModelMessage?.content;
-    const responseText = typeof content === "string" ? content : Array.isArray(content)
+    const rawResponseText = typeof content === "string" ? content : Array.isArray(content)
       ? content.filter((part) => part.type === "text").map((part) => "text" in part ? part.text : "").join("")
       : "";
+    const responseText = verifiedCozteResponse(rawResponseText, result.steps.flatMap((step) => step.toolResults.map((item) => ({ toolName: item.toolName, input: item.input, output: item.output }))));
     const status: FinalizeInput["status"] = "error" in result || !responseText.trim() ? "failed" : "completed";
     const assistantMessage: UIMessage = { id: `assistant-${input.runId}`, role: "assistant", parts: responseText.trim() ? [{ type: "text", text: responseText }] : [] };
     const messages = responseText.trim() ? [...input.persistedMessages, assistantMessage] : input.persistedMessages;

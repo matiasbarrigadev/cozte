@@ -15,6 +15,26 @@ export function missingCozteProductFields(product: ProductInput): string[] {
     .map(([, label]) => label);
 }
 
+const zeroFields = ["salePrice", "salesVariablePerUnit", "laborCostPerLot", "productionHoursPerLot"] as const;
+const zeroContext: Record<(typeof zeroFields)[number], RegExp> = {
+  salePrice: /precio(?:\s+de\s+venta)?/i,
+  salesVariablePerUnit: /(?:gasto|costo)\s+variable|venta/i,
+  laborCostPerLot: /(?:mano\s+de\s+obra|trabajo\s+directo|labor|sueldo)/i,
+  productionHoursPerLot: /horas?/i,
+};
+
+/** A zero is a fact, not a placeholder: require a user quote that confirms its meaning. */
+export function unconfirmedCozteProductZeroFields(product: ProductInput, userMessages: string[]): string[] {
+  const evidence = product.zeroEvidence && typeof product.zeroEvidence === "object" ? product.zeroEvidence as Record<string, unknown> : {};
+  return zeroFields.filter((field) => {
+    if (product[field] !== 0) return false;
+    const quote = evidence[field];
+    if (typeof quote !== "string" || quote.length < 8 || quote.length > 160) return true;
+    if (!/(?:\b0\b|\bcero\b|\bsin\b)/i.test(quote) || !zeroContext[field].test(quote)) return true;
+    return !userMessages.some((message) => message.toLocaleLowerCase().includes(quote.toLocaleLowerCase()));
+  }).map((field) => requiredProductLabels[field]);
+}
+
 function toOperationalProduct(product: ProductInput): ProductInput {
   const next = { ...product };
   if (typeof product.salePrice === "number") next.salePriceMinor = product.salePrice;

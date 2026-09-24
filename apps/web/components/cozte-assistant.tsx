@@ -536,7 +536,7 @@ function buildActionEditPrompt(toolName: string, input: unknown, output: unknown
 }
 
 function isActionToolName(name: string) {
-  return ["updateMaterialPrice", "updateExpenseAmount", "updateProductionMap", "applyCostAction", "proposeMaterialPrice", "proposeExpenseAmount", "proposeProductionProfile", "proposeCostAction"].includes(name);
+  return ["updateMaterialPrice", "updateExpenseAmount", "updateProductionMap", "upsertProductDraft", "applyCostAction"].includes(name);
 }
 
 function assistantToolLabel(name: string) {
@@ -547,11 +547,8 @@ function assistantToolLabel(name: string) {
     updateMaterialPrice: "Actualizar precio de insumo",
     updateExpenseAmount: "Actualizar gasto",
     updateProductionMap: "Guardar avance de producción",
+    upsertProductDraft: "Guardar avance de producto",
     applyCostAction: "Cambios de costos",
-    proposeMaterialPrice: "Actualizar precio de insumo",
-    proposeExpenseAmount: "Actualizar gasto",
-    proposeProductionProfile: "Actualizar producción",
-    proposeCostAction: "Cambios de costos",
   };
   return labels[name] ?? "Otra herramienta";
 }

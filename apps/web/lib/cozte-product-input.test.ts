@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { missingCozteProductFields, normalizeCozteProductAction } from "./cozte-product-input";
+import { missingCozteProductFields, normalizeCozteProductAction, unconfirmedCozteProductZeroFields } from "./cozte-product-input";
 
 describe("normalizeCozteProductAction", () => {
   it("converts user-facing product fields into the cost engine units", () => {
@@ -20,6 +20,20 @@ describe("normalizeCozteProductAction", () => {
       { name: "Tofu 300 g", productionHoursMilli: 500, salePriceMinor: 2000 },
       { name: "Tofu 500 g", productionHoursMilli: 750, salePriceMinor: 3000 },
     ] });
+  });
+});
+
+describe("unconfirmedCozteProductZeroFields", () => {
+  it("rejects invented zeroes and invented quotes", () => {
+    const product = { salePrice: 0, salesVariablePerUnit: 0, laborCostPerLot: 0, productionHoursPerLot: 24 };
+    expect(unconfirmedCozteProductZeroFields(product, ["Lote 112, 24 horas; los precios siguen pendientes."])).toEqual([
+      "precio de venta por unidad", "gasto variable por unidad", "trabajo directo por lote",
+    ]);
+    expect(unconfirmedCozteProductZeroFields({ ...product, zeroEvidence: { salePrice: "precio de venta 0" } }, ["No conozco el precio"])).toContain("precio de venta por unidad");
+  });
+  it("accepts a field-specific quote actually written by the user", () => {
+    const quote = "sin gasto variable por unidad";
+    expect(unconfirmedCozteProductZeroFields({ salesVariablePerUnit: 0, zeroEvidence: { salesVariablePerUnit: quote } }, ["Por ahora es sin gasto variable por unidad."])).toEqual([]);
   });
 });
 

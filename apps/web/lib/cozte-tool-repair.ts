@@ -34,7 +34,7 @@ export function repairCozteToolInput(toolName: string, rawInput: string): string
   const input = parseStructuredValue(rawInput);
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
   let normalized = normalizeNumbers(input) as Record<string, unknown>;
-  if (toolName === "applyCostAction" || toolName === "proposeCostAction") {
+  if (toolName === "applyCostAction") {
     if (typeof normalized.change === "string") normalized = { ...normalized, change: parseStructuredValue(normalized.change) };
     if (!normalized.change && typeof normalized.action === "string") {
       const { action: _action, label, brief, ...changeFields } = normalized;

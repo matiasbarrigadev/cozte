@@ -6,7 +6,8 @@ import { supportedCurrencies } from "@/lib/currency";
 import { COZTE_INFORMATION_POLICY, COZTE_RESPONSE_STYLE_RULES, getCozteLocaleGuidance } from "@/lib/cozte-response-guidance";
 import { monthlyEquivalent, productionProfileSchema, productionProfileToolSchema } from "@/lib/production-profile";
 import { mutationNeedsHumanReview } from "@/lib/cost-approval-policy";
-import { missingCozteProductFields, normalizeCozteProductAction } from "@/lib/cozte-product-input";
+import { missingCozteProductFields, normalizeCozteProductAction, unconfirmedCozteProductZeroFields } from "@/lib/cozte-product-input";
+import { upsertProductDraft } from "@/lib/cozte-profile-draft";
 import type { DomainState } from "@/lib/domain";
 import type { Principal } from "./auth";
 import { loadProductionProfile } from "./production-profile";
@@ -16,8 +17,8 @@ import { addAssistantToolEvent, errorDetails } from "./assistant-trace";
 import { commitMutation, mutationSchema } from "./mutations";
 import { cozteCostActionToolSchema, cozteMaterialPriceSchema, cozteMaterialPriceToolSchema } from "./cozte-tool-schemas";
 
-type CozteToolName = "inspectCostBase" | "calculateCostRule" | "findMaterial" | "updateMaterialPrice" | "updateExpenseAmount" | "updateProductionMap" | "applyCostAction";
-type ToolStepInput = { principal: Principal; runId: string; toolCallId: string; toolName: CozteToolName; input: unknown };
+type CozteToolName = "inspectCostBase" | "calculateCostRule" | "findMaterial" | "updateMaterialPrice" | "updateExpenseAmount" | "updateProductionMap" | "upsertProductDraft" | "applyCostAction";
+type ToolStepInput = { principal: Principal; runId: string; toolCallId: string; toolName: CozteToolName; input: unknown; userMessages: string[] };
 
 function toolIdempotencyKey(runId: string, toolCallId: string): string {
   const bytes = createHash("sha256").update(`${runId}:${toolCallId}`).digest().subarray(0, 16);
@@ -36,8 +37,11 @@ const COZTE_TOOL_PLAYBOOK = [
   "findMaterial: vincula una mención con un insumo existente. Si devuelve material null, no elijas por intuición: pregunta cuál es.",
   "updateMaterialPrice: cambia ahora el precio del insumo. Requiere materialId, importe y moneda; conserva la fuente y fecha compartidas. Un resultado applied confirma el guardado.",
   "updateExpenseAmount: cambia ahora un gasto existente del período activo; usa el ID leído, el importe y su moneda. Un resultado applied confirma el guardado.",
-  "updateProductionMap: guarda directamente el mapa completo acumulado; conserva lo ya informado y deja lo desconocido como pendiente. Al completar un producto, calcula y guarda su primera versión sin pedir aprobación. Solo quitar un producto, insumo o gasto del mapa requiere decisión humana.",
-  "applyCostAction: aplica ahora cambios y altas de precios, insumos, gastos, categorías y productos, además de consumos y repartos. Solo quitar un producto o insumo queda pendiente de confirmación en la UI. Las bajas se archivan: desaparecen de los costos vigentes, pero se conserva su historial; al quitar productos, los repartos manuales se normalizan con los porcentajes restantes o se marcan como pendientes si no hay base válida. Para actualizar un producto conserva sus campos no mencionados. quantityMilli de set-component se expresa en milésimas de la unidad de compra.",
+  "updateProductionMap: guarda el mapa COMPLETO acumulado, no solo la última novedad. Lee profile en inspectCostBase, conserva sus listas y agrega o corrige lo dicho ahora; null significa dato aún pendiente, no cero. En armado devuelve status building y guarda un borrador; cuando es evaluable guarda la evaluación del mapa, no crea por sí sola una ficha del catálogo. Quitar un producto, insumo o gasto del mapa requiere decisión humana.",
+  "upsertProductDraft: para agregar o corregir UN producto parcial en el mapa sin reconstruir todo el perfil. Envía nombre y solo los datos nuevos confirmados (unidades buenas, horas, lotes por mes, unidades iniciadas, merma normal y unidad terminada); los campos ausentes y los demás productos quedan intactos. Un status building significa borrador guardado, NO ficha operativa creada.",
+  "applyCostAction: crea y modifica directamente fichas operativas, insumos, gastos, categorías, consumos y repartos. create-product requiere nombre, unidades buenas por lote, precio de venta, gasto variable unitario, trabajo directo por lote y horas por lote; usa los importes normales de la moneda de la empresa, no campos internos *Minor ni *Milli. Si falta cualquiera, guarda primero el avance con upsertProductDraft y pregunta lo indispensable. Para un cero genuino en la creación, incluye zeroEvidence con una cita literal de la persona que nombre ese costo y confirme cero o ausencia; sin cita no es cero confirmado. Para actualizar un producto conserva los campos no mencionados. set-component.quantityMilli expresa milésimas de la unidad de compra. Solo quitar un producto o insumo queda pendiente de confirmación en la UI.",
+  "Ruta de ejemplo: 'Tofu 500 g, 112 unidades por lote y 24 horas; no sé aún el precio ni la mano de obra' -> inspectCostBase -> upsertProductDraft con goodUnitsPerBatch=112, hoursPerBatch=24 -> informar 'guardé el avance del mapa'; NO create-product con importes 0, NO decir 'creé la ficha'. Cuando la persona complete los cinco datos de la ficha, usa applyCostAction create-product y solo después de recibir applied confirma el alta.",
+  "Otra ruta: 'actualiza el precio de este insumo' -> resuelve el ID con inspectCostBase (o findMaterial si el nombre es ambiguo) -> updateMaterialPrice con importe, moneda, fuente y fecha -> comunica el cambio solo si applied. Un error o needs-information no es un guardado.",
   "El resultado define qué ocurrió: applied = guardado; proposal = pendiente de decisión en la UI; needs-information = pregunta solo por los datos enumerados; status building = avance guardado en el mapa de trabajo; unchanged = ya estaba igual; error = no se guardó. Tras un error de escritura o resultado incierto, consulta el estado antes de decidir si reintentar; no repitas escrituras a ciegas. No hace falta releer una operación cuyo recibo ya es claro.",
   "Este es un ciclo flexible, no una lista fija de etapas: entiende la intención actual, consulta solo lo necesario, ejecuta el siguiente paso útil, interpreta el resultado y continúa si el pedido aún tiene trabajo. Usa hasta 48 pasos cuando haga falta; si falta un dato humano, haz una pregunta breve. Nunca narres nombres de herramientas ni detalles internos.",
   "</manual_de_herramientas>",
@@ -78,11 +82,10 @@ async function runCozteTool(input: ToolStepInput): Promise<unknown> {
       if (!material) return { error: "Insumo no encontrado; pregunta cuál es" };
       const nativeMilli = Math.round(amount * 1000);
       if (!Number.isSafeInteger(nativeMilli) || Math.abs(amount * 1000 - nativeMilli) > 0.000001) return { error: "Importe inválido: usa hasta tres decimales" };
-      const mutation = { action: "bulk-prices" as const, expectedRevision: latest.revision, idempotencyKey: toolIdempotencyKey(runId, toolCallId), materials: [{ id: materialId, amount, currency }], expenses: [], expectedFxRates: expectedFxRates(latest), source: source || "Propuesta de Cozte", effectiveDate: effectiveDate ?? new Date().toISOString().slice(0, 10) };
+      const mutation = { action: "bulk-prices" as const, expectedRevision: latest.revision, idempotencyKey: toolIdempotencyKey(runId, toolCallId), materials: [{ id: materialId, amount, currency }], expenses: [], expectedFxRates: expectedFxRates(latest), source: source || "Cozte", effectiveDate: effectiveDate ?? new Date().toISOString().slice(0, 10) };
       try {
-        if (!mutationNeedsHumanReview(mutationSchema.parse(mutation))) return { kind: "material-price" as const, applied: true, materialId, materialName: material.name, result: await commitMutation(principal, mutationSchema.parse(mutation), { source: "cozte" }) };
-        return { kind: "material-price" as const, materialId, materialName: material.name, proposal: await createMutationProposal(principal, mutation, { source: { runId, toolCallId }, stateSnapshot: latest, label: `Actualizar precio de ${material.name}`, brief: `Actualizar el precio registrado de ${material.name} según ${source || "el nuevo dato compartido"}.` }) };
-      } catch (error) { return { error: error instanceof Error ? error.message : "No se pudo registrar la propuesta de precio" }; }
+        return { kind: "material-price" as const, applied: true, materialId, materialName: material.name, result: await commitMutation(principal, mutationSchema.parse(mutation), { source: "cozte" }) };
+      } catch (error) { return { error: error instanceof Error ? error.message : "No se pudo guardar el precio" }; }
     }
     case "updateExpenseAmount": {
       const { expenseId, amount, currency, source } = z.object({ expenseId: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), source: z.string().trim().max(160).nullable() }).parse(input.input);
@@ -91,29 +94,36 @@ async function runCozteTool(input: ToolStepInput): Promise<unknown> {
       if (!expense) return { error: "Gasto vigente no encontrado; pregunta cuál es" };
       const nativeMilli = Math.round(amount * 1000);
       if (!Number.isSafeInteger(nativeMilli) || Math.abs(amount * 1000 - nativeMilli) > 0.000001) return { error: "Importe inválido: usa hasta tres decimales" };
-      const mutation = { action: "bulk-prices" as const, expectedRevision: latest.revision, idempotencyKey: toolIdempotencyKey(runId, toolCallId), materials: [], expenses: [{ id: expenseId, amount, currency }], expectedFxRates: expectedFxRates(latest), source: source || "Propuesta de Cozte", effectiveDate: new Date().toISOString().slice(0, 10) };
+      const mutation = { action: "bulk-prices" as const, expectedRevision: latest.revision, idempotencyKey: toolIdempotencyKey(runId, toolCallId), materials: [], expenses: [{ id: expenseId, amount, currency }], expectedFxRates: expectedFxRates(latest), source: source || "Cozte", effectiveDate: new Date().toISOString().slice(0, 10) };
       try {
-        if (!mutationNeedsHumanReview(mutationSchema.parse(mutation))) return { kind: "expense-amount" as const, applied: true, expenseId, expenseName: expense.name, result: await commitMutation(principal, mutationSchema.parse(mutation), { source: "cozte" }) };
-        return { kind: "expense-amount" as const, expenseId, expenseName: expense.name, proposal: await createMutationProposal(principal, mutation, { source: { runId, toolCallId }, stateSnapshot: latest, label: `Actualizar gasto ${expense.name}`, brief: `Actualizar el importe de ${expense.name} según ${source || "el nuevo dato compartido"}.` }) };
-      } catch (error) { return { error: error instanceof Error ? error.message : "No se pudo registrar la propuesta de gasto" }; }
+        return { kind: "expense-amount" as const, applied: true, expenseId, expenseName: expense.name, result: await commitMutation(principal, mutationSchema.parse(mutation), { source: "cozte" }) };
+      } catch (error) { return { error: error instanceof Error ? error.message : "No se pudo guardar el gasto" }; }
     }
     case "updateProductionMap": {
       const profile = productionProfileSchema.parse(input.input);
       try {
         const [latest, latestProfile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
         return await createProductionProfileProposal(principal, profile, { source: { runId, toolCallId }, stateSnapshot: latest, profileRevision: latestProfile.revision });
-      } catch (error) { return { error: error instanceof Error ? error.message : "No se pudo registrar la propuesta de producción" }; }
+      } catch (error) { return { error: error instanceof Error ? error.message : "No se pudo guardar el mapa de producción" }; }
+    }
+    case "upsertProductDraft": {
+      const update = z.object({ name: z.string().trim().min(2).max(100), finishedUnit: z.string().trim().min(1).max(100).optional(), goodUnitsPerBatch: z.number().int().positive().nullable().optional(), startedUnitsPerBatch: z.number().int().positive().nullable().optional(), normalScrapUnitsPerBatch: z.number().int().nonnegative().nullable().optional(), batchesPerMonth: z.number().positive().nullable().optional(), hoursPerBatch: z.number().positive().nullable().optional() }).parse(input.input);
+      try {
+        const [latest, latestProfile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
+        const profile = upsertProductDraft(latestProfile.draft ?? latestProfile.confirmed ?? { businessSummary: "", site: null, stages: [], products: [], categories: [], inputs: [], recurringCosts: [] }, update);
+        return await createProductionProfileProposal(principal, profile, { source: { runId, toolCallId }, stateSnapshot: latest, profileRevision: latestProfile.revision });
+      } catch (error) { return { error: error instanceof Error ? error.message : "No se pudo guardar el avance del producto" }; }
     }
     case "applyCostAction": {
       const { label, brief, change: toolChange } = z.object({ label: z.string().trim().min(3).max(140), brief: z.string().trim().min(8).max(400).optional(), change: cozteCostActionToolSchema }).parse(input.input);
       const latest = await loadState(principal);
       let change = toolChange as unknown as Record<string, unknown>;
       if (change.action === "create-product") {
-        const missing = missingCozteProductFields(change);
+        const missing = [...missingCozteProductFields(change), ...unconfirmedCozteProductZeroFields(change, input.userMessages)];
         if (missing.length) return { kind: "needs-information", missingFields: missing, message: `Antes de crear la ficha necesito confirmar: ${missing.join(", ")}. No voy a guardar esos datos como cero.` };
       }
       if (change.action === "create-products" && Array.isArray(change.products)) {
-        const missing = change.products.flatMap((item, index) => item && typeof item === "object" ? missingCozteProductFields(item as Record<string, unknown>).map((field) => `${String((item as Record<string, unknown>).name ?? `Producto ${index + 1}`)}: ${field}`) : [`Producto ${index + 1}: datos incompletos`]);
+        const missing = change.products.flatMap((item, index) => item && typeof item === "object" ? [...missingCozteProductFields(item as Record<string, unknown>), ...unconfirmedCozteProductZeroFields(item as Record<string, unknown>, input.userMessages)].map((field) => `${String((item as Record<string, unknown>).name ?? `Producto ${index + 1}`)}: ${field}`) : [`Producto ${index + 1}: datos incompletos`]);
         if (missing.length) return { kind: "needs-information", missingFields: missing, message: `Antes de crear las fichas necesito confirmar: ${missing.join("; ")}. No voy a guardar esos datos como cero.` };
       }
       if (change.action === "update-product") {
@@ -130,11 +140,11 @@ async function runCozteTool(input: ToolStepInput): Promise<unknown> {
         };
       }
       const parsed = mutationSchema.safeParse({ ...normalizeCozteProductAction(change), expectedRevision: latest.revision, idempotencyKey: toolIdempotencyKey(runId, toolCallId), acknowledgeImpact: true });
-      if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Propuesta inválida" };
+      if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Cambio inválido" };
       try {
         if (!mutationNeedsHumanReview(parsed.data)) return { kind: "cost-action" as const, applied: true, label, result: await commitMutation(principal, parsed.data, { source: "cozte" }) };
         return { kind: "cost-action" as const, proposal: await createMutationProposal(principal, parsed.data, { source: { runId, toolCallId }, stateSnapshot: latest, label, brief }) };
-      } catch (error) { return { error: error instanceof Error ? error.message : "No se puede preparar la propuesta" }; }
+      } catch (error) { return { error: error instanceof Error ? error.message : "No se pudo guardar el cambio" }; }
     }
   }
 }
@@ -161,15 +171,17 @@ async function executeCozteToolStep(input: ToolStepInput): Promise<unknown> {
   }
 }
 
-export function createCozteTools(principal: Principal, runId: string) {
+export function createCozteTools(principal: Principal, runId: string, userMessages: string[] = []) {
+  const execute = (toolCallId: string, toolName: CozteToolName, input: unknown) => executeCozteToolStep({ principal, runId, toolCallId, toolName, input, userMessages });
   return {
-    inspectCostBase: tool({ description: "Lee los costos, el perfil de producción y sus brechas actuales para responder con datos reales o resolver referencias.", inputSchema: z.object({}), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "inspectCostBase", input }) }),
-    calculateCostRule: tool({ description: "Calcula una equivalencia mensual o costo directo por unidad terminada; jamás inventa los datos faltantes.", inputSchema: z.object({ frequency: z.enum(["monthly", "quarterly", "annual"]).optional(), amountMinor: z.number().int().nonnegative().optional(), pricePerPurchaseMinor: z.number().int().nonnegative().optional(), unitsPerPurchase: z.number().positive().optional(), quantityPerFinishedUnit: z.number().nonnegative().optional() }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "calculateCostRule", input }) }),
-    findMaterial: tool({ description: "Identifica un insumo vigente mencionado en un cambio de precio; devuelve ninguno si es ambiguo.", inputSchema: z.object({ mention: z.string().trim().min(1).max(200) }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "findMaterial", input }) }),
-    updateMaterialPrice: tool({ description: "Actualiza el precio del insumo ahora, incluso si participa en productos evaluados. Usa el ID de inspectCostBase; conserva importe, moneda, fuente y fecha indicados. Si falla o el resultado es incierto, consulta de nuevo antes de repetir.", inputSchema: cozteMaterialPriceToolSchema, execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "updateMaterialPrice", input }) }),
-    updateExpenseAmount: tool({ description: "Actualiza ahora el importe del gasto vigente, incluso si afecta productos evaluados. Usa el ID exacto de inspectCostBase y conserva moneda/fuente. Si falla o el resultado es incierto, consulta de nuevo antes de repetir.", inputSchema: z.object({ expenseId: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), source: z.string().trim().max(160).nullable() }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "updateExpenseAmount", input }) }),
-    updateProductionMap: tool({ description: "Guarda el mapa completo acumulado directamente. Al completar un producto calcula y registra su primera versión sin aprobación; conserva los datos conocidos y deja lo desconocido pendiente. Solo quitar productos, insumos o gastos del mapa requiere confirmación humana.", inputSchema: productionProfileToolSchema, execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "updateProductionMap", input }) }),
-    applyCostAction: tool({ description: "Gestiona insumos, gastos, productos, categorías, consumos y repartos. Aplica directamente todas las altas y actualizaciones, incluso si afectan productos ya evaluados. Solo eliminar un producto o insumo requiere confirmación en la UI; la baja conserva el historial y recalcula el costo vigente. Usa IDs actuales de inspectCostBase. set-component.quantityMilli expresa milésimas de la unidad de compra. Los campos de creación desconocidos deben ser null; Cozte preguntará en vez de guardarlos como cero. Devuelve cambio aplicado, revisión pendiente o error; no afirmes éxito sin leer el resultado.", inputSchema: z.object({ label: z.string().trim().min(3).max(140), brief: z.string().trim().min(8).max(400).optional(), change: cozteCostActionToolSchema }), execute: (input, { toolCallId }) => executeCozteToolStep({ principal, runId, toolCallId, toolName: "applyCostAction", input }) }),
+    inspectCostBase: tool({ description: "Lee los costos, el perfil de producción y sus brechas actuales para responder con datos reales o resolver referencias.", inputSchema: z.object({}), execute: (input, { toolCallId }) => execute(toolCallId, "inspectCostBase", input) }),
+    calculateCostRule: tool({ description: "Calcula una equivalencia mensual o costo directo por unidad terminada; jamás inventa los datos faltantes.", inputSchema: z.object({ frequency: z.enum(["monthly", "quarterly", "annual"]).optional(), amountMinor: z.number().int().nonnegative().optional(), pricePerPurchaseMinor: z.number().int().nonnegative().optional(), unitsPerPurchase: z.number().positive().optional(), quantityPerFinishedUnit: z.number().nonnegative().optional() }), execute: (input, { toolCallId }) => execute(toolCallId, "calculateCostRule", input) }),
+    findMaterial: tool({ description: "Identifica un insumo vigente mencionado en un cambio de precio; devuelve ninguno si es ambiguo.", inputSchema: z.object({ mention: z.string().trim().min(1).max(200) }), execute: (input, { toolCallId }) => execute(toolCallId, "findMaterial", input) }),
+    updateMaterialPrice: tool({ description: "Actualiza el precio del insumo ahora, incluso si participa en productos evaluados. Usa el ID de inspectCostBase; conserva importe, moneda, fuente y fecha indicados. Si falla o el resultado es incierto, consulta de nuevo antes de repetir.", inputSchema: cozteMaterialPriceToolSchema, execute: (input, { toolCallId }) => execute(toolCallId, "updateMaterialPrice", input) }),
+    updateExpenseAmount: tool({ description: "Actualiza ahora el importe del gasto vigente, incluso si afecta productos evaluados. Usa el ID exacto de inspectCostBase y conserva moneda/fuente. Si falla o el resultado es incierto, consulta de nuevo antes de repetir.", inputSchema: z.object({ expenseId: z.string(), amount: z.number().nonnegative(), currency: z.enum(supportedCurrencies), source: z.string().trim().max(160).nullable() }), execute: (input, { toolCallId }) => execute(toolCallId, "updateExpenseAmount", input) }),
+    updateProductionMap: tool({ description: "Guarda el mapa completo acumulado directamente. Si ya hay datos suficientes, evalúa y registra los costos del mapa sin aprobación; no crea una ficha operativa por sí solo. Conserva datos conocidos, deja desconocidos pendientes. Quitar un producto, insumo o gasto del mapa requiere confirmación humana.", inputSchema: productionProfileToolSchema, execute: (input, { toolCallId }) => execute(toolCallId, "updateProductionMap", input) }),
+    upsertProductDraft: tool({ description: "Agrega o completa un producto parcial en el mapa sin tocar los otros. Usa solo datos confirmados: nombre, unidad terminada, unidades buenas/iniciadas/merma por lote, lotes al mes y horas por lote. No crea una ficha operativa ni inventa precios: devuelve building cuando guardó el borrador.", inputSchema: z.object({ name: z.string().trim().min(2).max(100), finishedUnit: z.string().trim().min(1).max(100).optional(), goodUnitsPerBatch: z.number().int().positive().nullable().optional(), startedUnitsPerBatch: z.number().int().positive().nullable().optional(), normalScrapUnitsPerBatch: z.number().int().nonnegative().nullable().optional(), batchesPerMonth: z.number().positive().nullable().optional(), hoursPerBatch: z.number().positive().nullable().optional() }), execute: (input, { toolCallId }) => execute(toolCallId, "upsertProductDraft", input) }),
+    applyCostAction: tool({ description: "Gestiona insumos, gastos, productos, categorías, consumos y repartos. Aplica directamente todas las altas y actualizaciones, incluso si afectan productos ya evaluados. Solo eliminar un producto o insumo requiere confirmación en la UI; la baja conserva el historial y recalcula el costo vigente. Usa IDs actuales de inspectCostBase. set-component.quantityMilli expresa milésimas de la unidad de compra. Los campos de creación desconocidos deben ser null; un cero necesita una frase exacta del usuario en zeroEvidence. Devuelve cambio aplicado, revisión pendiente o error; no afirmes éxito sin leer el resultado.", inputSchema: z.object({ label: z.string().trim().min(3).max(140), brief: z.string().trim().min(8).max(400).optional(), change: cozteCostActionToolSchema }), execute: (input, { toolCallId }) => execute(toolCallId, "applyCostAction", input) }),
   };
 }
 
@@ -192,7 +204,7 @@ export function buildCozteInstructions(state: DomainState, profileState: Awaited
     "=== 2. REGLAS DEL COSTEO ===",
     "Modela ubicación/planta, producto con proceso e insumos, y lote con consumo real y unidades aptas. Comprar no equivale a consumir: cada insumo requiere unidad comprada, unidad usada, conversión y cantidad por lote/producto; un mismo insumo puede consumirse distinto en cada producto.",
     "Para set-component, convierte el consumo por lote a unidades de compra usando una conversión confirmada y luego a milésimas. Si falta conversión, pregunta antes de proponer. Para gastos trimestrales o anuales, calcula su equivalente mensual; no inventes periodicidad.",
-    "Para crear un producto, exige unidades buenas por lote, precio de venta por unidad, gasto variable por unidad, trabajo directo por lote y horas por lote. Un cero solo es válido si la persona confirmó que realmente es cero; si falta un dato, no crees una ficha con un cero de relleno: pregunta. Si varios productos están completos y la persona pidió crearlos, puedes agruparlos en una sola ejecución directa.",
+    "Para crear una ficha operativa de producto, exige unidades buenas por lote, precio de venta por unidad, gasto variable por unidad, trabajo directo por lote y horas por lote. Un cero solo es válido si la persona confirmó que realmente es cero y puedes citar la frase exacta en zeroEvidence. Si falta un dato, guarda la información parcial en el mapa de trabajo y pregunta; jamás inventes cero. Si varios productos están completos y la persona pidió crearlos, puedes agruparlos en una sola ejecución directa.",
     "Asigna cada gasto compartido una sola vez por horas, unidades aptas o porcentajes explícitos. Para repartir por horas/unidades solicita lotes mensuales y horas por lote; no distribuyas por igual sin evidencia.",
     "El costo normal usa unidades aptas terminadas y empacadas. Distingue unidades iniciadas, merma normal, pérdidas extraordinarias y capacidad ociosa; no mezcles pérdidas extraordinarias en el costo normal.",
     "Distingue costo objetivo, costo real y escenario de cambio. Explica variaciones por precio, consumo, tiempo, rendimiento o reparto; no recalcules el pasado con reglas actuales.",

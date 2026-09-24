@@ -1,6 +1,7 @@
 import "server-only";
 import { createHmac } from "node:crypto";
 import { ApiError } from "./auth";
+import { assertSqlBindings } from "@/lib/sql-bindings";
 
 export type SqlValue = string | number | null;
 export type SqlStatement = { sql: string; params?: SqlValue[] };
@@ -18,6 +19,7 @@ export async function dbBatch<T extends Record<string, unknown> = Record<string,
   statements: SqlStatement[],
 ): Promise<T[][]> {
   if (statements.length < 1 || statements.length > 100) throw new Error("Invalid D1 batch size");
+  assertSqlBindings(statements);
   const { url, secret } = configuration();
   const body = JSON.stringify({ statements });
   const timestamp = String(Date.now());

@@ -11,6 +11,7 @@ import { loadState } from "@/lib/server/state";
 import { buildCozteInstructions, createCozteTools } from "@/lib/server/cozte-agent-tools";
 import { cozteAssistantWorkflow, COZTE_MAX_AGENT_STEPS } from "@/lib/server/cozte-workflow";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, COZTE_SPREADSHEET_MEDIA_TYPE, prepareCozteModelMessages } from "@/lib/cozte-assistant-attachments";
+import { createCozteVerifiedStreamTransform } from "@/lib/cozte-response-verifier";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -106,7 +107,7 @@ export async function POST(request: Request) {
     const workflowRun = await start(cozteAssistantWorkflow, [{ principal, runId, instructions, messages: modelMessages, persistedMessages: safeMessages }]);
     await linkAssistantWorkflowRun(principal, runId, workflowRun.runId);
     return createUIMessageStreamResponse({
-      stream: workflowRun.readable.pipeThrough(createModelCallToUIChunkTransform()),
+      stream: workflowRun.readable.pipeThrough(createCozteVerifiedStreamTransform()).pipeThrough(createModelCallToUIChunkTransform()),
       headers: { "x-workflow-run-id": workflowRun.runId, "x-cozte-run-id": runId },
     });
   } catch (error) {

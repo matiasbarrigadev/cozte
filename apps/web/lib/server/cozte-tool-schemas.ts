@@ -13,6 +13,12 @@ export const cozteProductFields = {
 
 const cozteProductCreateToolFields = {
   ...cozteProductFields,
+  zeroEvidence: z.object({
+    salePrice: z.string().min(8).max(160).optional(),
+    salesVariablePerUnit: z.string().min(8).max(160).optional(),
+    laborCostPerLot: z.string().min(8).max(160).optional(),
+    productionHoursPerLot: z.string().min(8).max(160).optional(),
+  }).optional().describe("Solo para valores realmente cero: copia una frase exacta del usuario que nombre ese costo y confirme cero o ausencia. Nunca inventes citas."),
   lotUnits: cozteProductFields.lotUnits.nullable().describe("Unidades buenas vendibles por lote; null si aún no se confirmó"),
   salePrice: cozteProductFields.salePrice.nullable().describe("Precio por unidad; null si no se informó. No uses 0 para representar un dato desconocido"),
   salesVariablePerUnit: cozteProductFields.salesVariablePerUnit.nullable().describe("Gasto variable por unidad; null si no se informó. Usa 0 solo si se confirmó que no existe"),
