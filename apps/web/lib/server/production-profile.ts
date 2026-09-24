@@ -12,9 +12,12 @@ type ConversationRow = { messages_json: string };
 type SnapshotRevisionRow = { revision: number };
 
 export async function loadProductionProfile(principal: Principal) {
-  const state = await loadState(principal);
-  const rows = await dbQuery<ProfileRow>("SELECT confirmed_json, draft_json, revision FROM production_profiles WHERE organization_id=?", [principal.organizationId]);
-  const snapshots = await dbQuery<SnapshotRevisionRow>("SELECT revision FROM production_profile_snapshots WHERE organization_id=? ORDER BY revision DESC LIMIT 1", [principal.organizationId]);
+  const statePromise = loadState(principal);
+  const [state, rows, snapshots] = await Promise.all([
+    statePromise,
+    dbQuery<ProfileRow>("SELECT confirmed_json, draft_json, revision FROM production_profiles WHERE organization_id=?", [principal.organizationId]),
+    dbQuery<SnapshotRevisionRow>("SELECT revision FROM production_profile_snapshots WHERE organization_id=? ORDER BY revision DESC LIMIT 1", [principal.organizationId]),
+  ]);
   const row = rows[0];
   const confirmed = row?.confirmed_json ? productionProfileSchema.parse(JSON.parse(row.confirmed_json)) : null;
   const draft = row?.draft_json ? productionProfileSchema.parse(JSON.parse(row.draft_json)) : null;

@@ -75,7 +75,11 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
   const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport, resume: resumeExistingWorkflow,
     onFinish: ({ message, isError, isAbort }) => {
       void loadProposals(true);
-      if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && ["tool-applyCostAction", "tool-updateMaterialPrice", "tool-updateExpenseAmount", "tool-updateProductionMap", "tool-proposeCostAction", "tool-proposeMaterialPrice", "tool-proposeExpenseAmount", "tool-proposeProductionProfile"].includes(part.type) && !!part.output && typeof part.output === "object" && (part.output as { applied?: boolean }).applied)) void onDataChanged();
+      if (message.parts.some((part) => {
+        if (!isToolUIPart(part) || part.state !== "output-available" || !["tool-applyCostAction", "tool-updateMaterialPrice", "tool-updateExpenseAmount", "tool-updateProductionMap", "tool-upsertProductDraft", "tool-proposeCostAction", "tool-proposeMaterialPrice", "tool-proposeExpenseAmount", "tool-proposeProductionProfile"].includes(part.type) || !part.output || typeof part.output !== "object") return false;
+        const output = part.output as { applied?: boolean; status?: string };
+        return output.applied === true || output.status === "building";
+      })) void onDataChanged();
       if (!isAbort && (isError || !message.parts.some((part) => part.type === "text" && part.text.trim()))) toast.error("Cozte no pudo completar esta respuesta. Tu mensaje quedó guardado; puedes reintentarlo.");
     },
     onError: () => toast.error("No se pudo conectar con Cozte. Revisa tu conexión y vuelve a intentar."),

@@ -1,6 +1,7 @@
 import "server-only";
 import { calculateCosts, type DomainState } from "@/lib/domain";
 import { convertNativeMilli, isCurrency, type Currency, type FxQuote } from "@/lib/currency";
+import { calculateProductionCosts, evaluableProfileProducts, productionProfileSchema } from "@/lib/production-profile";
 import { dbBatch, dbQuery } from "./db";
 import type { Principal } from "./auth";
 import { officialFxTable, quotesFor } from "./fx";
@@ -80,14 +81,31 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
 }
 
 export async function loadDashboard(principal: Principal) {
-  const [state, alerts] = await Promise.all([
-    loadState(principal),
+  const statePromise = loadState(principal);
+  const [state, alerts, profileRows] = await Promise.all([
+    statePromise,
     dbQuery<{ id: string; material_id: string; message: string; first_detected_at: string }>(
       "SELECT id, material_id, message, first_detected_at FROM cost_alerts WHERE organization_id=? AND status='open' ORDER BY first_detected_at DESC LIMIT 50",
       [principal.organizationId],
     ),
+    dbQuery<{ confirmed_json: string | null; draft_json: string | null }>(
+      "SELECT confirmed_json, draft_json FROM production_profiles WHERE organization_id=?",
+      [principal.organizationId],
+    ),
   ]);
-  return { ...state, costs: calculateCosts(state), alerts };
+  const profileRow = profileRows[0];
+  const workingProfile = profileRow?.draft_json
+    ? productionProfileSchema.parse(JSON.parse(profileRow.draft_json))
+    : profileRow?.confirmed_json
+      ? productionProfileSchema.parse(JSON.parse(profileRow.confirmed_json))
+      : null;
+  const productionWork = workingProfile?.products.length ? {
+    isDraft: Boolean(profileRow?.draft_json),
+    products: workingProfile.products.map(({ name, finishedUnit, goodUnitsPerBatch, batchesPerMonth }) => ({ name, finishedUnit, goodUnitsPerBatch, batchesPerMonth })),
+    costs: calculateProductionCosts(workingProfile, state.organization.currency, state.fxQuotes).map(({ product, unitMinor }) => ({ product, unitMinor })),
+    evaluableProducts: evaluableProfileProducts(workingProfile, state.organization.currency, state.fxQuotes),
+  } : null;
+  return { ...state, costs: calculateCosts(state), alerts, productionWork };
 }
 
 export async function loadRecentChanges(principal: Principal) {
