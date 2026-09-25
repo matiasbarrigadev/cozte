@@ -144,6 +144,17 @@
 }
 
 :root {
+  /* Chart categorical slots in fixed order (validated: adjacent CVD ΔE ≥ 9.1, normal-vision ΔE ≥ 19.6). */
+  --chart-series-1: #2a78d6;
+  --chart-series-2: #eb6834;
+  --chart-series-3: #1baf7a;
+  --chart-series-4: #eda100;
+  --chart-series-5: #e87ba4;
+  --chart-series-6: #008300;
+  --chart-series-7: #4a3aa7;
+  --chart-series-8: #e34948;
+  --chart-increase: #eb6834;
+  --chart-decrease: #2a78d6;
   --brand-paper: oklch(0.976 0.011 115);
   --brand-surface: oklch(0.997 0.004 110);
   --brand-ink: oklch(0.19 0.028 155);
@@ -186,6 +197,16 @@
 }
 
 .dark {
+  --chart-series-1: #3987e5;
+  --chart-series-2: #d95926;
+  --chart-series-3: #199e70;
+  --chart-series-4: #c98500;
+  --chart-series-5: #d55181;
+  --chart-series-6: #008300;
+  --chart-series-7: #9085e9;
+  --chart-series-8: #e66767;
+  --chart-increase: #d95926;
+  --chart-decrease: #3987e5;
   --background: oklch(0.16 0.025 155);
   --foreground: var(--brand-paper);
   --card: oklch(0.21 0.025 155);

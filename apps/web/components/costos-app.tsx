@@ -23,6 +23,8 @@ import { EvidencePanel } from "./evidence-panel";
 import { CostSheet } from "./cost-sheet";
 import { CozteAssistant } from "./cozte-assistant";
 import { CostHistory, type CostSnapshotRow, type HistoryEntry, type ProfileSnapshotRow } from "./cost-history";
+import { CostAnalysisView } from "./cost-analysis-view";
+import { appPath, viewFromPathname, viewFromSegments, type AppView } from "@/lib/app-routes";
 import { AnimatedIcon, type AnimatedIconName } from "./animated-icon";
 import { CozteLogo } from "./cozte-logo";
 
@@ -31,13 +33,13 @@ type Dashboard = DomainState & {
   alerts: { id: string; material_id: string; message: string; first_detected_at: string }[];
   productionWork?: ProductionWorkMap | null;
 };
-type View = "dashboard" | "producto" | "planilla" | "revision" | "comprobantes" | "asistente" | "historial";
+type View = AppView;
 type Draft = { materials: Record<string, number>; expenses: Record<string, number>; materialCurrencies: Record<string, Currency>; expenseCurrencies: Record<string, Currency>; source: string; effectiveDate: string };
 
 const nav: { id: View; label: string; icon: AnimatedIconName }[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "planilla", label: "Costos de producción", icon: "costs" },
-  { id: "revision", label: "Revisar cambios", icon: "review" },
+  { id: "analisis", label: "Análisis de costos", icon: "chart" },
   { id: "comprobantes", label: "Comprobantes", icon: "receipt" },
   { id: "asistente", label: "Cozte AI", icon: "assistant" },
   { id: "historial", label: "Historial", icon: "history" },
@@ -47,10 +49,12 @@ const formatMoney = (value: number | null, currency: string) => value === null ?
 const formatPercent = (value: number | null) => value === null ? "—" : `${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 1 }).format(value)}%`;
 const emptyDraft = (): Draft => ({ materials: {}, expenses: {}, materialCurrencies: {}, expenseCurrencies: {}, source: "", effectiveDate: new Date().toISOString().slice(0, 10) });
 
-export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?: boolean }) {
+export function CostosApp({ initial, demo = false, initialSection }: { initial: Dashboard; demo?: boolean; initialSection?: string[] }) {
   const [state, setState] = React.useState<Dashboard>(initial);
-  const [view, setView] = React.useState<View>("dashboard");
-  const [selected, setSelected] = React.useState<string | null>(initial.products[0]?.id ?? null);
+  const initialRoute = viewFromSegments(initialSection) ?? { view: "dashboard" as View };
+  const [view, setView] = React.useState<View>(initialRoute.view);
+  const [selected, setSelected] = React.useState<string | null>(initialRoute.productId ?? initial.products[0]?.id ?? null);
+  const [reviewOpen, setReviewOpen] = React.useState(false);
   const [draft, setDraft] = React.useState<Draft>(() => { const value = emptyDraft(); if (demo) value.materials.papel = 10000; return value; });
   const [draftReady, setDraftReady] = React.useState(demo);
   const [draftLoadAttempt, setDraftLoadAttempt] = React.useState(0);
@@ -170,13 +174,13 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
       } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo calcular"); return; }
       finally { setBusy(false); }
     }
-    setView("revision");
+    setReviewOpen(true);
   }
 
   async function confirmChanges() {
     if (!draft.source.trim() || draft.source.trim().length < 2) { toast.error("Indica la fuente del cambio"); return; }
     const saved = await save({ action: "bulk-prices", materials: changedMaterials.map((item) => ({ id: item.id, amount: draft.materials[item.id], currency: materialCurrency(item) })), expenses: changedExpenses.map((item) => ({ id: item.id, amount: draft.expenses[item.id], currency: expenseCurrency(item) })), expectedFxRates: reviewFxRates, source: draft.source.trim(), effectiveDate: draft.effectiveDate });
-    if (saved) { setDraftStatus("saving"); setDraft(emptyDraft()); setView("dashboard"); }
+    if (saved) { setDraftStatus("saving"); setDraft(emptyDraft()); setReviewOpen(false); }
   }
 
   function editMetadata(action: { action: "update-material-meta" | "update-expense-meta"; id: string; field: string; value: string }) {
@@ -198,23 +202,55 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
     void save(action, true);
   }
 
-  async function loadHistory() {
+  const fetchHistory = React.useCallback(async () => {
+    const response = await fetch("/api/history", { cache: "no-store" });
+    if (!response.ok) throw new Error("No se pudo cargar el historial");
+    const data = await response.json();
+    return { events: data.events ?? [], snapshots: data.snapshots ?? [], profileSnapshots: data.profileSnapshots ?? [] } as { events: HistoryEntry[]; snapshots: CostSnapshotRow[]; profileSnapshots: ProfileSnapshotRow[] };
+  }, []);
+  const applyHistory = React.useCallback((data: Awaited<ReturnType<typeof fetchHistory>>) => { setHistory(data.events); setSnapshots(data.snapshots); setProfileSnapshots(data.profileSnapshots); }, []);
+
+  function loadHistory() {
     if (demo) return;
-    try { const response = await fetch("/api/history", { cache: "no-store" }); if (response.ok) { const data = await response.json(); setHistory(data.events ?? []); setSnapshots(data.snapshots ?? []); setProfileSnapshots(data.profileSnapshots ?? []); } }
-    catch { toast.error("No se pudo cargar el historial"); }
+    fetchHistory().then(applyHistory).catch(() => toast.error("No se pudo cargar el historial"));
   }
 
-  function navigate(next: View) {
+  // Each section has its own URL; pushState keeps navigation instant (no server round trip) and back/forward work.
+  function navigate(next: View, productId?: string) {
+    if (productId) setSelected(productId);
     setView(next);
-    if (next === "historial") void loadHistory();
+    if (next === "historial") loadHistory();
+    if (!demo) {
+      const path = appPath(next, productId ?? (next === "producto" ? selected : null));
+      if (window.location.pathname !== path) window.history.pushState(null, "", path);
+    }
   }
+
+  const openRoute = React.useEffectEvent((pathname: string) => {
+    const route = viewFromPathname(pathname);
+    if (!route) return;
+    if (route.productId) setSelected(route.productId);
+    setView(route.view);
+    if (route.view === "historial") loadHistory();
+  });
+
+  React.useEffect(() => {
+    if (demo) return;
+    // A deep link to /app/historial needs its data on first load.
+    if (initialRoute.view === "historial") fetchHistory().then(applyHistory).catch(() => toast.error("No se pudo cargar el historial"));
+    const onPopState = () => openRoute(window.location.pathname);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+    // Runs once: later route changes arrive through navigate() or popstate.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo]);
 
   return (
     <SidebarProvider className="cozte-workspace">
       <Sidebar collapsible="icon">
         <SidebarHeader><div className="min-h-15 px-2 py-3 group-data-[collapsible=icon]:hidden"><CozteLogo className="text-2xl" /><span className="mt-1 block text-xs text-sidebar-foreground/65">Costeo vivo</span></div></SidebarHeader>
         <SidebarContent><SidebarGroup><SidebarGroupLabel>Espacio de trabajo</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>
-          {nav.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id} badge={item.id === "revision" ? changeCount : 0} onNavigate={() => navigate(item.id)} />)}
+          {nav.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id} badge={item.id === "planilla" ? changeCount : 0} onNavigate={() => navigate(item.id)} />)}
         </SidebarMenu></SidebarGroupContent></SidebarGroup></SidebarContent>
         <SidebarFooter><div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">{demo ? <Badge variant="outline" className="border-white/25 bg-white/5 text-white">Demostración</Badge> : <><div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden"><OrganizationSwitcher hidePersonal appearance={{ elements: { organizationSwitcherTrigger: "cozte-org-trigger", organizationPreviewAvatarBox: "cozte-org-avatar", organizationSwitcherPopoverCard: "cozte-clerk-popover" } }} /></div><UserButton appearance={{ elements: { userButtonTrigger: "cozte-user-trigger", userButtonAvatarBox: "cozte-user-avatar", userButtonPopoverCard: "cozte-clerk-popover" } }} /></>}</div></SidebarFooter>
       </Sidebar>
@@ -227,8 +263,8 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
               <div className="relative flex flex-wrap items-start justify-between gap-6"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary-foreground/75">Tu producción, en perspectiva</p><h1 className="mt-3 max-w-2xl text-balance text-3xl font-semibold tracking-[-0.05em] text-primary-foreground sm:text-4xl">Costos de tus productos</h1><p className="mt-3 max-w-xl text-sm leading-relaxed text-primary-foreground/75">Una vista para entender qué produces, qué comparten tus productos y qué requiere tu atención.</p></div><Button variant="secondary" onClick={() => setDialog("product")}><AnimatedIcon name="plus" data-icon="inline-start" />Añadir producto</Button></div>
               <div className="relative mt-9 grid gap-4 md:grid-cols-3"><Metric label="Productos" value={String(dashboardProductCount)} note="Incluye líneas que Cozte está mapeando" /><Metric label="Insumos compartidos" value={String(state.materials.filter((item) => state.components.filter((component) => component.materialId === item.id).length > 1).length)} note="Un precio, varios productos" /><Metric label="Por revisar" value={String(changeCount + state.alerts.length + state.costs.filter((item) => item.warnings.length > 0).length)} note="Cambios y datos faltantes" /></div>
             </section>
-            {state.alerts.length ? <Alert><AlertTitle>{state.alerts.length} precio{state.alerts.length === 1 ? "" : "s"} para revisar</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-3"><span>{state.alerts.slice(0, 3).map((item) => item.message).join(" · ")}</span><Button variant="link" onClick={() => setView("planilla")}>Abrir planilla</Button></div></AlertDescription></Alert> : null}
-            <Card><CardHeader><CardTitle>Fichas de productos</CardTitle><CardDescription>Productos con sus datos comerciales y margen estimado</CardDescription></CardHeader><CardContent>{state.products.length ? <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Producto</TableHead><TableHead className="text-right">Costo/u</TableHead><TableHead className="text-right">Precio</TableHead><TableHead className="text-right">Margen</TableHead><TableHead className="w-12" /></TableRow></TableHeader><TableBody>{state.products.map((item) => { const cost = state.costs.find((entry) => entry.productId === item.id); return <TableRow key={item.id}><TableCell><button className="text-left font-medium hover:underline" onClick={() => { setSelected(item.id); setView("producto"); }}>{item.name}</button><div className="text-xs text-muted-foreground">Lote de {item.lotUnits} unidades{item.batchesPerMonthMilli != null ? ` · ${item.batchesPerMonthMilli / 1000} lotes al mes` : ""}</div></TableCell><TableCell className="text-right tabular-nums">{formatMoney(cost?.unitMinor ?? null, currency)}{cost?.quality === "estimated" ? <div><Badge variant="outline" title={cost.assumptions.join(" · ")}>Estimado</Badge></div> : null}</TableCell><TableCell className="text-right tabular-nums">{item.salePriceMinor > 0 ? formatMoney(item.salePriceMinor, currency) : "Sin definir"}</TableCell><TableCell className="text-right">{cost?.warnings.length ? <Badge variant="secondary">Incompleto</Badge> : formatPercent(cost?.estimatedMarginPercent ?? null)}</TableCell><TableCell><Button size="icon-sm" variant="ghost" aria-label={`Abrir ${item.name}`} onClick={() => { setSelected(item.id); setView("producto"); }}><AnimatedIcon name="arrowRight" /></Button></TableCell></TableRow>; })}</TableBody></Table></div> : <Empty><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="boxes" size={24} /></EmptyMedia><EmptyTitle>Aún no hay fichas comerciales</EmptyTitle><EmptyDescription>Empieza describiendo cómo produces; Cozte irá armando el costo con la información disponible.</EmptyDescription></EmptyHeader><EmptyContent><Button onClick={() => setView("asistente")}>Empezar con Cozte</Button></EmptyContent></Empty>}</CardContent></Card>
+            {state.alerts.length ? <Alert><AlertTitle>{state.alerts.length} precio{state.alerts.length === 1 ? "" : "s"} para revisar</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-3"><span>{state.alerts.slice(0, 3).map((item) => item.message).join(" · ")}</span><Button variant="link" onClick={() => navigate("planilla")}>Abrir planilla</Button></div></AlertDescription></Alert> : null}
+            <Card><CardHeader><CardTitle>Fichas de productos</CardTitle><CardDescription>Productos con sus datos comerciales y margen estimado</CardDescription></CardHeader><CardContent>{state.products.length ? <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Producto</TableHead><TableHead className="text-right">Costo/u</TableHead><TableHead className="text-right">Precio</TableHead><TableHead className="text-right">Margen</TableHead><TableHead className="w-12" /></TableRow></TableHeader><TableBody>{state.products.map((item) => { const cost = state.costs.find((entry) => entry.productId === item.id); return <TableRow key={item.id}><TableCell><button className="text-left font-medium hover:underline" onClick={() => { navigate("producto", item.id); }}>{item.name}</button><div className="text-xs text-muted-foreground">Lote de {item.lotUnits} unidades{item.batchesPerMonthMilli != null ? ` · ${item.batchesPerMonthMilli / 1000} lotes al mes` : ""}</div></TableCell><TableCell className="text-right tabular-nums">{formatMoney(cost?.unitMinor ?? null, currency)}{cost?.quality === "estimated" ? <div><Badge variant="outline" title={cost.assumptions.join(" · ")}>Estimado</Badge></div> : null}</TableCell><TableCell className="text-right tabular-nums">{item.salePriceMinor > 0 ? formatMoney(item.salePriceMinor, currency) : "Sin definir"}</TableCell><TableCell className="text-right">{cost?.warnings.length ? <Badge variant="secondary">Incompleto</Badge> : formatPercent(cost?.estimatedMarginPercent ?? null)}</TableCell><TableCell><Button size="icon-sm" variant="ghost" aria-label={`Abrir ${item.name}`} onClick={() => { navigate("producto", item.id); }}><AnimatedIcon name="arrowRight" /></Button></TableCell></TableRow>; })}</TableBody></Table></div> : <Empty><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="boxes" size={24} /></EmptyMedia><EmptyTitle>Aún no hay fichas comerciales</EmptyTitle><EmptyDescription>Empieza describiendo cómo produces; Cozte irá armando el costo con la información disponible.</EmptyDescription></EmptyHeader><EmptyContent><Button onClick={() => navigate("asistente")}>Empezar con Cozte</Button></EmptyContent></Empty>}</CardContent></Card>
             {productionWorkProducts.length > 0 ? <Card><CardHeader><CardTitle>{state.productionWork?.isDraft ? "Líneas de producción en armado" : "Líneas del mapa de producción"}</CardTitle><CardDescription>El avance aparece aquí mientras Cozte reúne los datos necesarios para calcular el costo de fabricación.</CardDescription></CardHeader><CardContent className="space-y-3">{productionWorkProducts.map((workProduct) => {
               const cost = state.productionWork?.costs.find((item) => item.product.toLocaleLowerCase() === workProduct.name.toLocaleLowerCase());
               const costReady = state.productionWork?.evaluableProducts.some((name) => name.toLocaleLowerCase() === workProduct.name.toLocaleLowerCase()) ?? false;
@@ -236,12 +272,12 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
                 <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-medium">{workProduct.name}</span><Badge variant="outline">{state.productionWork?.isDraft ? "En armado" : "En el mapa"}</Badge></div><p className="mt-1 text-sm text-muted-foreground">{workProduct.goodUnitsPerBatch != null ? `${workProduct.goodUnitsPerBatch} ${workProduct.finishedUnit} por lote` : "Cozte está reuniendo los datos de producción."}{workProduct.batchesPerMonth != null ? ` · ${workProduct.batchesPerMonth} lotes al mes` : ""}</p></div>
                 <div className="text-right"><p className="text-xs text-muted-foreground">Costo de fabricación por {workProduct.finishedUnit}</p><p className="font-semibold tabular-nums">{costReady ? formatMoney(cost?.unitMinor ?? null, currency) : "Por calcular"}</p></div>
               </div>;
-            })}<Button variant="outline" onClick={() => setView("asistente")}>Seguir armando con Cozte</Button></CardContent></Card> : null}
+            })}<Button variant="outline" onClick={() => navigate("asistente")}>Seguir armando con Cozte</Button></CardContent></Card> : null}
             {changeCount ? <Alert><AlertTitle>Hay {changeCount} cambio{changeCount === 1 ? "" : "s"} en borrador</AlertTitle><AlertDescription><Button variant="link" onClick={reviewChanges}>Revisar impacto en todos los productos</Button></AlertDescription></Alert> : null}
           </> : null}
 
           {view === "producto" && product ? <>
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><Button variant="ghost" size="sm" onClick={() => setView("dashboard")}><AnimatedIcon name="arrowLeft" data-icon="inline-start" />Todos los productos</Button><h1 className="mt-2 text-3xl font-semibold tracking-tight">{product.name}</h1><p className="text-sm text-muted-foreground">Lote de {product.lotUnits} unidades · {product.batchesPerMonthMilli != null ? `${product.batchesPerMonthMilli / 1000} lotes al mes` : "lotes al mes sin definir"} · versión {product.version}</p></div><Button variant="outline" onClick={() => setDialog("edit-product")}><AnimatedIcon name="edit" data-icon="inline-start" />Editar producto</Button></div>
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><Button variant="ghost" size="sm" onClick={() => navigate("dashboard")}><AnimatedIcon name="arrowLeft" data-icon="inline-start" />Todos los productos</Button><h1 className="mt-2 text-3xl font-semibold tracking-tight">{product.name}</h1><p className="text-sm text-muted-foreground">Lote de {product.lotUnits} unidades · {product.batchesPerMonthMilli != null ? `${product.batchesPerMonthMilli / 1000} lotes al mes` : "lotes al mes sin definir"} · versión {product.version}</p></div><Button variant="outline" onClick={() => setDialog("edit-product")}><AnimatedIcon name="edit" data-icon="inline-start" />Editar producto</Button></div>
             {currentCost?.warnings.length ? <Alert><AlertTitle>Costeo incompleto</AlertTitle><AlertDescription>{currentCost.warnings.join(" · ")}{currentCost.partialUnitMinor > 0 ? ` · Costo conocido hasta ahora: ${formatMoney(currentCost.partialUnitMinor, currency)} por unidad` : ""}</AlertDescription></Alert> : null}
             {!currentCost?.warnings.length && currentCost?.assumptions.length ? <Alert><AlertTitle>Costo estimado</AlertTitle><AlertDescription>{currentCost.assumptions.join(" · ")}</AlertDescription></Alert> : null}
             <div className="grid gap-4 md:grid-cols-3"><Metric label="Fabricación por unidad" value={formatMoney(currentCost?.unitMinor ?? null, currency)} note="Incluye gastos compartidos" /><Metric label="Gasto compartido por lote" value={formatMoney(currentCost?.lines.find((line) => line.kind === "shared_expense")?.amountMinor ?? 0, currency)} note="Asignado según actividad" /><Metric label="Margen estimado" value={formatPercent(currentCost?.estimatedMarginPercent ?? null)} note="Después de venta variable" /></div>
@@ -251,7 +287,7 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
           </> : null}
 
           {view === "planilla" ? <>
-            <CostSheet state={state} draft={draft} draftReady={draftReady} draftStatus={draftStatus} canReview={clientPreview !== null} busy={busy} demo={demo} onOpenCozte={() => setView("asistente")}
+            <CostSheet state={state} draft={draft} draftReady={draftReady} draftStatus={draftStatus} canReview={clientPreview !== null} busy={busy} demo={demo} onOpenCozte={() => navigate("asistente")}
               onRetryDraft={() => { if (draftReady) { setDraftStatus("saving"); setDraft((current) => ({ ...current })); } else { setDraftStatus("loading"); setDraftLoadAttempt((current) => current + 1); } }}
               onMaterialPrice={(id, value) => { if (!demo) setDraftStatus("saving"); setDraft((current) => ({ ...current, materials: { ...current.materials, [id]: value } })); setReview(null); }}
               onExpenseAmount={(id, value) => { if (!demo) setDraftStatus("saving"); setDraft((current) => ({ ...current, expenses: { ...current.expenses, [id]: value } })); setReview(null); }}
@@ -267,20 +303,20 @@ export function CostosApp({ initial, demo = false }: { initial: Dashboard; demo?
 
           {view === "comprobantes" ? <><div><p className="text-sm text-muted-foreground">Evidencia</p><h1 className="text-3xl font-semibold tracking-tight">Comprobantes</h1></div><EvidencePanel demo={demo} /></> : null}
 
-          {view === "revision" ? <>
-            <div><p className="text-sm text-muted-foreground">Revisión</p><h1 className="text-3xl font-semibold tracking-tight">Antes de confirmar</h1><p className="text-sm text-muted-foreground">Ningún cambio se aplica hasta que lo apruebes.</p></div>
-            {!changeCount ? <Empty><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="review" size={24} /></EmptyMedia><EmptyTitle>No hay cambios</EmptyTitle><EmptyDescription>Edita un precio o un gasto en la planilla.</EmptyDescription></EmptyHeader><EmptyContent><Button onClick={() => setView("planilla")}>Abrir planilla</Button></EmptyContent></Empty> : <>
-              <Card><CardHeader><CardTitle>{changeCount} cambio{changeCount === 1 ? "" : "s"} en borrador</CardTitle><CardDescription>Importes originales y equivalencia en {currency}. Si cambia la cotización, volverás a revisar.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead>Tipo</TableHead><TableHead className="text-right">Vigente ({currency})</TableHead><TableHead className="text-right">Nuevo original</TableHead><TableHead className="text-right">Equivalente ({currency})</TableHead></TableRow></TableHeader><TableBody>{changedMaterials.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Insumo</TableCell><TableCell className="text-right">{formatMoney(item.priceMinor, currency)}</TableCell><TableCell className="text-right">{draft.materials[item.id] === undefined ? "Pendiente" : formatMoney(draft.materials[item.id], materialCurrency(item))}</TableCell><TableCell className="text-right">{draft.materials[item.id] === undefined ? "—" : formatMoney(convertToOrganizationCurrency(state, toNativeMilli(draft.materials[item.id]), materialCurrency(item)), currency)}</TableCell></TableRow>)}{changedExpenses.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Gasto compartido</TableCell><TableCell className="text-right">{formatMoney(item.amountMinor, currency)}</TableCell><TableCell className="text-right">{draft.expenses[item.id] === undefined ? "Pendiente" : formatMoney(draft.expenses[item.id], expenseCurrency(item))}</TableCell><TableCell className="text-right">{draft.expenses[item.id] === undefined ? "—" : formatMoney(convertToOrganizationCurrency(state, toNativeMilli(draft.expenses[item.id]), expenseCurrency(item)), currency)}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
-              <Card><CardHeader><CardTitle>Impacto en productos</CardTitle><CardDescription>Fabricación por unidad, calculada con las mismas reglas que el costo vigente.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Producto</TableHead><TableHead className="text-right">Vigente</TableHead><TableHead className="text-right">Nuevo</TableHead><TableHead className="text-right">Diferencia</TableHead></TableRow></TableHeader><TableBody>{state.products.map((item) => { const oldCost = state.costs.find((entry) => entry.productId === item.id); const newCost = preview?.find((entry) => entry.productId === item.id); const delta = oldCost?.unitMinor != null && newCost?.unitMinor != null ? newCost.unitMinor - oldCost.unitMinor : null; return <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell className="text-right">{formatMoney(oldCost?.unitMinor ?? null, currency)}</TableCell><TableCell className="text-right">{formatMoney(newCost?.unitMinor ?? null, currency)}</TableCell><TableCell className="text-right"><Badge variant={delta && delta > 0 ? "destructive" : "secondary"}>{delta == null ? "—" : `${delta > 0 ? "+" : ""}${formatMoney(delta, currency)}`}</Badge></TableCell></TableRow>; })}</TableBody></Table></CardContent></Card>
-              <Card><CardHeader><CardTitle>Fuente y fecha</CardTitle><CardDescription>Estos datos quedarán en el historial de la actualización.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-2"><label className="flex flex-col gap-1 text-sm">Fuente<Input value={draft.source} onChange={(event) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, source: event.target.value })); }} placeholder="Factura, cotización o verificación manual" /></label><label className="flex flex-col gap-1 text-sm">Fecha efectiva<Input type="date" value={draft.effectiveDate} onChange={(event) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, effectiveDate: event.target.value })); }} /></label></CardContent><CardFooter className="flex gap-2"><Button variant="outline" onClick={() => setView("planilla")}>Seguir editando</Button><Button disabled={busy || demo} onClick={confirmChanges}>Confirmar cambios</Button></CardFooter></Card>
-            </>}
-          </> : null}
+          {view === "analisis" ? <CostAnalysisView currency={currency} demo={demo} /> : null}
 
-          {view === "asistente" ? <CozteAssistant demo={demo} onDataChanged={refresh} onOpenCosts={() => setView("planilla")} /> : null}
+          {view === "asistente" ? <CozteAssistant demo={demo} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
         </main>
       </SidebarInset>
+      <Dialog open={reviewOpen} onOpenChange={setReviewOpen}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"><DialogHeader><DialogTitle>Antes de confirmar</DialogTitle><DialogDescription>Ningún cambio de la planilla se aplica hasta que lo apruebes.</DialogDescription></DialogHeader>
+        {changeCount ? <div className="flex flex-col gap-4">
+              <Card><CardHeader><CardTitle>{changeCount} cambio{changeCount === 1 ? "" : "s"} en borrador</CardTitle><CardDescription>Importes originales y equivalencia en {currency}. Si cambia la cotización, volverás a revisar.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead>Tipo</TableHead><TableHead className="text-right">Vigente ({currency})</TableHead><TableHead className="text-right">Nuevo original</TableHead><TableHead className="text-right">Equivalente ({currency})</TableHead></TableRow></TableHeader><TableBody>{changedMaterials.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Insumo</TableCell><TableCell className="text-right">{formatMoney(item.priceMinor, currency)}</TableCell><TableCell className="text-right">{draft.materials[item.id] === undefined ? "Pendiente" : formatMoney(draft.materials[item.id], materialCurrency(item))}</TableCell><TableCell className="text-right">{draft.materials[item.id] === undefined ? "—" : formatMoney(convertToOrganizationCurrency(state, toNativeMilli(draft.materials[item.id]), materialCurrency(item)), currency)}</TableCell></TableRow>)}{changedExpenses.map((item) => <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell>Gasto compartido</TableCell><TableCell className="text-right">{formatMoney(item.amountMinor, currency)}</TableCell><TableCell className="text-right">{draft.expenses[item.id] === undefined ? "Pendiente" : formatMoney(draft.expenses[item.id], expenseCurrency(item))}</TableCell><TableCell className="text-right">{draft.expenses[item.id] === undefined ? "—" : formatMoney(convertToOrganizationCurrency(state, toNativeMilli(draft.expenses[item.id]), expenseCurrency(item)), currency)}</TableCell></TableRow>)}</TableBody></Table></CardContent></Card>
+              <Card><CardHeader><CardTitle>Impacto en productos</CardTitle><CardDescription>Fabricación por unidad, calculada con las mismas reglas que el costo vigente.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Producto</TableHead><TableHead className="text-right">Vigente</TableHead><TableHead className="text-right">Nuevo</TableHead><TableHead className="text-right">Diferencia</TableHead></TableRow></TableHeader><TableBody>{state.products.map((item) => { const oldCost = state.costs.find((entry) => entry.productId === item.id); const newCost = preview?.find((entry) => entry.productId === item.id); const delta = oldCost?.unitMinor != null && newCost?.unitMinor != null ? newCost.unitMinor - oldCost.unitMinor : null; return <TableRow key={item.id}><TableCell>{item.name}</TableCell><TableCell className="text-right">{formatMoney(oldCost?.unitMinor ?? null, currency)}</TableCell><TableCell className="text-right">{formatMoney(newCost?.unitMinor ?? null, currency)}</TableCell><TableCell className="text-right"><Badge variant={delta && delta > 0 ? "destructive" : "secondary"}>{delta == null ? "—" : `${delta > 0 ? "+" : ""}${formatMoney(delta, currency)}`}</Badge></TableCell></TableRow>; })}</TableBody></Table></CardContent></Card>
+              <Card><CardHeader><CardTitle>Fuente y fecha</CardTitle><CardDescription>Estos datos quedarán en el historial de la actualización.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-2"><label className="flex flex-col gap-1 text-sm">Fuente<Input value={draft.source} onChange={(event) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, source: event.target.value })); }} placeholder="Factura, cotización o verificación manual" /></label><label className="flex flex-col gap-1 text-sm">Fecha efectiva<Input type="date" value={draft.effectiveDate} onChange={(event) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, effectiveDate: event.target.value })); }} /></label></CardContent><CardFooter className="flex gap-2"><Button variant="outline" onClick={() => setReviewOpen(false)}>Seguir editando</Button><Button disabled={busy || demo} onClick={confirmChanges}>Confirmar cambios</Button></CardFooter></Card>
+        </div> : <p className="text-sm text-muted-foreground">No hay cambios en borrador.</p>}
+      </DialogContent></Dialog>
       <EntityDialog kind={dialog} product={dialog === "edit-product" ? product : undefined} products={state.products} categories={state.categories ?? [...new Set([...state.materials.map((item) => item.category), ...state.expenses.map((item) => item.category)])].map((name) => ({ id: name, name }))} onClose={() => setDialog(null)} onSave={save} currency={currency} busy={busy} demo={demo} />
       <Dialog open={pendingMeta !== null} onOpenChange={(open) => { if (!open) setPendingMeta(null); }}><DialogContent><DialogHeader><DialogTitle>Este cambio afecta otros productos</DialogTitle><DialogDescription>{pendingMeta?.description}</DialogDescription></DialogHeader><div className="flex flex-wrap gap-2">{pendingMeta?.affected.map((name) => <Badge key={name} variant="secondary">{name}</Badge>)}</div><DialogFooter><Button variant="outline" onClick={() => setPendingMeta(null)}>Cancelar</Button><Button disabled={busy} onClick={async () => { if (pendingMeta && await save({ ...pendingMeta.action, acknowledgeImpact: true }, true)) setPendingMeta(null); }}>Aplicar cambio</Button></DialogFooter></DialogContent></Dialog>
     </SidebarProvider>

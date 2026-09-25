@@ -1,13 +1,17 @@
 import { auth } from "@clerk/nextjs/server";
 import { CreateOrganization, OrganizationSwitcher } from "@clerk/nextjs";
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { CostosApp } from "@/components/costos-app";
 import { loadDashboard } from "@/lib/server/state";
+import { viewFromSegments } from "@/lib/app-routes";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default async function AppPage() {
+/** Every workspace section has its own URL (/app, /app/costos, /app/analisis, /app/productos/:id…). */
+export default async function AppPage({ params }: { params: Promise<{ section?: string[] }> }) {
+  const { section } = await params;
+  if (!viewFromSegments(section)) notFound();
   if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || !process.env.CLERK_SECRET_KEY) return (
     <main className="mx-auto flex min-h-screen w-full max-w-xl items-center p-6">
       <Card className="w-full">
@@ -47,5 +51,5 @@ export default async function AppPage() {
       </main>
     );
   }
-  return <CostosApp initial={initial} />;
+  return <CostosApp initial={initial} initialSection={section} />;
 }

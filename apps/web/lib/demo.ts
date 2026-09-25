@@ -1,4 +1,5 @@
 import { calculateCosts, type DomainState } from "./domain";
+import { snapshotRowsFor } from "./cost-snapshots";
 
 export const demoState: DomainState = {
   revision: 3,
@@ -36,3 +37,19 @@ export const demoState: DomainState = {
 };
 
 export const demoDashboard = { ...demoState, costs: calculateCosts(demoState), alerts: [] };
+
+/** Four months of example history for the demo: paper and electricity rise, a lot size improves. */
+export function demoHistory() {
+  const month = (offset: number, change: (state: typeof demoState) => void) => {
+    const state = structuredClone(demoState);
+    state.products.forEach((product) => { product.batchesPerMonthMilli = 8000; });
+    change(state);
+    return snapshotRowsFor(state, `2026-0${6 + offset}-15 12:00:00`);
+  };
+  return [
+    ...month(0, (state) => { state.materials[0].priceMinor = 8200; state.expenses[0].amountMinor = 38000; }),
+    ...month(1, (state) => { state.materials[0].priceMinor = 8600; state.expenses[0].amountMinor = 41000; }),
+    ...month(2, (state) => { state.materials[0].priceMinor = 9000; state.expenses[0].amountMinor = 45000; state.products[2].lotUnits = 90; }),
+    ...month(3, (state) => { state.materials[0].priceMinor = 9800; state.expenses[0].amountMinor = 52000; }),
+  ];
+}
