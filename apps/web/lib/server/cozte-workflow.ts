@@ -4,7 +4,7 @@ import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
 import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
-import { compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
+import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
 import { correctionMessage, receiptOnlyAnswer, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import type { Principal } from "./auth";
 import { saveConversation } from "./production-profile";
@@ -130,7 +130,7 @@ function toolRecords(steps: StepLike[]): TurnToolRecord[] {
 }
 
 /** The persisted assistant turn: real tool calls with compact receipts, then the accepted answer. */
-function assistantTurn(runId: string, steps: StepLike[], text: string): UIMessage {
+function assistantTurn(runId: string, steps: StepLike[], text: string, fallback: boolean): UIMessage {
   const parts: UIMessage["parts"] = [];
   for (const step of steps) {
     for (const call of step.toolCalls) {
@@ -140,7 +140,7 @@ function assistantTurn(runId: string, steps: StepLike[], text: string): UIMessag
     }
   }
   if (text.trim()) parts.push({ type: "text", text });
-  return { id: `assistant-${runId}`, role: "assistant", parts };
+  return { id: `${fallback ? COZTE_FALLBACK_ID_PREFIX : COZTE_ASSISTANT_ID_PREFIX}${runId}`, role: "assistant", parts };
 }
 
 export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise<void> {
@@ -199,7 +199,8 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     }
 
     const records = toolRecords(steps);
-    if (!verification.ok || modelError) {
+    const replaced = !verification.ok || Boolean(modelError);
+    if (replaced) {
       await recordCozteEvent(input.runId, "answer_replaced", { issues: verification.issues, modelError, response: text.slice(0, 4000) });
       // Without a read in the turn, the fallback reads the stored state itself so it can still say what is saved.
       const hasRead = records.some((item) => item.name === "readCosts" && item.ok);
@@ -208,7 +209,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
       await writeReceiptAnswer(writable, text, `receipt-${input.runId}`);
     }
     await closeCozteStream(writable);
-    const assistantMessage = assistantTurn(input.runId, steps, text);
+    const assistantMessage = assistantTurn(input.runId, steps, text, replaced);
     await finalizeCozteRun({
       principal: input.principal, runId: input.runId,
       messages: [...input.persistedMessages, assistantMessage],

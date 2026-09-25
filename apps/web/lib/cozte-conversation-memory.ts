@@ -61,3 +61,22 @@ export function compactCozteConversation(messages: UIMessage[]): UIMessage[] {
   }
   return recent;
 }
+
+export const COZTE_ASSISTANT_ID_PREFIX = "cozte-v2-";
+export const COZTE_FALLBACK_ID_PREFIX = "cozte-v2-fallback-";
+
+/**
+ * What the model sees of the stored conversation. Every person's message stays. Assistant text is replayed only when it
+ * was produced under the verified harness: older answers contained fabricated saves and figures the model would imitate,
+ * and receipt-only fallbacks are system text rather than the assistant's voice (their tool receipts are kept).
+ */
+export function modelHistory(messages: UIMessage[]): UIMessage[] {
+  return messages.flatMap((message) => {
+    if (message.role !== "assistant") return [message];
+    const tools = message.parts.filter((part) => part.type.startsWith("tool-"));
+    if (message.id.startsWith(COZTE_FALLBACK_ID_PREFIX)) return tools.length ? [{ ...message, parts: tools }] : [];
+    // Verified turns carry the prefix; earlier verified turns are recognizable by their real tool receipts.
+    if (message.id.startsWith(COZTE_ASSISTANT_ID_PREFIX) || tools.length) return [message];
+    return [];
+  });
+}

@@ -108,7 +108,7 @@ describe("verifyCozteResponse", () => {
     const text = receiptOnlyAnswer([overview, failedWrite]);
     expect(text).toContain("En este turno no guardé cambios.");
     expect(text).toContain("No se guardó: No se pudo guardar");
-    expect(text).toContain("Tofu 300g (ARS 1.070 por unidad, estimado)");
+    expect(text).toContain("productos Tofu 300g (ARS 1.070 por unidad, estimado)");
     expect(text).toContain("Gas (ARS 110.000 al mes)");
     expect(verifyCozteResponse(text, [overview, failedWrite]).ok).toBe(true);
   });

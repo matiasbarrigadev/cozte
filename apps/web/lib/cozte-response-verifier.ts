@@ -180,9 +180,9 @@ function storedSummary(records: TurnToolRecord[]): string {
   const products = overview.products.map((item) => item.cost?.unitCost != null ? `${item.name} (${money(item.cost.unitCost)} por unidad, ${status[item.cost.status ?? ""] ?? "sin estado"})` : `${item.name} (costo incompleto)`);
   const expenses = (overview.monthlyExpenses ?? []).map((item) => `${item.name} (${money(item.monthlyAmount)} al mes)`);
   return [
-    "Según la base, ahora mismo hay",
-    products.length ? `productos: ${products.join(", ")};` : "ningún producto;",
+    "Según la base, ahora mismo:",
+    products.length ? `productos ${products.join(", ")};` : "no hay productos;",
     `${overview.materials?.length ?? 0} insumos;`,
-    expenses.length ? `y gastos mensuales: ${expenses.join(", ")}.` : "y ningún gasto mensual.",
+    expenses.length ? `gastos mensuales ${expenses.join(", ")}.` : "no hay gastos mensuales.",
   ].join(" ");
 }

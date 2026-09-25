@@ -12,7 +12,7 @@ import { createCozteTools, cozteToolInputSchemas } from "@/lib/server/cozte-agen
 import { buildCozteInstructions } from "@/lib/server/cozte-instructions";
 import { loadCozteNotes } from "@/lib/server/cozte-notes";
 import { cozteAgentSettings, cozteAssistantWorkflow } from "@/lib/server/cozte-workflow";
-import { compactCozteConversation } from "@/lib/cozte-conversation-memory";
+import { compactCozteConversation, modelHistory } from "@/lib/cozte-conversation-memory";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, COZTE_SPREADSHEET_MEDIA_TYPE, prepareCozteModelMessages } from "@/lib/cozte-assistant-attachments";
 
 export const runtime = "nodejs";
@@ -111,7 +111,8 @@ export async function POST(request: Request) {
     const incoming: UIMessage = { id: message.id, role: "user", parts: message.parts };
     const validated = await validateUIMessages({ messages: [...previous, incoming], tools });
     const instructions = buildCozteInstructions({ state, notes, legacyProfile: profileState.draft ?? profileState.confirmed });
-    const modelMessages = prepareCozteModelMessages(await convertToModelMessages(validated));
+    // The stored conversation keeps everything for the UI; the model only sees what it can trust.
+    const modelMessages = prepareCozteModelMessages(await convertToModelMessages(modelHistory(validated)));
     const safeMessages = persistableMessages(validated);
     const agentSettings = cozteAgentSettings();
     const settings = { ...agentSettings, provider: "gateway", harness: "cozte-v2-verified", durable: true, attachmentsPersistedAs: "workflow input only; files are excluded from conversation and tool trace" };

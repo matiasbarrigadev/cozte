@@ -35,3 +35,19 @@ describe("Cozte conversation memory", () => {
     expect(compactToolOutputForHistory("saveMaterial", { ok: false, error: "Falta unidad" })).toEqual({ ok: false, error: "Falta unidad" });
   });
 });
+
+describe("model history", () => {
+  it("keeps every person's message and only trusted assistant turns", async () => {
+    const { modelHistory } = await import("./cozte-conversation-memory");
+    const history = [
+      { id: "u1", role: "user", parts: [{ type: "text", text: "La soja cuesta 1293 el kilo" }] },
+      { id: "assistant-old", role: "assistant", parts: [{ type: "text", text: "Reporte literal: soja $560.000 guardada en firme" }] },
+      { id: "assistant-run2", role: "assistant", parts: [{ type: "tool-saveExpense", toolCallId: "c1", state: "output-available", input: { name: "Gas", amount: 110000, splitBy: "hours" }, output: { ok: true } }, { type: "text", text: "Guardé el gas." }] },
+      { id: "cozte-v2-fallback-run3", role: "assistant", parts: [{ type: "tool-saveNote", toolCallId: "c2", state: "output-available", input: { text: "Nota de prueba" }, output: { ok: true } }, { type: "text", text: "En este turno no guardé cambios." }] },
+      { id: "cozte-v2-run4", role: "assistant", parts: [{ type: "text", text: "¿Cuántas tandas hacen al mes?" }] },
+    ] as unknown as UIMessage[];
+    const result = modelHistory(history);
+    expect(result.map((message) => message.id)).toEqual(["u1", "assistant-run2", "cozte-v2-fallback-run3", "cozte-v2-run4"]);
+    expect(result[2].parts.map((part) => part.type)).toEqual(["tool-saveNote"]);
+  });
+});
