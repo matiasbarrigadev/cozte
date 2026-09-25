@@ -11,6 +11,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 /** Every workspace section has its own URL (/app, /app/costos, /app/analisis, /app/productos/:id…). */
 export default async function AppPage({ params }: { params: Promise<{ section?: string[] }> }) {
   const { section } = await params;
+  // Comprobantes was retired from the workspace; old links land on the dashboard.
+  if (section?.length === 1 && section[0] === "comprobantes") redirect("/app");
   if (!viewFromSegments(section)) notFound();
   if (!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || !process.env.CLERK_SECRET_KEY) return (
     <main className="mx-auto flex min-h-screen w-full max-w-xl items-center p-6">

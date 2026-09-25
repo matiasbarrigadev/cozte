@@ -80,8 +80,6 @@ try {
   await page.getByRole("button", { name: "Abrir Cuaderno A5 · tapa dura" }).click();
   await page.getByRole("heading", { name: "Cuaderno A5 · tapa dura" }).waitFor();
   await page.screenshot({ path: "../../tmp/cozte-product.png", fullPage: true });
-  await page.getByRole("button", { name: "Comprobantes" }).click();
-  await page.getByRole("heading", { name: "Comprobantes" }).waitFor();
   await page.getByRole("button", { name: "Cozte AI" }).click();
   await page.getByRole("heading", { name: "Cozte AI", exact: true }).waitFor();
   await page.getByText("¿Qué productos terminados y empacados fabrican, dónde y cómo?").waitFor();

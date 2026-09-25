@@ -19,12 +19,12 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { EntityDialog } from "./entity-dialog";
-import { EvidencePanel } from "./evidence-panel";
 import { CostSheet } from "./cost-sheet";
 import { CozteAssistant } from "./cozte-assistant";
 import { CostHistory, type CostSnapshotRow, type HistoryEntry, type ProfileSnapshotRow } from "./cost-history";
 import { CostAnalysisView } from "./cost-analysis-view";
 import { appPath, viewFromPathname, viewFromSegments, type AppView } from "@/lib/app-routes";
+import { dashboardSummary, type CostComposition } from "@/lib/dashboard-summary";
 import { AnimatedIcon, type AnimatedIconName } from "./animated-icon";
 import { CozteLogo } from "./cozte-logo";
 
@@ -40,12 +40,13 @@ const nav: { id: View; label: string; icon: AnimatedIconName }[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "planilla", label: "Costos de producción", icon: "costs" },
   { id: "analisis", label: "Análisis de costos", icon: "chart" },
-  { id: "comprobantes", label: "Comprobantes", icon: "receipt" },
   { id: "asistente", label: "Cozte AI", icon: "assistant" },
   { id: "historial", label: "Historial", icon: "history" },
 ];
 
 const formatMoney = (value: number | null, currency: string) => value === null ? "Sin calcular" : new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: currency === "CLP" ? 0 : 3 }).format(value);
+/** Whole amounts for reading, not for editing: lessons, totals and tooltips. */
+const plainMoney = (value: number, currency: string) => new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: Math.abs(value) < 100 && currency !== "CLP" ? 2 : 0 }).format(value);
 const formatPercent = (value: number | null) => value === null ? "—" : `${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 1 }).format(value)}%`;
 const emptyDraft = (): Draft => ({ materials: {}, expenses: {}, materialCurrencies: {}, expenseCurrencies: {}, source: "", effectiveDate: new Date().toISOString().slice(0, 10) });
 
@@ -77,6 +78,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
     !state.products.some((catalogProduct) => catalogProduct.name.trim().toLocaleLowerCase() === workProduct.name.trim().toLocaleLowerCase()),
   ) ?? [];
   const dashboardProductCount = state.products.length + productionWorkProducts.length;
+  const summary = React.useMemo(() => dashboardSummary(state, state.costs, (value) => plainMoney(value, currency)), [state, currency]);
   const materialCurrency = (item: DomainState["materials"][number]) => draft.materialCurrencies[item.id] ?? item.currency ?? currency;
   const expenseCurrency = (item: DomainState["expenses"][number]) => draft.expenseCurrencies[item.id] ?? item.currency ?? currency;
   const nativeMaterial = (item: DomainState["materials"][number]) => item.nativeAmountMilli == null ? item.priceMinor : item.nativeAmountMilli / 1000;
@@ -260,11 +262,21 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
           {demo && view !== "asistente" ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
           {view === "dashboard" ? <>
             <section className="cozte-dashboard-hero rounded-[28px] p-6 sm:p-8 md:p-10">
-              <div className="relative flex flex-wrap items-start justify-between gap-6"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary-foreground/75">Tu producción, en perspectiva</p><h1 className="mt-3 max-w-2xl text-balance text-3xl font-semibold tracking-[-0.05em] text-primary-foreground sm:text-4xl">Costos de tus productos</h1><p className="mt-3 max-w-xl text-sm leading-relaxed text-primary-foreground/75">Una vista para entender qué produces, qué comparten tus productos y qué requiere tu atención.</p></div><Button variant="secondary" onClick={() => setDialog("product")}><AnimatedIcon name="plus" data-icon="inline-start" />Añadir producto</Button></div>
-              <div className="relative mt-9 grid gap-4 md:grid-cols-3"><Metric label="Productos" value={String(dashboardProductCount)} note="Incluye líneas que Cozte está mapeando" /><Metric label="Insumos compartidos" value={String(state.materials.filter((item) => state.components.filter((component) => component.materialId === item.id).length > 1).length)} note="Un precio, varios productos" /><Metric label="Por revisar" value={String(changeCount + state.alerts.length + state.costs.filter((item) => item.warnings.length > 0).length)} note="Cambios y datos faltantes" /></div>
+              <div className="relative flex flex-wrap items-start justify-between gap-6"><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary-foreground/75">Tu producción, en perspectiva</p><h1 className="mt-3 max-w-2xl text-balance text-3xl font-semibold tracking-[-0.05em] text-primary-foreground sm:text-4xl">Costos de tus productos</h1><p className="mt-3 max-w-xl text-sm leading-relaxed text-primary-foreground/75">Cuánto te cuesta fabricar cada producto, qué falta para que ese número sea confiable y qué puedes aprender de él.</p></div><Button variant="secondary" onClick={() => setDialog("product")}><AnimatedIcon name="plus" data-icon="inline-start" />Añadir producto</Button></div>
+              <div className="relative mt-9 grid gap-4 md:grid-cols-3">
+                <Metric label="Productos con costo calculado" value={`${summary.calculated} de ${dashboardProductCount}`} note={summary.estimated ? `${summary.estimated} con supuestos por confirmar` : summary.calculated ? "Calculados por el motor con tus datos" : "Cozte te guía para completar los datos"} />
+                <Metric label="Costo de producción del mes" value={summary.monthlyProductionCost !== null ? plainMoney(summary.monthlyProductionCost, currency) : "Por calcular"} note={summary.monthlyProductionCost !== null ? "Fabricar lo que produces en un mes normal" : "Falta el costo o los lotes al mes de algún producto"} />
+                <Metric label="Datos por completar" value={String(summary.gaps.length + state.alerts.length)} note="Cada dato hace el costo más confiable" />
+              </div>
             </section>
+            {summary.gaps.length && state.products.length ? <Card><CardHeader><CardTitle>Próximos pasos para un costo confiable</CardTitle><CardDescription>Lo que más mejora la precisión, en orden. Puedes contárselo a Cozte con tus palabras o cargarlo en la planilla.</CardDescription></CardHeader>
+              <CardContent><ol className="flex flex-col gap-2">{summary.gaps.slice(0, 5).map((gap, index) => <li key={gap} className="flex items-start gap-3 rounded-lg border bg-muted/30 px-3 py-2 text-sm"><span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums text-muted-foreground">{index + 1}</span><span>{gap}</span></li>)}</ol>{summary.gaps.length > 5 ? <p className="mt-2 text-xs text-muted-foreground">Y {summary.gaps.length - 5} dato{summary.gaps.length - 5 === 1 ? "" : "s"} más.</p> : null}</CardContent>
+              <CardFooter className="flex flex-wrap gap-2"><Button onClick={() => navigate("asistente")}><AnimatedIcon name="assistant" data-icon="inline-start" />Completar con Cozte</Button><Button variant="outline" onClick={() => navigate("planilla")}>Abrir costos de producción</Button></CardFooter></Card> : null}
             {state.alerts.length ? <Alert><AlertTitle>{state.alerts.length} precio{state.alerts.length === 1 ? "" : "s"} para revisar</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-3"><span>{state.alerts.slice(0, 3).map((item) => item.message).join(" · ")}</span><Button variant="link" onClick={() => navigate("planilla")}>Abrir planilla</Button></div></AlertDescription></Alert> : null}
-            <Card><CardHeader><CardTitle>Fichas de productos</CardTitle><CardDescription>Productos con sus datos comerciales y margen estimado</CardDescription></CardHeader><CardContent>{state.products.length ? <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Producto</TableHead><TableHead className="text-right">Costo/u</TableHead><TableHead className="text-right">Precio</TableHead><TableHead className="text-right">Margen</TableHead><TableHead className="w-12" /></TableRow></TableHeader><TableBody>{state.products.map((item) => { const cost = state.costs.find((entry) => entry.productId === item.id); return <TableRow key={item.id}><TableCell><button className="text-left font-medium hover:underline" onClick={() => { navigate("producto", item.id); }}>{item.name}</button><div className="text-xs text-muted-foreground">Lote de {item.lotUnits} unidades{item.batchesPerMonthMilli != null ? ` · ${item.batchesPerMonthMilli / 1000} lotes al mes` : ""}</div></TableCell><TableCell className="text-right tabular-nums">{formatMoney(cost?.unitMinor ?? null, currency)}{cost?.quality === "estimated" ? <div><Badge variant="outline" title={cost.assumptions.join(" · ")}>Estimado</Badge></div> : null}</TableCell><TableCell className="text-right tabular-nums">{item.salePriceMinor > 0 ? formatMoney(item.salePriceMinor, currency) : "Sin definir"}</TableCell><TableCell className="text-right">{cost?.warnings.length ? <Badge variant="secondary">Incompleto</Badge> : formatPercent(cost?.estimatedMarginPercent ?? null)}</TableCell><TableCell><Button size="icon-sm" variant="ghost" aria-label={`Abrir ${item.name}`} onClick={() => { navigate("producto", item.id); }}><AnimatedIcon name="arrowRight" /></Button></TableCell></TableRow>; })}</TableBody></Table></div> : <Empty><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="boxes" size={24} /></EmptyMedia><EmptyTitle>Aún no hay fichas comerciales</EmptyTitle><EmptyDescription>Empieza describiendo cómo produces; Cozte irá armando el costo con la información disponible.</EmptyDescription></EmptyHeader><EmptyContent><Button onClick={() => navigate("asistente")}>Empezar con Cozte</Button></EmptyContent></Empty>}</CardContent></Card>
+            <Card><CardHeader><CardTitle>Fichas de productos</CardTitle><CardDescription>Lo que cuesta fabricar cada unidad, en qué se va ese costo y cuánto deja su precio de venta.</CardDescription>{summary.composition.length ? <CompositionLegend /> : null}</CardHeader><CardContent>{state.products.length ? <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Producto</TableHead><TableHead className="text-right">Costo/u</TableHead><TableHead className="min-w-40">En qué se va cada unidad</TableHead><TableHead className="text-right">Precio</TableHead><TableHead className="text-right">Margen</TableHead><TableHead className="w-12" /></TableRow></TableHeader><TableBody>{state.products.map((item) => { const cost = state.costs.find((entry) => entry.productId === item.id); return <TableRow key={item.id}><TableCell><button className="text-left font-medium hover:underline" onClick={() => { navigate("producto", item.id); }}>{item.name}</button><div className="text-xs text-muted-foreground">Lote de {item.lotUnits} unidades{item.batchesPerMonthMilli != null ? ` · ${item.batchesPerMonthMilli / 1000} lotes al mes` : ""}</div></TableCell><TableCell className="text-right tabular-nums">{formatMoney(cost?.unitMinor ?? null, currency)}{cost?.quality === "estimated" ? <div><Badge variant="outline" title={cost.assumptions.join(" · ")}>Estimado</Badge></div> : null}</TableCell><TableCell>{(() => { const parts = summary.composition.find((entry) => entry.productId === item.id); return parts ? <CompositionBar parts={parts} format={(value) => plainMoney(value, currency)} /> : <span className="text-xs text-muted-foreground">Se ve cuando el costo esté completo</span>; })()}</TableCell><TableCell className="text-right tabular-nums">{item.salePriceMinor > 0 ? formatMoney(item.salePriceMinor, currency) : "Sin definir"}</TableCell><TableCell className="text-right">{cost?.warnings.length ? <Badge variant="secondary">Incompleto</Badge> : formatPercent(cost?.estimatedMarginPercent ?? null)}</TableCell><TableCell><Button size="icon-sm" variant="ghost" aria-label={`Abrir ${item.name}`} onClick={() => { navigate("producto", item.id); }}><AnimatedIcon name="arrowRight" /></Button></TableCell></TableRow>; })}</TableBody></Table></div> : <Empty><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="boxes" size={24} /></EmptyMedia><EmptyTitle>Aún no hay fichas comerciales</EmptyTitle><EmptyDescription>Empieza describiendo cómo produces; Cozte irá armando el costo con la información disponible.</EmptyDescription></EmptyHeader><EmptyContent><Button onClick={() => navigate("asistente")}>Empezar con Cozte</Button></EmptyContent></Empty>}</CardContent></Card>
+            {summary.lessons.length ? <Card><CardHeader><CardTitle>Para entender tu costo</CardTitle><CardDescription>Ideas de finanzas para tu producción, calculadas con tus propios números.</CardDescription></CardHeader>
+              <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{summary.lessons.map((lesson) => <article key={lesson.id} className="flex flex-col gap-1.5 rounded-lg border-l-4 border-l-primary bg-muted/40 px-4 py-3"><h3 className="text-sm font-semibold">{lesson.title}</h3><p className="text-sm leading-relaxed text-muted-foreground">{lesson.text}</p></article>)}</CardContent>
+              <CardFooter><Button variant="outline" size="sm" onClick={() => navigate("asistente")}>Preguntarle a Cozte</Button></CardFooter></Card> : null}
             {productionWorkProducts.length > 0 ? <Card><CardHeader><CardTitle>{state.productionWork?.isDraft ? "Líneas de producción en armado" : "Líneas del mapa de producción"}</CardTitle><CardDescription>El avance aparece aquí mientras Cozte reúne los datos necesarios para calcular el costo de fabricación.</CardDescription></CardHeader><CardContent className="space-y-3">{productionWorkProducts.map((workProduct) => {
               const cost = state.productionWork?.costs.find((item) => item.product.toLocaleLowerCase() === workProduct.name.toLocaleLowerCase());
               const costReady = state.productionWork?.evaluableProducts.some((name) => name.toLocaleLowerCase() === workProduct.name.toLocaleLowerCase()) ?? false;
@@ -301,8 +313,6 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
               onReview={reviewChanges} onDiscard={() => { if (!demo) setDraftStatus("saving"); setDraft(emptyDraft()); setReview(null); }} />
           </> : null}
 
-          {view === "comprobantes" ? <><div><p className="text-sm text-muted-foreground">Evidencia</p><h1 className="text-3xl font-semibold tracking-tight">Comprobantes</h1></div><EvidencePanel demo={demo} /></> : null}
-
           {view === "analisis" ? <CostAnalysisView currency={currency} demo={demo} /> : null}
 
           {view === "asistente" ? <CozteAssistant demo={demo} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")} /> : null}
@@ -321,6 +331,33 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
       <Dialog open={pendingMeta !== null} onOpenChange={(open) => { if (!open) setPendingMeta(null); }}><DialogContent><DialogHeader><DialogTitle>Este cambio afecta otros productos</DialogTitle><DialogDescription>{pendingMeta?.description}</DialogDescription></DialogHeader><div className="flex flex-wrap gap-2">{pendingMeta?.affected.map((name) => <Badge key={name} variant="secondary">{name}</Badge>)}</div><DialogFooter><Button variant="outline" onClick={() => setPendingMeta(null)}>Cancelar</Button><Button disabled={busy} onClick={async () => { if (pendingMeta && await save({ ...pendingMeta.action, acknowledgeImpact: true }, true)) setPendingMeta(null); }}>Aplicar cambio</Button></DialogFooter></DialogContent></Dialog>
     </SidebarProvider>
   );
+}
+
+const COMPOSITION_PARTS = [
+  { key: "materials", label: "Insumos", color: "var(--chart-series-1)" },
+  { key: "labor", label: "Mano de obra directa", color: "var(--chart-series-2)" },
+  { key: "shared", label: "Gastos compartidos", color: "var(--chart-series-3)" },
+] as const;
+
+function CompositionLegend() {
+  return <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" aria-label="Partes del costo">
+    {COMPOSITION_PARTS.map((part) => <li key={part.key} className="flex items-center gap-1.5"><span aria-hidden="true" className="inline-block size-2.5 rounded-sm" style={{ background: part.color }} />{part.label}</li>)}
+  </ul>;
+}
+
+/** Stacked bar of one unit's cost: materials, direct labor and shared expenses, with the largest part named. */
+function CompositionBar({ parts, format }: { parts: CostComposition; format: (value: number) => string }) {
+  const total = parts.materials + parts.labor + parts.shared;
+  if (total <= 0) return null;
+  const share = (value: number) => Math.round(value / total * 100);
+  const present = COMPOSITION_PARTS.filter((part) => parts[part.key] > 0);
+  const largest = [...present].sort((a, b) => parts[b.key] - parts[a.key])[0];
+  return <div className="flex flex-col gap-1">
+    <div role="img" aria-label={present.map((part) => `${part.label} ${share(parts[part.key])} %`).join(", ")} className="flex h-2.5 w-full gap-[2px]">
+      {present.map((part) => <span key={part.key} title={`${part.label}: ${format(parts[part.key])} por unidad (${share(parts[part.key])} %)`} className="h-full first:rounded-l-full last:rounded-r-full" style={{ width: `${parts[part.key] / total * 100}%`, background: part.color }} />)}
+    </div>
+    <span className="text-xs text-muted-foreground">{share(parts[largest.key])} % {largest.label.toLocaleLowerCase("es")}</span>
+  </div>;
 }
 
 function Metric({ label, value, note }: { label: string; value: string; note: string }) {
