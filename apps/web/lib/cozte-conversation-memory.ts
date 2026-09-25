@@ -1,6 +1,7 @@
 import type { UIMessage } from "ai";
 import { COZTE_TOOL_NAMES } from "./cozte-tool-catalog";
 import { answerTextIndexes, type ActivityPart } from "./cozte-turn-activity";
+import { cleanLegacyWording } from "./cozte-response-verifier";
 
 export const COZTE_MAX_HISTORY_MESSAGES = 80;
 export const COZTE_MAX_HISTORY_BYTES = 90_000;
@@ -79,7 +80,7 @@ export function modelHistory(messages: UIMessage[]): UIMessage[] {
     // Stored reasoning and discarded drafts are for the person to review; working notes written before a tool are
     // superseded by the turn's answer. Replaying either would feed stale or wrong text back to the model.
     const answer = answerTextIndexes(message.parts as ActivityPart[]);
-    message = { ...message, parts: message.parts.filter((part, index) => part.type !== "reasoning" && (part.type !== "text" || answer.has(index))) };
+    message = { ...message, parts: message.parts.filter((part, index) => part.type !== "reasoning" && (part.type !== "text" || answer.has(index))).map((part) => part.type === "text" ? { ...part, text: cleanLegacyWording(part.text) } : part) };
     const tools = message.parts.filter((part) => part.type.startsWith("tool-"));
     if (message.id.startsWith(COZTE_FALLBACK_ID_PREFIX)) return tools.length ? [{ ...message, parts: tools }] : [];
     // Verified turns carry the prefix; earlier verified turns are recognizable by their real tool receipts.

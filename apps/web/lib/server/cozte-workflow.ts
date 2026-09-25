@@ -1,11 +1,13 @@
 import "server-only";
-import { isStepCount, type ModelMessage, type UIMessage } from "ai";
+import { experimental_evaluate as evaluate, isStepCount, type ModelMessage, type UIMessage } from "ai";
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
 import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded, questionsShown } from "@/lib/cozte-tool-catalog";
 import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
-import { correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
+import { cleanLegacyWording, correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
+import { QUALITY_QUESTIONS, qualityState, summarizeQuality, type QualityAnswers } from "@/lib/cozte-quality";
+import type { ExplanationLevel } from "@/lib/cozte-levels";
 import { discardedDraftMetadata } from "@/lib/cozte-turn-activity";
 import type { Principal } from "./auth";
 import { loadConversation, saveConversation } from "./production-profile";
@@ -58,6 +60,7 @@ export type CozteWorkflowInput = {
   messages: ModelMessage[];
   persistedMessages: UIMessage[];
   settings: CozteAgentSettings;
+  level?: ExplanationLevel;
 };
 
 type FinalizeInput = {
@@ -91,6 +94,22 @@ async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
     console.error("Cozte workflow completion save failed", input.runId, errorDetails(error));
     await reopenAssistantRunAsFailed(input.runId, error).catch(() => {});
     throw error;
+  }
+}
+
+/**
+ * Scores the finished turn with TypeSafe Jev and records it. Observation only: it never changes the answer,
+ * and a failure is logged and ignored.
+ */
+async function scoreTurnQuality(input: { runId: string; level: ExplanationLevel; userMessage: string; actions: string[]; answer: string }): Promise<void> {
+  "use step";
+  if (process.env.COZTE_QUALITY === "off" || !input.answer.trim()) return;
+  try {
+    const result = await evaluate({ model: process.env.COZTE_QUALITY_MODEL || "typesafe-ai/jev", state: qualityState(input), questions: QUALITY_QUESTIONS, maxRetries: 1, abortSignal: AbortSignal.timeout(15_000) });
+    const answers = result.answers as QualityAnswers;
+    await addAssistantEvent(input.runId, "quality_scored", { model: result.response.modelId, level: input.level, ...summarizeQuality(answers), answers });
+  } catch (error) {
+    await addAssistantEvent(input.runId, "quality_failed", { error: errorDetails(error).slice(0, 300) }).catch(() => {});
   }
 }
 
@@ -214,7 +233,7 @@ function assistantTurn(runId: string, steps: StepLike[], retracted: Map<number, 
     if (reasoning && stripForeignScript(reasoning).trim().length > reasoning.length * 0.8) parts.push({ type: "reasoning", text: reasoning.slice(0, 2_000) } as UIMessage["parts"][number]);
     const discarded = retracted.get(index);
     if (discarded !== undefined && step.text.trim()) parts.push({ type: "reasoning", text: stripForeignScript(step.text).slice(0, 4_000), providerMetadata: discardedDraftMetadata(discarded) } as UIMessage["parts"][number]);
-    else if (discarded === undefined && step.text.trim()) parts.push({ type: "text", text: stripForeignScript(step.text) });
+    else if (discarded === undefined && step.text.trim()) parts.push({ type: "text", text: cleanLegacyWording(stripForeignScript(step.text)) });
     for (const call of step.toolCalls) {
       // Questions attached to a discarded answer left the screen with it.
       if (discarded !== undefined && call.toolName === "askQuestions") continue;
@@ -312,6 +331,13 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
       messages: [...input.persistedMessages, assistantMessage],
       status: modelError && !records.length ? "failed" : "completed",
       error: modelError, responseText: text,
+    });
+    await scoreTurnQuality({
+      runId: input.runId, level: input.level ?? "simple", userMessage: lastUserText(input.messages), answer: cleanLegacyWording(text),
+      actions: records.map((item) => {
+        const done = (item.output as { done?: unknown } | null)?.done;
+        return `${item.name}${item.ok ? "" : " (falló)"}${Array.isArray(done) && done.length ? `: ${done.map(String).join("; ")}` : ""}`;
+      }),
     });
   } catch (error) {
     await recordCozteEvent(input.runId, "stream_error", { error: errorDetails(error) }).catch((traceError) => console.error("Cozte workflow error trace failed", errorDetails(traceError)));

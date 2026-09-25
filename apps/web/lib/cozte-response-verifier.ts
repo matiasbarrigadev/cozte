@@ -37,7 +37,7 @@ const actionClaim = /(?<![\p{L}\p{N}])(?:guard[eé]|registr[eé]|cre[eé]|actual
 const stateClaim = new RegExp([
   /(?<![\p{L}\p{N}])(?:qued[oó]|quedaron|ya\s+est[aá]n?|est[aá]n?)\s+(?:correctamente\s+|bien\s+|ya\s+)?complet[oa]s?(?![\p{L}\p{N}])/u.source,
   /(?<![\p{L}\p{N}])(?:qued[oó]|quedaron)\s+as[ií](?![\p{L}\p{N}])/u.source,
-  /(?<![\p{L}\p{N}])(?:guardad|registrad|cread|actualizad|cargad|aplicad|agregad|a[ñn]adid|anotad)[oa]s?(?![\p{L}\p{N}])/u.source,
+  /(?<![\p{L}\p{N}])(?:guardad|registrad|cread|actualizad|cargad|aplicad|agregad|a[ñn]adid|anotad|sumad|incluid)[oa]s?(?![\p{L}\p{N}])/u.source,
   /(?<![\p{L}\p{N}])(?:qued[oó]|quedaron|ya\s+qued[oó]|ya\s+quedaron|ya\s+tengo|ya\s+tenemos)\s+(?:(?:el|la|los|las|tu|tus|su|sus|dos|tres|cuatro|cinco|ambos|ambas|todos|todas|esos|esas|ese|esa)\s+){0,2}(?:recetas?|productos?|insumos?|gastos?|precios?|notas?|categor[ií]as?|sueldos?)(?![\p{L}\p{N}])/u.source,
 ].join("|"), "giu");
 
@@ -47,6 +47,17 @@ const openerClaim = /^\s*¡?\s*(?:listo|hecho|ya\s+est[aá])(?![\p{L}\p{N}])/giu
 /** Model artifacts in another script (e.g. a stray Chinese or Japanese word): removed rather than worth a retry. */
 export function stripForeignScript(text: string): string {
   return text.replace(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu, "").replace(/[ \t]{2,}/g, " ");
+}
+
+/**
+ * Wording from Cozte's first versions ("en firme", "productos vivos") that confused people. Old conversations
+ * still carry it and the model imitates it, so it is removed on screen, in storage and in the model's history.
+ */
+export function cleanLegacyWording(text: string): string {
+  return text
+    .replace(/(?<![\p{L}])(guardad[oa]s?|cread[oa]s?|aplicad[oa]s?|registrad[oa]s?|est[aá]n?|qued[oó]|quedaron)\s+en\s+firme(?![\p{L}])/giu, "$1")
+    .replace(/\s+en\s+firme(?![\p{L}])/giu, "")
+    .replace(/(?<![\p{L}])(productos|insumos|gastos|costos)\s+vivos(?![\p{L}])/giu, "$1");
 }
 
 /** Illustrative amounts ("por ejemplo, si pagaras ARS 5.000") are teaching, not claims about stored costs. */
@@ -85,7 +96,7 @@ function sourceFigures(texts: string[]): Set<number> {
 
 const identifierPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
 
-const internalNames = /\b(?:readCosts|saveProduct|saveMaterial|saveRecipe|saveExpense|saveCategory|removeItem|saveNote|askQuestions|saveChannel|recordPurchase|recordSale|setInvestmentCost|voidRecord|readBusiness|calculate|simulate|inspectCostBase|applyCostAction|updateMaterialPrice|updateExpenseAmount|updateProductionMap|upsertProductDraft|calculateCostRule|findMaterial|create-product|create-material|create-expense|set-component|bulk-prices|quantityMilli|\w+Minor|\w+Milli|toolCallId|null)\b/u;
+const internalNames = /\b(?:readCosts|saveProduct|saveMaterial|saveRecipe|saveExpense|saveCategory|removeItem|saveNote|askQuestions|saveChannel|recordPurchase|recordSale|setInvestmentCost|voidRecord|readBusiness|showVisual|setExplanationLevel|calculate|simulate|inspectCostBase|applyCostAction|updateMaterialPrice|updateExpenseAmount|updateProductionMap|upsertProductDraft|calculateCostRule|findMaterial|create-product|create-material|create-expense|set-component|bulk-prices|quantityMilli|\w+Minor|\w+Milli|toolCallId|null)\b/u;
 
 /** Sentence markers for actions from earlier turns ("antes guardé…"), which a fresh read can confirm. */
 const earlierTurn = /(?<![\p{L}\p{N}])(?:antes|anteriormente|previamente|hace un rato|ayer|la vez pasada|en (?:esta|la) (?:charla|conversación)|en (?:el|los) mensajes? anteriores?|más temprano)(?![\p{L}\p{N}])/iu;

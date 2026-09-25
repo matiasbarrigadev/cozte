@@ -11,7 +11,7 @@ import type { AssistantProposal } from "@/lib/server/assistant-proposals";
 import type { AssistantDataSource } from "@/lib/server/assistant-trace";
 import type { ProposalSection } from "@/lib/proposal-presentation";
 import { assistantToolOutcome } from "@/lib/assistant-run-activity";
-import { COZTE_COST_WRITE_TOOLS, COZTE_TOOL_LABELS, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
+import { COZTE_COST_WRITE_TOOLS, COZTE_TOOL_LABELS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
 import { activityHeadline, answerTextIndexes, turnActivity, type ActivityItem, type ActivityPart } from "@/lib/cozte-turn-activity";
 import { answered, formatCozteAnswers, parseCozteQuestions, type CozteQuestionAnswer, type CozteQuestionSet } from "@/lib/cozte-questions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -29,6 +29,11 @@ import { TextShimmer } from "@/components/ui/text-shimmer";
 import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { AudioWaveform, useVoiceDictation } from "@/components/use-voice-dictation";
 import { AnimatedIcon } from "@/components/animated-icon";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { CozteVisual, CozteVisualProvider, useAvailableVisuals } from "@/components/cozte/cozte-visuals";
+import { DEFAULT_EXPLANATION_LEVEL, EXPLANATION_LEVELS, type ExplanationLevel } from "@/lib/cozte-levels";
+import { WIDGETS, isWidgetKind, parseBoard, pinWidget, type BoardWidget, type WidgetKind } from "@/lib/cozte-widgets";
+import type { DomainState, ProductCost } from "@/lib/domain";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, getCozteAttachmentKind, getCozteAttachmentMaxBytes, getCozteAttachmentMediaType } from "@/lib/cozte-assistant-attachments";
 import { cn } from "cn";
 
@@ -42,7 +47,7 @@ const suggestions = [
   "¿Cómo vengo este mes?",
 ];
 
-export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boolean; onDataChanged: () => Promise<void>; onOpenCosts: () => void }) {
+export function CozteAssistant({ demo, state, onDataChanged }: { demo: boolean; state: DomainState & { costs: ProductCost[] }; onDataChanged: () => Promise<void>; onOpenCosts?: () => void }) {
   const [input, setInput] = React.useState("");
   const [attachments, setAttachments] = React.useState<File[]>([]);
   const [preparing, setPreparing] = React.useState(false);
@@ -50,16 +55,21 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
   const fileInput = React.useRef<HTMLInputElement>(null);
   const { voiceState, analyser, start: startDictation, pause: pauseDictation } = useVoiceDictation(setInput);
   const [proposals, setProposals] = React.useState<AssistantProposal[]>([]);
-  const [dataSources, setDataSources] = React.useState<AssistantDataSource[]>([]);
+  const [, setDataSources] = React.useState<AssistantDataSource[]>([]);
   const [toolExecutions, setToolExecutions] = React.useState<PersistedToolExecution[]>([]);
   const [resumeExistingWorkflow, setResumeExistingWorkflow] = React.useState(false);
-  const [mobilePanel, setMobilePanel] = React.useState<"chat" | "activity">("chat");
+  const [mobilePanel, setMobilePanel] = React.useState<"chat" | "board">("chat");
+  // How Cozte explains (null until the person chooses) and the board of pinned visuals next to the chat.
+  const [level, setLevel] = React.useState<ExplanationLevel | null>(demo ? DEFAULT_EXPLANATION_LEVEL : null);
+  const [board, setBoard] = React.useState<BoardWidget[]>(() => demo ? [{ id: "demo-cost", kind: "unit-cost", addedBy: "user" }, { id: "demo-month", kind: "month", addedBy: "user" }] : []);
+  const [refreshKey, setRefreshKey] = React.useState(0);
+  const [confirmReset, setConfirmReset] = React.useState(false);
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
   const [adjustmentNote, setAdjustmentNote] = React.useState("");
   const [busyProposalId, setBusyProposalId] = React.useState<string | null>(null);
   const busyProposalIds = React.useRef(new Set<string>());
   const [loading, setLoading] = React.useState(!demo);
-  const [proposalsLoading, setProposalsLoading] = React.useState(!demo);
+  const [, setProposalsLoading] = React.useState(!demo);
   const transport = React.useMemo(() => new WorkflowChatTransport<UIMessage>({
     api: "/api/assistant",
     maxConsecutiveErrors: 5,
@@ -82,7 +92,8 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
   const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport, resume: resumeExistingWorkflow, throttle: 50,
     onFinish: ({ message, isError, isAbort }) => {
       void loadProposals(true);
-      if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && COZTE_COST_WRITE_TOOLS.has(part.type.slice("tool-".length)) && cozteToolSucceeded(part.output))) void onDataChanged();
+      if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && COZTE_COST_WRITE_TOOLS.has(part.type.slice("tool-".length)) && cozteToolSucceeded(part.output))) { void onDataChanged(); setRefreshKey((current) => current + 1); }
+      if (message.parts.some((part) => (part.type === "tool-setExplanationLevel" || part.type === "tool-showVisual") && "state" in part && part.state === "output-available")) void loadSettings();
       if (!isAbort && (isError || !message.parts.some((part) => part.type === "text" && part.text.trim()))) toast.error("Cozte no pudo completar esta respuesta. Tu mensaje quedó guardado; puedes reintentarlo.");
     },
     onError: () => toast.error("No se pudo conectar con Cozte. Revisa tu conexión y vuelve a intentar."),
@@ -140,6 +151,48 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
     addAttachments(clipboardFiles);
   }
 
+  async function loadSettings() {
+    if (demo) return;
+    try {
+      const response = await fetch("/api/assistant/settings", { cache: "no-store" });
+      if (!response.ok) return;
+      const data = await response.json();
+      setLevel(EXPLANATION_LEVELS.some((item) => item.id === data.level) ? data.level : null);
+      setBoard(parseBoard(data.board));
+    } catch { /* The board and level are conveniences; the chat works without them. */ }
+  }
+
+  async function saveSettings(update: { level?: ExplanationLevel; board?: BoardWidget[] }) {
+    if (update.level) setLevel(update.level);
+    if (update.board) setBoard(update.board);
+    if (demo) return;
+    const response = await fetch("/api/assistant/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(update) }).catch(() => null);
+    if (!response?.ok) toast.error("No se pudo guardar el cambio");
+  }
+
+  // Stable so memoized messages do not re-render when the board changes.
+  const boardRef = React.useRef(board);
+  React.useEffect(() => { boardRef.current = board; }, [board]);
+  const pinVisual = React.useCallback((kind: WidgetKind, productId: string | null) => {
+    const next = pinWidget(boardRef.current, { kind, productId, addedBy: "user" });
+    void saveSettings({ board: next });
+    toast.success("Quedó fijo en tu tablero");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo]);
+
+  async function startNewConversation() {
+    setConfirmReset(false);
+    if (demo) { setMessages([]); return; }
+    try {
+      const response = await fetch("/api/assistant/settings", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "No se pudo empezar una conversación nueva");
+      setMessages([]);
+      setToolExecutions([]);
+      toast.success("Conversación nueva. La anterior quedó archivada; tus datos y notas siguen guardados.");
+    } catch (cause) { toast.error(cause instanceof Error ? cause.message : "No se pudo empezar una conversación nueva"); }
+  }
+
   async function loadProposals(silent = false) {
     if (demo) return;
     try {
@@ -174,6 +227,7 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
   React.useEffect(() => {
     if (demo) return;
     let active = true;
+    void loadSettings();
     Promise.all([fetch("/api/assistant", { cache: "no-store" }), fetch("/api/assistant/proposals", { cache: "no-store" })]).then(async ([chatResponse, proposalResponse]) => {
       if (!chatResponse.ok || !proposalResponse.ok) throw new Error("No se pudo cargar Cozte");
       const [chat, proposalData] = await Promise.all([chatResponse.json(), proposalResponse.json()]);
@@ -191,6 +245,8 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
       }
     }).catch(() => { if (active) toast.error("No se pudieron cargar el chat y las propuestas guardadas"); }).finally(() => { if (active) { setLoading(false); setProposalsLoading(false); } });
     return () => { active = false; };
+    // Settings load once with the conversation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [demo, setMessages, setToolExecutions, setResumeExistingWorkflow]);
 
   async function send(text: string) {
@@ -305,11 +361,6 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
   const latestUserMessageIndex = messages.findLastIndex((message) => message.role === "user");
   const latestUserMessageId = latestUserMessageIndex >= 0 ? messages[latestUserMessageIndex]?.id ?? null : null;
   const currentTurnProposals = latestUserMessageId ? proposals.filter((proposal) => proposal.status === "pending" && proposal.sourceMessageId === latestUserMessageId) : [];
-  const currentTurnSources = dataSources.filter((source) => source.messageId === latestUserMessageId);
-  const currentTurnExecutions = latestUserMessageId ? toolExecutions.filter((execution) => execution.messageId === latestUserMessageId) : [];
-  const liveCurrentTurnTools = latestUserMessageIndex < 0 ? [] : messages.slice(latestUserMessageIndex + 1).flatMap((message) => message.role === "assistant" ? message.parts.filter(isToolUIPart).filter((part) => isActionToolName(part.type.slice("tool-".length))).map((part) => ({ part, toolName: part.type.slice("tool-".length) })) : []);
-  const liveToolCallIds = new Set(liveCurrentTurnTools.map(({ part }) => part.toolCallId));
-  const currentTurnActions = currentTurnExecutions.filter((execution) => isActionToolName(execution.toolName) && !liveToolCallIds.has(execution.toolCallId));
   const proposalsAfterMessage = new Map<string, AssistantProposal[]>();
   if (latestUserMessageId) {
     const latestAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant" && messages.findIndex((item) => item.id === message.id) > latestUserMessageIndex);
@@ -331,24 +382,35 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
     }
     return map;
   }, [messageOrderKey, toolExecutions]);
-  return <>
+  return <CozteVisualProvider state={state} demo={demo} refreshKey={refreshKey}>
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-semibold tracking-tight">Cozte AI</h1>
-        <Badge variant="outline" className="lg:hidden">{pendingProposals.length} pendientes</Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          {pendingProposals.length ? <Badge variant="outline">{pendingProposals.length} por confirmar</Badge> : null}
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">Cómo te explica
+            <NativeSelect aria-label="Nivel de explicación de Cozte" value={level ?? ""} onChange={(event) => void saveSettings({ level: event.target.value as ExplanationLevel })}>
+              {level === null ? <NativeSelectOption value="" disabled>Elegir</NativeSelectOption> : null}
+              {EXPLANATION_LEVELS.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.label}</NativeSelectOption>)}
+            </NativeSelect>
+          </label>
+          <Button type="button" size="sm" variant="outline" disabled={status !== "ready" || !messages.length} onClick={() => setConfirmReset(true)}><AnimatedIcon name="refresh" data-icon="inline-start" />Nueva conversación</Button>
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1 lg:hidden" role="tablist" aria-label="Secciones de Cozte">
         <button id="cozte-chat-tab" type="button" role="tab" aria-selected={mobilePanel === "chat"} aria-controls="cozte-chat-panel" onClick={() => setMobilePanel("chat")} className={cn("rounded-md px-3 py-2 text-sm font-medium transition-colors", mobilePanel === "chat" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Chat</button>
-        <button id="cozte-activity-tab" type="button" role="tab" aria-selected={mobilePanel === "activity"} aria-controls="cozte-activity-panel" onClick={() => setMobilePanel("activity")} className={cn("flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors", mobilePanel === "activity" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Acciones de este turno{currentTurnActions.length + liveCurrentTurnTools.length + currentTurnProposals.length ? <Badge variant="secondary">{currentTurnActions.length + liveCurrentTurnTools.length + currentTurnProposals.length}</Badge> : null}</button>
+        <button id="cozte-board-tab" type="button" role="tab" aria-selected={mobilePanel === "board"} aria-controls="cozte-board-panel" onClick={() => setMobilePanel("board")} className={cn("flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors", mobilePanel === "board" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Tablero{board.length ? <Badge variant="secondary">{board.length}</Badge> : null}</button>
       </div>
 
-      <div className="grid min-h-0 gap-3 lg:grid-cols-[minmax(0,1fr)_18rem]">
+      <div className="grid min-h-0 gap-3 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section id="cozte-chat-panel" role="tabpanel" aria-labelledby="cozte-chat-tab" aria-label="Chat con Cozte" className={cn("min-w-0", mobilePanel === "chat" ? "flex" : "hidden lg:flex")}>
           <Card className="flex h-[calc(100dvh-13rem)] min-h-[30rem] w-full min-w-0 flex-col gap-0 overflow-hidden py-0 lg:h-[calc(100dvh-11rem)]">
             <CardContent className="flex min-h-0 flex-1 flex-col px-4 py-5 md:px-8"><ChatContainerRoot className="min-h-0 flex-1" aria-live="polite"><ChatContainerContent className="mx-auto min-h-full w-full max-w-4xl gap-4">
-              {!messages.length ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>Empecemos por tu producción</EmptyTitle><EmptyDescription>¿Qué productos terminados y empacados fabrican, dónde y cómo?</EmptyDescription></EmptyHeader></Empty> : null}
+              {!messages.length ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>{state.products.length ? "¿En qué te ayudo hoy?" : "Empecemos por tu producción"}</EmptyTitle><EmptyDescription>{state.products.length ? "Pregúntame por tus costos, mándame un ticket o una venta, o pídeme un gráfico." : "¿Qué productos terminados y empacados fabrican, dónde y cómo?"}</EmptyDescription></EmptyHeader>
+                {level === null && !demo ? <div className="flex w-full max-w-xl flex-col gap-2"><p className="text-sm font-medium">¿Cómo prefieres que te explique?</p><div className="grid gap-2 sm:grid-cols-3">{EXPLANATION_LEVELS.map((item) => <button key={item.id} type="button" onClick={() => void saveSettings({ level: item.id })} className="flex flex-col gap-1 rounded-lg border bg-background p-3 text-left text-sm transition-colors hover:bg-muted"><span className="font-medium">{item.label}</span><span className="text-xs text-muted-foreground">{item.hint}</span></button>)}</div><p className="text-xs text-muted-foreground">Puedes cambiarlo cuando quieras arriba.</p></div> : null}
+              </Empty> : null}
               {messages.map((message) => <React.Fragment key={message.id}>
-                <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} onAnswer={message.id === messages.at(-1)?.id ? answerQuestions : undefined} />
+                <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} onAnswer={message.id === messages.at(-1)?.id ? answerQuestions : undefined} onPinVisual={pinVisual} />
                 {(proposalsAfterMessage.get(message.id) ?? []).map((proposal) => <ProposalTurnCard key={proposal.id} proposal={proposal} onOpen={() => setSelectedProposalId(proposal.id)} />)}
               </React.Fragment>)}
               {status === "submitted" ? <TextShimmer className="text-sm">Cozte está analizando…</TextShimmer> : null}
@@ -391,34 +453,15 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
           </Card>
         </section>
 
-        <aside id="cozte-activity-panel" role="tabpanel" aria-labelledby="cozte-activity-tab" aria-label="Acciones del turno actual" className={cn("min-w-0", mobilePanel === "activity" ? "flex" : "hidden lg:flex")}>
-          <Card className="flex h-[calc(100dvh-13rem)] min-h-[30rem] w-full min-w-0 flex-col gap-0 overflow-hidden py-0 lg:h-[calc(100dvh-11rem)]">
-            <CardHeader className="shrink-0 border-b px-4 py-4">
-              <div className="flex items-center justify-between gap-2"><h2 className="text-base font-semibold">Este turno</h2><Badge variant="outline">{currentTurnActions.length + liveCurrentTurnTools.length} acciones</Badge></div>
-              <CardDescription>Lo que Cozte hizo ahora y los datos que usó.</CardDescription>
-            </CardHeader>
-            <CardContent className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3 py-4">
-              <section aria-labelledby="cozte-current-actions-title" className="flex flex-col gap-3">
-                <div className="flex items-center justify-between gap-2"><h2 id="cozte-current-actions-title" className="text-sm font-semibold">Acciones ejecutadas</h2>{loading && !messages.length ? <span className="text-xs text-muted-foreground">Cargando…</span> : null}</div>
-                {!currentTurnActions.length && !liveCurrentTurnTools.length ? <p className="rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">En este turno Cozte todavía no hizo cambios.</p> : null}
-                <ol className="flex flex-col gap-2">
-                  {liveCurrentTurnTools.map(({ part, toolName }) => <li key={part.toolCallId}><AssistantMessageToolTag toolName={toolName} input={part.input} output={part.state === "output-available" ? part.output : undefined} errorText={part.state === "output-error" ? part.errorText : undefined} onEdit={(prompt) => { setInput(prompt); setMobilePanel("chat"); window.setTimeout(() => document.getElementById("cozte-message")?.focus(), 0); }} /></li>)}
-                  {currentTurnActions.map((execution) => <li key={`${execution.runId}:${execution.toolCallId}`}><AssistantMessageToolTag toolName={execution.toolName} persisted={execution} onEdit={(prompt) => { setInput(prompt); setMobilePanel("chat"); window.setTimeout(() => document.getElementById("cozte-message")?.focus(), 0); }} /></li>)}
-                </ol>
-                <Button type="button" size="sm" variant="outline" onClick={onOpenCosts}>Abrir costos editables</Button>
-              </section>
-
-              {proposalsLoading ? <p className="text-xs text-muted-foreground">Revisando acciones que requieren confirmación…</p> : currentTurnProposals.length ? <section className="flex flex-col gap-2 border-t pt-4" aria-label="Confirmaciones necesarias"><h2 className="text-sm font-semibold">Necesita tu confirmación</h2>{currentTurnProposals.map((proposal) => <button key={proposal.id} type="button" className="flex w-full flex-col gap-2 rounded-lg border bg-card p-3 text-left hover:bg-muted/50" onClick={() => setSelectedProposalId(proposal.id)}><strong className="text-sm">{proposal.title}</strong><span className="text-xs text-muted-foreground">{proposal.summary}</span><span className="text-xs font-medium">Revisar y confirmar</span></button>)}</section> : null}
-
-              <section className="flex flex-col gap-3 border-t pt-4" aria-labelledby="cozte-current-sources-title">
-                <div><h2 id="cozte-current-sources-title" className="text-sm font-semibold">Archivos de este turno</h2><p className="mt-1 text-xs text-muted-foreground">Las imágenes, PDF y planillas que compartiste ahora.</p></div>
-                {!currentTurnSources.length ? <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">No adjuntaste archivos en este turno.</p> : <ol className="flex flex-col gap-2">{currentTurnSources.map((source) => <li key={source.id} className="rounded-lg border p-3"><span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{dataSourceKindLabel(source.kind)}</span><strong className="mt-1 block break-all text-sm">{source.label}</strong>{source.mediaType ? <span className="mt-1 block text-xs text-muted-foreground">{source.mediaType}</span> : null}</li>)}</ol>}
-              </section>
-            </CardContent>
-          </Card>
+        <aside id="cozte-board-panel" role="tabpanel" aria-labelledby="cozte-board-tab" aria-label="Tu tablero" className={cn("min-w-0", mobilePanel === "board" ? "flex" : "hidden lg:flex")}>
+          <BoardPanel board={board} onChange={(next) => void saveSettings({ board: next })} />
         </aside>
       </div>
     </div>
+    <Dialog open={confirmReset} onOpenChange={setConfirmReset}><DialogContent>
+      <DialogHeader><DialogTitle>¿Empezar una conversación nueva?</DialogTitle><DialogDescription>La conversación actual queda archivada. Tus costos, compras, ventas y lo que Cozte anotó de tu empresa siguen guardados; solo el chat empieza de cero.</DialogDescription></DialogHeader>
+      <DialogFooter><Button variant="outline" onClick={() => setConfirmReset(false)}>Cancelar</Button><Button onClick={() => void startNewConversation()}>Empezar de nuevo</Button></DialogFooter>
+    </DialogContent></Dialog>
     <Dialog open={selectedProposal !== null} onOpenChange={(open) => { if (!open) { setSelectedProposalId(null); setAdjustmentNote(""); } }}>
       <DialogContent className="max-h-[min(88dvh,52rem)] max-w-2xl overflow-y-auto">
         {selectedProposal ? <>
@@ -447,7 +490,7 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
         </> : null}
       </DialogContent>
     </Dialog>
-  </>;
+  </CozteVisualProvider>;
 }
 
 function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; onOpen: () => void }) {
@@ -465,7 +508,7 @@ function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; o
 const noExecutions: PersistedToolExecution[] = [];
 
 /** One chat message. Memoized so only the reply that is streaming re-renders on each update. */
-const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void }) {
+const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer, onPinVisual }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void; onPinVisual?: (kind: WidgetKind, productId: string | null) => void }) {
   const answer = message.role === "assistant" ? answerTextIndexes(message.parts as ActivityPart[], streaming) : null;
   return<div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
     <span className="text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}</span>
@@ -480,6 +523,13 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
       if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
       if (part.type === "file" && part.mediaType === "application/pdf") return <Badge key={index} variant="outline">PDF · {part.filename ?? "Documento adjunto"}</Badge>;
       if (part.type === "file" && part.mediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return <Badge key={index} variant="outline">Excel · {part.filename ?? "Planilla adjunta"}</Badge>;
+      // Visuals render live engine data, not numbers from the model.
+      if (part.type === "tool-showVisual" && part.state === "output-available" && cozteToolSucceeded(part.output)) {
+        const output = part.output as { visual?: unknown; productId?: string | null; pinned?: boolean };
+        if (!isWidgetKind(output.visual)) return null;
+        const kind = output.visual;
+        return <CozteVisual key={part.toolCallId} kind={kind} productId={output.productId ?? null} onPin={output.pinned || !onPinVisual ? undefined : () => onPinVisual(kind, output.productId ?? null)} />;
+      }
       if (part.type === "tool-askQuestions" && (part.state === "input-available" || part.state === "output-available")) {
         const set = parseCozteQuestions(part.input);
         return set ? <CozteQuestionForm key={part.toolCallId} set={set} onAnswer={onAnswer} /> : null;
@@ -488,6 +538,34 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
     })}
   </div>;
 });
+
+/** The board next to the chat: visuals pinned by the person or by Cozte, plus quick access to the predefined ones. */
+function BoardPanel({ board, onChange }: { board: BoardWidget[]; onChange: (next: BoardWidget[]) => void }) {
+  const available = useAvailableVisuals();
+  const choices = available.filter((item) => !board.some((widget) => widget.kind === item.kind && (widget.productId ?? null) === (item.productId ?? null)));
+  const add = (value: string) => {
+    const choice = available[Number(value)];
+    if (choice) onChange(pinWidget(board, { kind: choice.kind, productId: choice.productId ?? null, addedBy: "user" }));
+  };
+  return <Card className="flex h-[calc(100dvh-13rem)] min-h-[30rem] w-full min-w-0 flex-col gap-0 overflow-hidden py-0 lg:h-[calc(100dvh-11rem)]">
+    <CardHeader className="shrink-0 gap-2 border-b px-4 py-4">
+      <div className="flex items-center justify-between gap-2"><h2 className="text-base font-semibold">Tu tablero</h2>{board.length ? <Badge variant="outline">{board.length}</Badge> : null}</div>
+      <CardDescription>Lo que quieres tener a la vista, siempre con datos actuales. Pídele a Cozte que fije algo o agrégalo tú.</CardDescription>
+      {choices.length ? <NativeSelect aria-label="Agregar al tablero" value="" onChange={(event) => add(event.target.value)}>
+        <NativeSelectOption value="">Agregar al tablero…</NativeSelectOption>
+        {available.map((item, index) => choices.includes(item) ? <NativeSelectOption key={`${item.kind}-${item.productId ?? ""}`} value={String(index)}>{item.label}</NativeSelectOption> : null)}
+      </NativeSelect> : null}
+    </CardHeader>
+    <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-4">
+      {board.length ? board.map((widget) => <CozteVisual key={widget.id} kind={widget.kind} productId={widget.productId} compact onRemove={() => onChange(board.filter((item) => item.id !== widget.id))} />)
+        : <div className="flex flex-col gap-2 rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+          <p>Tu tablero está vacío. Por ejemplo:</p>
+          <div className="flex flex-wrap gap-1.5">{available.filter((item) => item.kind !== "cost-breakdown").slice(0, 4).map((item) => <Button key={item.kind} type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => onChange(pinWidget(board, { kind: item.kind, productId: item.productId ?? null, addedBy: "user" }))}>{WIDGETS[item.kind].label}</Button>)}</div>
+          {!available.length ? <p className="text-xs">Cuando tengas productos cargados vas a poder fijar sus costos acá.</p> : null}
+        </div>}
+    </CardContent>
+  </Card>;
+}
 
 /** Cozte's questions as a small form: pick options or write freely; the answers go back as one message. */
 function CozteQuestionForm({ set, onAnswer }: { set: CozteQuestionSet; onAnswer?: (text: string) => void }) {
@@ -680,9 +758,6 @@ function buildActionEditPrompt(toolName: string, input: unknown, output: unknown
   return `Quiero ajustar ${entity ? `“${entity}”` : `la acción de ${label}`} que hiciste en este turno. Revisa los datos actuales y dime qué campos puedo cambiar; luego aplica el ajuste que te indique. `;
 }
 
-function isActionToolName(name: string) {
-  return COZTE_WRITE_TOOLS.has(name);
-}
 
 function assistantToolLabel(name: string) {
   return (COZTE_TOOL_LABELS as Record<string, string>)[name] ?? "Otra herramienta";

@@ -86,7 +86,18 @@ describe.skipIf(!bridgeUrl)("Cozte business tools against D1", { timeout: 60_000
     expect(await run("voidRecord", { kind: "purchase", id: purchaseId, reason: "Prueba" })).toMatchObject({ ok: true });
     const after = await loadState(principal);
     expect(after.investments!.some((item) => item.id === purchaseId)).toBe(false);
-    const snapshots = await dbQuery<{ context_json: string }>("SELECT context_json FROM cost_snapshots WHERE organization_id=? ORDER BY created_at DESC LIMIT 1", [principal.organizationId]);
+    const snapshots = await dbQuery<{ context_json: string }>("SELECT context_json FROM cost_snapshots WHERE organization_id=? ORDER BY json_extract(context_json, '$.organizationRevision') DESC LIMIT 1", [principal.organizationId]);
     expect(snapshots[0].context_json).not.toContain("investment:");
+  });
+
+  it("shows visuals, pins them to the board and saves the explanation level", async () => {
+    expect(await run("showVisual", { visual: "cost-breakdown" })).toMatchObject({ ok: true, visual: "cost-breakdown", product: "Tofu 300g", pinned: false });
+    expect(await run("showVisual", { visual: "month", pin: true })).toMatchObject({ ok: true, pinned: true });
+    expect(await run("showVisual", { visual: "month", pin: true })).toMatchObject({ ok: true, pinned: true });
+    expect(await run("setExplanationLevel", { level: "advanced" })).toMatchObject({ ok: true });
+    const { loadCozteSettings } = await import("./cozte-settings");
+    const settings = await loadCozteSettings(principal);
+    expect(settings.level).toBe("advanced");
+    expect(settings.board.map((item) => item.kind)).toEqual(["month"]);
   });
 });

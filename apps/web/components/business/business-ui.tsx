@@ -20,7 +20,7 @@ export function useMoney(currency: string) {
 }
 
 /** The month's business view: fetched for a workspace, computed in the browser for the demo. */
-export function useBusinessView(month: string, demo: boolean, state: DomainState) {
+export function useBusinessView(month: string, demo: boolean, state: DomainState, refreshKey = 0) {
   const [version, setVersion] = React.useState(0);
   const [loaded, setLoaded] = React.useState<{ month: string; version: number; view: BusinessView } | null>(null);
   const demoView = React.useMemo(() => demo ? buildBusinessView(state, demoBusinessRecords(), month) : null, [demo, state, month]);
@@ -33,7 +33,7 @@ export function useBusinessView(month: string, demo: boolean, state: DomainState
       .catch((error) => { if (active) toast.error(error instanceof Error ? error.message : "No se pudo cargar"); });
     return () => { active = false; };
     // The state revision refreshes the view after changes made elsewhere (the sheet or Cozte).
-  }, [demo, month, version, state.revision]);
+  }, [demo, month, version, state.revision, refreshKey]);
   const view = demo ? demoView : loaded?.view ?? null;
   const loading = !demo && (loaded?.month !== month || loaded.version !== version);
   return { view, loading, reload: React.useCallback(() => setVersion((current) => current + 1), []) };

@@ -14,6 +14,7 @@ import { loadCozteNotes } from "@/lib/server/cozte-notes";
 import { cozteAgentSettings, cozteAssistantWorkflow } from "@/lib/server/cozte-workflow";
 import { storeChatAttachments, type ChatAttachment } from "@/lib/server/documents";
 import { loadChannels } from "@/lib/server/business";
+import { loadCozteSettings } from "@/lib/server/cozte-settings";
 import { compactCozteConversation, modelHistory } from "@/lib/cozte-conversation-memory";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, COZTE_SPREADSHEET_MEDIA_TYPE, prepareCozteModelMessages } from "@/lib/cozte-assistant-attachments";
 
@@ -116,7 +117,7 @@ export async function POST(request: Request) {
     if (Number(request.headers.get("content-length") ?? 0) > 17_000_000) throw new ApiError(413, "El mensaje o los archivos adjuntos superan el límite de tamaño");
     const { message } = incomingSchema.parse(await request.json());
     if (!message.parts.some((part) => part.type === "text") && !message.parts.some((part) => part.type === "file")) throw new ApiError(400, "Escribe un mensaje o adjunta una imagen");
-    const [state, profileState, stored, notes, channels] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadConversation(principal), loadCozteNotes(principal), loadChannels(principal).catch(() => [])]);
+    const [state, profileState, stored, notes, channels, cozteSettings] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadConversation(principal), loadCozteNotes(principal), loadChannels(principal).catch(() => []), loadCozteSettings(principal).catch(() => ({ level: null, board: [] }))]);
     const previous = replayableHistory(stored);
     if (previous.at(-1)?.id === message.id) throw new ApiError(409, "Ese mensaje ya fue recibido");
     await reserveAssistantRequest(principal);
@@ -124,7 +125,7 @@ export async function POST(request: Request) {
     const tools = createCozteTools(principal, candidateRunId);
     const incoming: UIMessage = { id: message.id, role: "user", parts: message.parts };
     const validated = await validateUIMessages({ messages: [...previous, incoming], tools });
-    const instructions = buildCozteInstructions({ state, notes, channels, legacyProfile: profileState.draft ?? profileState.confirmed });
+    const instructions = buildCozteInstructions({ state, notes, channels, level: cozteSettings.level, legacyProfile: profileState.draft ?? profileState.confirmed });
     // Receipts and delivery notes sent in the chat are kept so Cozte can attach them to what they back.
     const files = message.parts.filter((part) => part.type === "file");
     const attachments = files.length ? await storeChatAttachments(principal, candidateRunId, files) : [];
@@ -136,7 +137,7 @@ export async function POST(request: Request) {
     runId = candidateRunId;
     await startAssistantRun(principal, runId, message.id, settings, { messageId: message.id, parts: message.parts.map((part) => part.type === "file" ? { type: "file", filename: part.filename, mediaType: part.mediaType, bytesApprox: attachmentBytes(part.url) } : part) });
     await saveConversation(principal, safeMessages);
-    const workflowRun = await start(cozteAssistantWorkflow, [{ principal, runId, instructions, messages: modelMessages, persistedMessages: safeMessages, settings: agentSettings }]);
+    const workflowRun = await start(cozteAssistantWorkflow, [{ principal, runId, instructions, messages: modelMessages, persistedMessages: safeMessages, settings: agentSettings, level: cozteSettings.level ?? "simple" }]);
     await linkAssistantWorkflowRun(principal, runId, workflowRun.runId);
     return createUIMessageStreamResponse({
       stream: workflowRun.readable.pipeThrough(createModelCallToUIChunkTransform()),

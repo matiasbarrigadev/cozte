@@ -30,7 +30,8 @@ import { ResultSection } from "./business/result-section";
 import { MonthCard } from "./business/month-card";
 import { DEMO_MONTH } from "@/lib/demo";
 import { appPath, viewFromPathname, viewFromSegments, type AppView } from "@/lib/app-routes";
-import { dashboardSummary, type CostComposition } from "@/lib/dashboard-summary";
+import { dashboardSummary } from "@/lib/dashboard-summary";
+import { CompositionBar, CompositionLegend } from "./business/composition";
 import { AnimatedIcon, type AnimatedIconName } from "./animated-icon";
 import { CozteLogo } from "./cozte-logo";
 
@@ -333,7 +334,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
 
           {view === "analisis" ? <CostAnalysisView currency={currency} demo={demo} /> : null}
 
-          {view === "asistente" ? <CozteAssistant demo={demo} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")} /> : null}
+          {view === "asistente" ? <CozteAssistant demo={demo} state={state} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
         </main>
@@ -349,33 +350,6 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
       <Dialog open={pendingMeta !== null} onOpenChange={(open) => { if (!open) setPendingMeta(null); }}><DialogContent><DialogHeader><DialogTitle>Este cambio afecta otros productos</DialogTitle><DialogDescription>{pendingMeta?.description}</DialogDescription></DialogHeader><div className="flex flex-wrap gap-2">{pendingMeta?.affected.map((name) => <Badge key={name} variant="secondary">{name}</Badge>)}</div><DialogFooter><Button variant="outline" onClick={() => setPendingMeta(null)}>Cancelar</Button><Button disabled={busy} onClick={async () => { if (pendingMeta && await save({ ...pendingMeta.action, acknowledgeImpact: true }, true)) setPendingMeta(null); }}>Aplicar cambio</Button></DialogFooter></DialogContent></Dialog>
     </SidebarProvider>
   );
-}
-
-const COMPOSITION_PARTS = [
-  { key: "materials", label: "Insumos", color: "var(--chart-series-1)" },
-  { key: "labor", label: "Mano de obra directa", color: "var(--chart-series-2)" },
-  { key: "shared", label: "Gastos compartidos", color: "var(--chart-series-3)" },
-] as const;
-
-function CompositionLegend() {
-  return <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" aria-label="Partes del costo">
-    {COMPOSITION_PARTS.map((part) => <li key={part.key} className="flex items-center gap-1.5"><span aria-hidden="true" className="inline-block size-2.5 rounded-sm" style={{ background: part.color }} />{part.label}</li>)}
-  </ul>;
-}
-
-/** Stacked bar of one unit's cost: materials, direct labor and shared expenses, with the largest part named. */
-function CompositionBar({ parts, format }: { parts: CostComposition; format: (value: number) => string }) {
-  const total = parts.materials + parts.labor + parts.shared;
-  if (total <= 0) return null;
-  const share = (value: number) => Math.round(value / total * 100);
-  const present = COMPOSITION_PARTS.filter((part) => parts[part.key] > 0);
-  const largest = [...present].sort((a, b) => parts[b.key] - parts[a.key])[0];
-  return <div className="flex flex-col gap-1">
-    <div role="img" aria-label={present.map((part) => `${part.label} ${share(parts[part.key])} %`).join(", ")} className="flex h-2.5 w-full gap-[2px]">
-      {present.map((part) => <span key={part.key} title={`${part.label}: ${format(parts[part.key])} por unidad (${share(parts[part.key])} %)`} className="h-full first:rounded-l-full last:rounded-r-full" style={{ width: `${parts[part.key] / total * 100}%`, background: part.color }} />)}
-    </div>
-    <span className="text-xs text-muted-foreground">{share(parts[largest.key])} % {largest.label.toLocaleLowerCase("es")}</span>
-  </div>;
 }
 
 function Metric({ label, value, note }: { label: string; value: string; note: string }) {

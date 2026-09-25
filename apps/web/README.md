@@ -37,3 +37,10 @@ Además del costo de producir, el espacio de trabajo cubre lo que cuesta vender 
 - **Resultado del mes** (`/app/resultado`): ventas, lo que dejó cada venta, gastos fijos, compras del mes, parte de las inversiones, resultado y punto de equilibrio.
 
 El motor está en `lib/business.ts` (puro) y la persistencia en `lib/server/business.ts`. Cozte registra canales, compras y ventas con sus herramientas; las imágenes y PDF enviados al chat se guardan en R2 como documentos para adjuntarlos al registro que respaldan, por lo que el despliegue necesita `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` y `R2_SECRET_ACCESS_KEY`. Sin R2 el chat funciona igual, pero los comprobantes no quedan adjuntos.
+
+## Cozte: nivel, tablero y calidad
+
+- Cada persona elige cómo le explica Cozte (Simple, Medio, Avanzado); cambia la profundidad y el vocabulario, nunca las acciones ni la verificación.
+- El tablero junto al chat guarda visualizaciones con datos en vivo del motor (costo por unidad, desglose, canales, mes, ventas, evolución, compras). Cozte las muestra con `showVisual` y puede fijarlas; la persona también agrega las predeterminadas.
+- "Nueva conversación" archiva el chat anterior; costos, registros y notas siguen.
+- Cada turno terminado se puntúa con TypeSafe Jev vía AI Gateway (evento `quality_scored`): responde lo pedido, explica supuestos, enseña, nivel adecuado y claridad. Es solo observación; se desactiva con `COZTE_QUALITY=off`.

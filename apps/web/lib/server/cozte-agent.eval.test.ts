@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateText, isStepCount, type ModelMessage } from "ai";
+import { experimental_evaluate as evaluate, generateText, isStepCount, type ModelMessage } from "ai";
+import { QUALITY_QUESTIONS, qualityState, summarizeQuality, type QualityAnswers } from "@/lib/cozte-quality";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 // Reads AI_GATEWAY_API_KEY and COZTE_* from apps/web/.env.local, the same file `next dev` uses.
@@ -48,7 +49,8 @@ const conversation: Turn[] = [
   { user: "Hacemos tofu. Tenemos dos productos: Tofu 500g, que salen 112 por tanda, y Tofu 300g, que salen 93 por tanda. Hacemos unas 23 tandas al mes de cada uno y cada tanda lleva 6 horas.", expectTools: ["saveProduct"] },
   { user: "La soja orgánica la compro a 1293 el kilo, el cloruro de magnesio a 2100 el kilo, la tela de filtrado a 348 el metro cuadrado, las bolsas a 59 cada una y las etiquetas a 240 cada una. Todo a CEAPE, precios de hoy, estimados.", expectTools: ["saveMaterial"] },
   { user: "Para cada tofu de 300g uso 0.2097 kg de soja, 7 gramos de cloruro, 0.0105 m2 de tela, una bolsa y una etiqueta. El de 500g usa 0.35 kg de soja, 12 g de cloruro, 0.017 m2 de tela, una bolsa y una etiqueta.", expectTools: ["saveRecipe"] },
-  { user: "Somos 2 personas en producción, el mes pasado pagamos 1.600.000 de sueldos en total. Hay un tercer socio que trabaja pero cobra solo cuando hay ganancia.", expectTools: ["saveExpense"],
+  // Saving salaries needs how to split them: asking with options is as valid as saving; the final state checks the result.
+  { user: "Somos 2 personas en producción, el mes pasado pagamos 1.600.000 de sueldos en total. Hay un tercer socio que trabaja pero cobra solo cuando hay ganancia.",
     // Handled if it says so or records the decision; the final-state check confirms it is not an expense.
     check: (answer, records) => /socio|fundador/i.test(answer) || records.some((item) => item.name === "saveNote" && item.ok) ? null : "no registró ni explicó cómo trata al socio" },
   { user: "El gas es una garrafa de 110.000 que recargamos una vez por mes y la luz son 350.000 por mes.", expectTools: ["saveExpense"] },
@@ -63,6 +65,31 @@ const conversation: Turn[] = [
 ];
 
 const results: Record<string, unknown>[] = [];
+
+type Principal = { userId: string; organizationId: string; role: "owner" };
+/** One turn as production runs it: the agent, then the verifier and, if needed, one correction pass. */
+async function productionTurn(input: { model: string; principal: Principal; history: ModelMessage[]; text: string; level?: "simple" | "medium" | "advanced" }) {
+  const settings = { ...cozteAgentSettings(), model: input.model };
+  const state = await loadState(input.principal);
+  const instructions = buildCozteInstructions({ state, notes: await loadCozteNotes(input.principal), legacyProfile: null, level: input.level ?? "simple" });
+  const tools = createCozteTools(input.principal, crypto.randomUUID());
+  input.history.push({ role: "user", content: input.text });
+  const pass = (messages: ModelMessage[]) => generateText({ model: input.model, system: instructions, messages, tools, stopWhen: [isStepCount(settings.maxSteps), questionsShown], maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings) });
+  let result = await pass(input.history);
+  const collect = (list: typeof result.steps) => list.map((step) => ({ text: step.text, toolCalls: step.toolCalls.map((call) => ({ toolName: call.toolName, input: call.input })), toolResults: step.toolResults.map((item) => ({ toolName: item.toolName, output: item.output })) }));
+  let steps = collect(result.steps);
+  const records = () => steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), write: COZTE_WRITE_TOOLS.has(item.toolName), output: item.output, input: step.toolCalls.find((call) => call.toolName === item.toolName)?.input })));
+  const answerOf = () => { const at = finalAnswerStep(steps); return at >= 0 ? steps[at].text.trim() : ""; };
+  let verification = verifyCozteResponse(answerOf(), records(), { sources: [instructions, input.text] });
+  const rejected = verification.ok ? null : { text: answerOf(), issues: verification.issues.map((issue) => issue.code) };
+  if (!verification.ok) {
+    result = await pass([...input.history, ...result.response.messages, { role: "user", content: correctionMessage(verification) }]);
+    steps = [...steps, ...collect(result.steps)];
+    verification = verifyCozteResponse(answerOf(), records(), { sources: [instructions, input.text] });
+  }
+  input.history.push(...result.response.messages);
+  return { answer: answerOf(), records: records(), rejected, verified: verification.ok };
+}
 
 describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, () => {
   const models = (process.env.COZTE_EVAL_MODELS ?? cozteAgentSettings().model).split(",").map((item) => item.trim()).filter(Boolean);
@@ -121,7 +148,8 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       for (const expected of turn.expectTools ?? []) if (!turnRecords.some((item) => item.name === expected && item.ok)) failures.push(`turno ${index + 1}: no ejecutó ${expected} con éxito`);
       const latest = await loadState(principal);
       const engineCosts = calculateCosts(latest).map((cost) => ({ name: latest.products.find((item) => item.id === cost.productId)?.name ?? "", unitCost: cost.unitMinor }));
-      if (metaTalk.test(answer)) failures.push(`turno ${index + 1}: el mensaje final habla del proceso ("${answer.match(metaTalk)![0]}")`);
+      // Only a corrected turn can leak the correction note into the answer.
+      if (rejectedAnswer && metaTalk.test(answer)) failures.push(`turno ${index + 1}: el mensaje final habla del proceso ("${answer.match(metaTalk)![0]}")`);
       const problem = turn.check?.(answer, turnRecords, engineCosts);
       if (problem) failures.push(`turno ${index + 1}: ${problem}`);
       transcript.push({ user: turn.user, tools: turnRecords.map((item) => `${item.name}${item.ok ? "" : " (falló)"}`), rejected: rejectedAnswer, answer });
@@ -195,24 +223,14 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     await setup("saveRecipe", { product: "Tofu 300g", items: [{ material: "Soja orgánica", perLot: 30 }] });
     await setup("saveExpense", { name: "Luz", amount: 200000, splitBy: "hours" });
 
-    const settings = { ...cozteAgentSettings(), model };
     const history: ModelMessage[] = [];
     const failures: string[] = [];
-    const transcript: { user: string; tools: string[]; answer: string }[] = [];
+    const transcript: { user: string; tools: string[]; rejected: unknown; answer: string }[] = [];
     const turn = async (text: string, expected: string[]) => {
-      history.push({ role: "user", content: text });
-      const state = await loadState(principal);
-      const result = await generateText({
-        model, system: buildCozteInstructions({ state, notes: await loadCozteNotes(principal), legacyProfile: null }), messages: history,
-        tools: createCozteTools(principal, crypto.randomUUID()), stopWhen: [isStepCount(settings.maxSteps), questionsShown],
-        maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings),
-      });
-      history.push(...result.response.messages);
-      const records = result.steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), input: step.toolCalls.find((call) => call.toolCallId === item.toolCallId)?.input })));
-      const answer = result.steps.at(-1)?.text ?? "";
+      const { answer, records, rejected, verified } = await productionTurn({ model, principal, history, text });
       for (const name of expected) if (!records.some((item) => item.name === name && item.ok)) failures.push(`"${text.slice(0, 40)}…": no ejecutó ${name}`);
-      console.log(`\n[${model}] tools=${records.map((item) => `${item.name}${item.ok ? "" : "✗"}`).join(",")}\n${JSON.stringify(records.filter((item) => item.name !== "readBusiness").map((item) => item.input))}\n${answer.slice(0, 600)}`);
-      transcript.push({ user: text, tools: records.map((item) => item.name + (item.ok ? "" : " (falló)")), answer });
+      if (!verified) failures.push(`"${text.slice(0, 40)}…": respuesta sin respaldo tras la corrección`);
+      transcript.push({ user: text, tools: records.map((item) => item.name + (item.ok ? "" : " (falló)")), rejected, answer });
       return { records, answer };
     };
     await turn("Vendemos por Instagram. Mercado Pago nos cobra 10 % de cada venta y el envío en moto nos cuesta 1500 por pedido; los pedidos suelen ser de 3 tofus.", ["saveChannel"]);
@@ -242,6 +260,46 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     for (const [name, passed] of Object.entries(checks)) if (!passed) failures.push(`estado final: ${name}`);
     console.log(`\n[${model}] checks ${JSON.stringify(checks)}`);
     results.push({ model, scenario: "secretary", failures: failures.length, failureDetails: failures, ...checks, transcript });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("explains its assumptions at the chosen level and shows visuals, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET currency='ARS' WHERE id=?", params: [principal.organizationId] }]);
+    const seed = createCozteTools(principal, crypto.randomUUID());
+    let seedCall = 0;
+    const setup = async (name: keyof typeof seed, input: Record<string, unknown>) => await (seed[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<unknown>)(input, { toolCallId: `seed-${++seedCall}` });
+    await setup("saveProduct", { name: "Tofu 300g", goodUnitsPerLot: 100, lotsPerMonth: 20, hoursPerLot: 5, salePrice: 2000 });
+    await setup("saveMaterial", { name: "Soja orgánica", purchaseUnit: "kg", price: 1000 });
+    await setup("saveRecipe", { product: "Tofu 300g", items: [{ material: "Soja orgánica", perLot: 30 }] });
+    await setup("saveExpense", { name: "Luz", amount: 200000, splitBy: "hours" });
+
+    const failures: string[] = [];
+    const transcript: Record<string, unknown>[] = [];
+    const conversation = async (level: "simple" | "advanced", messages: { text: string; expect: string[]; checkAssumptions?: boolean }[]) => {
+      const history: ModelMessage[] = [];
+      for (const message of messages) {
+        const { answer, records, verified } = await productionTurn({ model, principal, history, text: message.text, level });
+        if (!verified) failures.push(`[${level}] "${message.text.slice(0, 40)}…": respuesta sin respaldo tras la corrección`);
+        for (const name of message.expect) if (!records.some((item) => item.name === name && item.ok)) failures.push(`[${level}] "${message.text.slice(0, 40)}…": no ejecutó ${name}`);
+        const quality = await evaluate({ model: "typesafe-ai/jev", state: qualityState({ level, userMessage: message.text, answer, actions: records.map((item) => item.name) }), questions: QUALITY_QUESTIONS });
+        const summary = summarizeQuality(quality.answers as QualityAnswers);
+        transcript.push({ level, user: message.text, tools: records.map((item) => item.name), answer, quality: summary });
+        if (message.checkAssumptions && summary.flags.includes("decidió sin explicar")) failures.push(`[${level}] "${message.text.slice(0, 40)}…": decidió sin explicar (Jev)`);
+        if (/en firme|productos vivos|insumos vivos/i.test(answer)) failures.push(`[${level}] vocabulario viejo`);
+      }
+    };
+    await conversation("simple", [
+      { text: "Compramos una laptop para la oficina por 900000.", expect: [], checkAssumptions: true },
+      { text: "Mostrame en qué se va el costo de cada tofu.", expect: ["showVisual"] },
+    ]);
+    await conversation("advanced", [{ text: "Registrá una compra: impresora para administración por 300000.", expect: [] }]);
+    const investments = await dbQuery<{ useful_life_months: number | null; area: string }>("SELECT useful_life_months, area FROM purchases WHERE organization_id=? AND kind='investment' AND archived_at IS NULL", [principal.organizationId]);
+    console.log(`\n[${model}] investments ${JSON.stringify(investments)}`);
+    results.push({ model, scenario: "levels", failures: failures.length, failureDetails: failures, transcript });
     expect(failures).toEqual([]);
   });
 });

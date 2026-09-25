@@ -1,0 +1,47 @@
+import "server-only";
+import { isExplanationLevel, type ExplanationLevel } from "@/lib/cozte-levels";
+import { parseBoard, pinWidget, type BoardWidget } from "@/lib/cozte-widgets";
+import type { Principal } from "./auth";
+import { ApiError } from "./auth";
+import { dbBatch, dbQuery } from "./db";
+import { getActiveAssistantWorkflow } from "./assistant-trace";
+
+export type CozteSettings = { level: ExplanationLevel | null; board: BoardWidget[] };
+
+/** The person's level (null while not chosen) and the widgets pinned to their board. */
+export async function loadCozteSettings(principal: Principal): Promise<CozteSettings> {
+  const rows = await dbQuery<{ explanation_level: string | null; board_json: string }>("SELECT explanation_level, board_json FROM cozte_user_settings WHERE organization_id=? AND user_id=?", [principal.organizationId, principal.userId]);
+  const row = rows[0];
+  return { level: isExplanationLevel(row?.explanation_level) ? row.explanation_level : null, board: parseBoard(row?.board_json ?? "[]") };
+}
+
+export async function saveExplanationLevel(principal: Principal, level: ExplanationLevel): Promise<void> {
+  await dbBatch([{ sql: "INSERT INTO cozte_user_settings (organization_id, user_id, explanation_level) VALUES (?, ?, ?) ON CONFLICT (organization_id, user_id) DO UPDATE SET explanation_level=excluded.explanation_level, updated_at=CURRENT_TIMESTAMP", params: [principal.organizationId, principal.userId, level] }], { retrySafe: true });
+}
+
+export async function saveBoard(principal: Principal, board: BoardWidget[]): Promise<BoardWidget[]> {
+  const clean = parseBoard(board);
+  await dbBatch([{ sql: "INSERT INTO cozte_user_settings (organization_id, user_id, board_json) VALUES (?, ?, ?) ON CONFLICT (organization_id, user_id) DO UPDATE SET board_json=excluded.board_json, updated_at=CURRENT_TIMESTAMP", params: [principal.organizationId, principal.userId, JSON.stringify(clean)] }], { retrySafe: true });
+  return clean;
+}
+
+export async function addToBoard(principal: Principal, widget: Omit<BoardWidget, "id">): Promise<BoardWidget[]> {
+  const { board } = await loadCozteSettings(principal);
+  return saveBoard(principal, pinWidget(board, widget));
+}
+
+/**
+ * Starts a clean conversation: the current one is archived, not deleted. Saved costs, records and Cozte's notes
+ * stay; only the chat history starts over, so old styles and mistakes stop weighing on new answers.
+ */
+export async function archiveConversation(principal: Principal): Promise<{ archived: boolean }> {
+  if (await getActiveAssistantWorkflow(principal)) throw new ApiError(409, "Cozte está respondiendo; espera a que termine para empezar una conversación nueva");
+  const rows = await dbQuery<{ messages_json: string }>("SELECT messages_json FROM assistant_conversations WHERE organization_id=? AND user_id=?", [principal.organizationId, principal.userId]);
+  const current = rows[0]?.messages_json;
+  if (!current || current === "[]") return { archived: false };
+  await dbBatch([
+    { sql: "INSERT INTO assistant_conversation_archives (id, organization_id, user_id, messages_json) VALUES (?, ?, ?, ?)", params: [crypto.randomUUID(), principal.organizationId, principal.userId, current] },
+    { sql: "UPDATE assistant_conversations SET messages_json='[]', updated_at=CURRENT_TIMESTAMP WHERE organization_id=? AND user_id=?", params: [principal.organizationId, principal.userId] },
+  ]);
+  return { archived: true };
+}

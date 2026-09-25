@@ -3,6 +3,7 @@
 import * as React from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { cleanLegacyWording } from "@/lib/cozte-response-verifier";
 
 const plugins = [remarkGfm];
 const allowedElements = ["p", "strong", "em", "del", "a", "h1", "h2", "h3", "h4", "ul", "ol", "li", "blockquote", "code", "pre", "hr", "table", "thead", "tbody", "tr", "th", "td", "br", "input"];
@@ -27,7 +28,7 @@ const components: Components = {
 
 /** Cozte answers in Spanish; stray words in another script (a known model artifact) are removed before rendering. */
 export function withoutForeignScript(text: string): string {
-  return text.replace(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu, "").replace(/[ \t]{2,}/g, " ");
+  return cleanLegacyWording(text).replace(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu, "").replace(/[ \t]{2,}/g, " ");
 }
 
 export const AssistantMarkdown = React.memo(function AssistantMarkdown({ text }: { text: string }) {

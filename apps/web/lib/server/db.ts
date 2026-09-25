@@ -89,3 +89,4 @@ export async function dbQuery<T extends Record<string, unknown>>(
   const [rows] = await dbBatch<T>([{ sql, params }]);
   return rows;
 }
+

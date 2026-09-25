@@ -17,6 +17,8 @@ import { archiveCozteNote, loadCozteNotes, saveCozteNote } from "./cozte-notes";
 import { AREA_LABELS, PURCHASE_KIND_LABELS, channelEconomics } from "@/lib/business";
 import { archiveRecord, loadBusinessView, loadChannels, recordPurchase, recordSale, saveChannel } from "./business";
 import { resolveDocument } from "./documents";
+import { WIDGETS, WIDGET_KINDS, type WidgetKind } from "@/lib/cozte-widgets";
+import { addToBoard, saveExplanationLevel } from "./cozte-settings";
 
 type ToolStepInput = { principal: Principal; runId: string; toolCallId: string; toolName: CozteToolName; input: unknown };
 type ToolResult = Record<string, unknown>;
@@ -158,6 +160,14 @@ export const cozteToolInputSchemas = {
   readBusiness: z.object({
     month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional().describe("Mes AAAA-MM; por defecto el actual"),
   }),
+  showVisual: z.object({
+    visual: z.enum(WIDGET_KINDS as [WidgetKind, ...WidgetKind[]]).describe("unit-cost: costo por unidad de cada producto; cost-breakdown: desglose de un producto; channels: lo que queda por unidad en cada canal; month: resultado del mes y punto de equilibrio; sales: ventas del mes; cost-evolution: evolución del costo en el tiempo; purchases: últimas compras e inversiones"),
+    product: reference.optional().describe("Para cost-breakdown (obligatorio si hay más de un producto) o para filtrar channels"),
+    pin: z.boolean().optional().describe("true además lo fija en el tablero junto al chat, cuando la persona quiere seguir viéndolo"),
+  }),
+  setExplanationLevel: z.object({
+    level: z.enum(["simple", "medium", "advanced"]).describe("simple: nueva en esto; medium: quiere mejorar; advanced: nivel técnico"),
+  }),
   askQuestions: z.object({
     intro: z.string().trim().max(300).optional().describe("Una frase que explica para qué necesitas estas respuestas"),
     questions: z.array(z.object({
@@ -185,6 +195,8 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   setInvestmentCost: "Guarda la decisión de la persona sobre una inversión del taller: si su parte mensual se suma al costo de cada producto o queda solo en el resultado del mes. Devuelve el costo antes y después.",
   voidRecord: "Anula una compra o venta mal registrada (queda en el historial). Después puedes registrarla bien.",
   readBusiness: "Lee cómo va un mes: canales y lo que queda por unidad en cada uno, gastos fijos por área e inversiones, compras, ventas, resultado del mes y punto de equilibrio.",
+  showVisual: "Muestra en el chat un gráfico o tarjeta con datos reales y actuales del motor (costos, canales, mes, ventas, evolución, compras). Opcionalmente lo fija en el tablero de la persona.",
+  setExplanationLevel: "Guarda cómo prefiere la persona que le expliques: simple, medio o avanzado.",
   askQuestions: "Muestra a la persona de 1 a 4 preguntas con opciones para elegir; siempre puede responder con texto libre. Úsala cuando necesites datos o decisiones que solo ella conoce. Termina tu turno: las respuestas llegan en su próximo mensaje, así que no escribas nada después de llamarla.",
 };
 
@@ -601,6 +613,29 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         sales: view.sales.slice(0, 40).map((sale) => ({ id: sale.id, date: sale.soldOn, channel: sale.channelName, total: sale.totalMinor, items: sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", "), hasReceipt: Boolean(sale.documentId) })),
       };
     }
+    case "showVisual": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.showVisual>;
+      const state = await loadState(principal);
+      let productId: string | null = null;
+      if (value.product) {
+        const found = resolveEntity(state.products, value.product);
+        if (!found.item) return notFound("el producto", value.product, found.candidates);
+        productId = found.item.id;
+      } else if (WIDGETS[value.visual].needsProduct) {
+        if (state.products.length !== 1) return { ok: false, error: "Falta indicar de qué producto mostrar el desglose.", options: state.products.map((item) => item.name) };
+        productId = state.products[0].id;
+      }
+      const pinned = value.pin ? await addToBoard(principal, { kind: value.visual, productId, addedBy: "cozte" }).then(() => true) : false;
+      return {
+        ok: true, visual: value.visual, productId, product: state.products.find((item) => item.id === productId)?.name ?? null, pinned,
+        note: `La persona ve "${WIDGETS[value.visual].label}" con datos actuales${pinned ? " y quedó fijo en su tablero" : ""}. En el texto comenta solo lo importante; no repitas toda la tabla.`,
+      };
+    }
+    case "setExplanationLevel": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.setExplanationLevel>;
+      await saveExplanationLevel(principal, value.level);
+      return { ok: true, done: [`Nivel de explicación: ${value.level === "simple" ? "simple" : value.level === "medium" ? "medio" : "avanzado"}`], note: "Desde el próximo mensaje explica con ese nivel." };
+    }
     case "askQuestions": {
       const value = args as z.infer<typeof cozteToolInputSchemas.askQuestions>;
       return { ok: true, asked: value.questions.length, waitingForAnswers: true };
@@ -651,6 +686,8 @@ export function createCozteTools(principal: Principal, runId: string) {
     setInvestmentCost: tool({ description: describe.setInvestmentCost, inputSchema: schemas.setInvestmentCost, execute: execute("setInvestmentCost") }),
     voidRecord: tool({ description: describe.voidRecord, inputSchema: schemas.voidRecord, execute: execute("voidRecord") }),
     readBusiness: tool({ description: describe.readBusiness, inputSchema: schemas.readBusiness, execute: execute("readBusiness") }),
+    showVisual: tool({ description: describe.showVisual, inputSchema: schemas.showVisual, execute: execute("showVisual") }),
+    setExplanationLevel: tool({ description: describe.setExplanationLevel, inputSchema: schemas.setExplanationLevel, execute: execute("setExplanationLevel") }),
     askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),
   };
 }

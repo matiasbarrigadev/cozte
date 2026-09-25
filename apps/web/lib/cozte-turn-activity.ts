@@ -26,6 +26,8 @@ const running: Record<string, string> = {
   setInvestmentCost: "Ajustando la inversión",
   voidRecord: "Anulando el registro",
   readBusiness: "Revisando el mes",
+  showVisual: "Preparando el gráfico",
+  setExplanationLevel: "Guardando tu nivel",
 };
 
 /** How each tool reads in a collapsed summary, singular and plural. */
@@ -46,6 +48,8 @@ const summaryVerb: Record<string, [string, string]> = {
   setInvestmentCost: ["ajustó 1 inversión", "ajustó {n} inversiones"],
   voidRecord: ["anuló 1 registro", "anuló {n} registros"],
   readBusiness: ["revisó el mes", "revisó el mes"],
+  showVisual: ["mostró 1 gráfico", "mostró {n} gráficos"],
+  setExplanationLevel: ["guardó tu nivel", "guardó tu nivel"],
 };
 
 function record(value: unknown): Record<string, unknown> {
