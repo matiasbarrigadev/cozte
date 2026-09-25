@@ -76,7 +76,8 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
       return { ...options, api: `/api/assistant/${encodeURIComponent(workflowRunId)}/stream` };
     },
   }), []);
-  const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport, resume: resumeExistingWorkflow,
+  // Throttled updates: re-rendering on every streamed token froze the browser on long conversations.
+  const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport, resume: resumeExistingWorkflow, throttle: 50,
     onFinish: ({ message, isError, isAbort }) => {
       void loadProposals(true);
       if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && COZTE_COST_WRITE_TOOLS.has(part.type.slice("tool-".length)) && cozteToolSucceeded(part.output))) void onDataChanged();
@@ -307,15 +308,22 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
     const latestAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant" && messages.findIndex((item) => item.id === message.id) > latestUserMessageIndex);
     if (latestAssistantMessage && currentTurnProposals.length) proposalsAfterMessage.set(latestAssistantMessage.id, currentTurnProposals);
   }
-  const toolsByAssistantMessage = new Map<string, PersistedToolExecution[]>();
-  let toolTurnUserMessageId: string | null = null;
-  for (const message of messages) {
-    if (message.role === "user") toolTurnUserMessageId = message.id;
-    if (message.role === "assistant" && toolTurnUserMessageId) {
-      const executions = toolExecutions.filter((execution) => execution.messageId === toolTurnUserMessageId);
-      if (executions.length) toolsByAssistantMessage.set(message.id, executions);
+  // Keyed on message ids, not contents, so persisted executions keep their identity while a reply streams.
+  const messageOrderKey = messages.map((message) => `${message.role}:${message.id}`).join("|");
+  const toolsByAssistantMessage = React.useMemo(() => {
+    const map = new Map<string, PersistedToolExecution[]>();
+    let toolTurnUserMessageId: string | null = null;
+    for (const entry of messageOrderKey.split("|")) {
+      const [role, id] = [entry.slice(0, entry.indexOf(":")), entry.slice(entry.indexOf(":") + 1)];
+      if (role === "user") toolTurnUserMessageId = id;
+      if (role === "assistant" && toolTurnUserMessageId) {
+        const turnId = toolTurnUserMessageId;
+        const executions = toolExecutions.filter((execution) => execution.messageId === turnId);
+        if (executions.length) map.set(id, executions);
+      }
     }
-  }
+    return map;
+  }, [messageOrderKey, toolExecutions]);
   return <>
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -333,22 +341,7 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
             <CardContent className="flex min-h-0 flex-1 flex-col px-4 py-5 md:px-8"><ChatContainerRoot className="min-h-0 flex-1" aria-live="polite"><ChatContainerContent className="mx-auto min-h-full w-full max-w-4xl gap-4">
               {!messages.length ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>Empecemos por tu producción</EmptyTitle><EmptyDescription>¿Qué productos terminados y empacados fabrican, dónde y cómo?</EmptyDescription></EmptyHeader></Empty> : null}
               {messages.map((message) => <React.Fragment key={message.id}>
-                <div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
-                  <span className="text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}</span>
-                  {message.role === "assistant" ? (() => {
-                    // Work (reasoning and tools) goes in one collapsed block above the answer, like a compact trace.
-                    const liveToolCallIds = new Set(message.parts.filter(isToolUIPart).map((part) => part.toolCallId));
-                    const persisted = (toolsByAssistantMessage.get(message.id) ?? []).filter((execution) => !liveToolCallIds.has(execution.toolCallId));
-                    return <CozteTurnActivity parts={message.parts} persisted={persisted} streaming={status === "streaming" && message.id === messages.at(-1)?.id} />;
-                  })() : null}
-                  {message.parts.map((part, index) => {
-                    if (part.type === "text") return message.role === "assistant" ? <AssistantMarkdown key={index} text={part.text} /> : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
-                    if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
-                    if (part.type === "file" && part.mediaType === "application/pdf") return <Badge key={index} variant="outline">PDF · {part.filename ?? "Documento adjunto"}</Badge>;
-                    if (part.type === "file" && part.mediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return <Badge key={index} variant="outline">Excel · {part.filename ?? "Planilla adjunta"}</Badge>;
-                    return null;
-                  })}
-                </div>
+                <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} />
                 {(proposalsAfterMessage.get(message.id) ?? []).map((proposal) => <ProposalTurnCard key={proposal.id} proposal={proposal} onOpen={() => setSelectedProposalId(proposal.id)} />)}
               </React.Fragment>)}
               {status === "submitted" ? <TextShimmer className="text-sm">Cozte está analizando…</TextShimmer> : null}
@@ -461,6 +454,27 @@ function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; o
     </CardContent>
   </Card>;
 }
+
+const noExecutions: PersistedToolExecution[] = [];
+
+/** One chat message. Memoized so only the reply that is streaming re-renders on each update. */
+const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean }) {
+  return <div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
+    <span className="text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}</span>
+    {message.role === "assistant" ? (() => {
+      // Work (reasoning and tools) goes in one collapsed block above the answer, like a compact trace.
+      const liveToolCallIds = new Set(message.parts.filter(isToolUIPart).map((part) => part.toolCallId));
+      return <CozteTurnActivity parts={message.parts} persisted={persisted.filter((execution) => !liveToolCallIds.has(execution.toolCallId))} streaming={streaming} />;
+    })() : null}
+    {message.parts.map((part, index) => {
+      if (part.type === "text") return message.role === "assistant" ? <AssistantMarkdown key={index} text={part.text} /> : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
+      if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
+      if (part.type === "file" && part.mediaType === "application/pdf") return <Badge key={index} variant="outline">PDF · {part.filename ?? "Documento adjunto"}</Badge>;
+      if (part.type === "file" && part.mediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return <Badge key={index} variant="outline">Excel · {part.filename ?? "Planilla adjunta"}</Badge>;
+      return null;
+    })}
+  </div>;
+});
 
 function CozteTurnActivity({ parts, persisted, streaming }: { parts: UIMessage["parts"]; persisted: PersistedToolExecution[]; streaming: boolean }) {
   const items = turnActivity(parts as ActivityPart[], streaming);

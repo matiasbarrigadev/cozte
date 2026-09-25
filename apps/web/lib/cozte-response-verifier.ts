@@ -12,12 +12,17 @@ export type TurnToolRecord = {
   output: unknown;
 };
 
-export type VerificationIssue = { code: "unbacked-write-claim" | "announced-not-executed" | "unverified-figures" | "unknown-identifier" | "internal-detail" | "foreign-script" | "empty-answer"; detail: string };
+export type VerificationIssue = { code: "unbacked-write-claim" | "announced-not-executed" | "unverified-figures" | "unknown-identifier" | "internal-detail" | "empty-answer"; detail: string };
 
 /** Text the answer may legitimately quote numbers from besides tool results: the turn's cost snapshot and the person's message. */
 export type VerificationContext = { sources?: string[] };
 
 export type Verification = { ok: boolean; issues: VerificationIssue[]; mustUseTools: boolean };
+
+/** Issues that make an answer untrustworthy even after a correction; the rest are worth one retry but not a discard. */
+export const HARD_ISSUES: ReadonlySet<VerificationIssue["code"]> = new Set(["unbacked-write-claim", "announced-not-executed", "unknown-identifier", "empty-answer"]);
+
+export const hasHardIssue = (verification: Verification) => verification.issues.some((issue) => HARD_ISSUES.has(issue.code));
 
 // Word boundaries are lookarounds on letters: \b treats accented letters such as "é" as non-word characters.
 
@@ -39,8 +44,13 @@ const stateClaim = new RegExp([
 /** "Listo," / "Hecho." openers: only suspicious when the turn used no tool at all ("Listo, simulado sin guardar" is fine). */
 const openerClaim = /^\s*¡?\s*(?:listo|hecho|ya\s+est[aá])(?![\p{L}\p{N}])/giu;
 
-/** Model artifacts in another script (e.g. stray Chinese words) that the person should never see. */
-const foreignScript = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Cyrillic}\p{Script=Arabic}]+/u;
+/** Model artifacts in another script (e.g. a stray Chinese or Japanese word): removed rather than worth a retry. */
+export function stripForeignScript(text: string): string {
+  return text.replace(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu, "").replace(/[ \t]{2,}/g, " ");
+}
+
+/** Illustrative amounts ("por ejemplo, si pagaras ARS 5.000") are teaching, not claims about stored costs. */
+const illustrative = /(?<![\p{L}])(?:por ejemplo|ejemplo|supongamos|imagin[aá]|hipot[eé]tic|digamos)(?![\p{L}])/iu;
 
 /** Announcing an imminent action ("voy a guardar", "ahora ejecuto") and then ending the turn without doing it. */
 const announcedAction = /(?<![\p{L}\p{N}])(?:(?:voy a|vamos a|procedo a|paso a|ahora mismo|ahora)\s+(?:\p{L}+\s+){0,2}?(?:guardar|registrar|crear|cargar|actualizar|ejecutar|agregar|aplicar|llamar|invocar)|(?:pruebo|ejecuto|guardo|actualizo|aplico|agrego|invoco))(?![\p{L}\p{N}])/iu;
@@ -124,7 +134,9 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
   // A turn that used no tool can only quote money figures already in its snapshot or the person's message.
   if (!tools.length && context.sources) {
     const known = sourceFigures([...context.sources, evidence]);
-    const figures = [...answer.matchAll(moneyFigure)].map((match) => figureValue(match[1] ?? match[2] ?? "")).filter((value): value is number => value !== null && value >= 100);
+    const figures = [...answer.matchAll(moneyFigure)]
+      .filter((match) => !illustrative.test(sentenceAround(answer, match.index ?? 0)))
+      .map((match) => figureValue(match[1] ?? match[2] ?? "")).filter((value): value is number => value !== null && value >= 100);
     const unverified = [...new Set(figures.filter((value) => !known.has(value) && !known.has(value - 1) && !known.has(value + 1)))];
     if (unverified.length) issues.push({ code: "unverified-figures", detail: `La respuesta muestra montos que no salen del motor ni de lo que dijo la persona (${unverified.slice(0, 4).join(", ")}). Obtén esas cifras con simulate, calculate o readCosts antes de mostrarlas.` });
   }
@@ -132,8 +144,6 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
   if (unknownIds.length) issues.push({ code: "unknown-identifier", detail: `La respuesta muestra identificadores que no provienen de ningún resultado: ${unknownIds.slice(0, 3).join(", ")}.` });
   const leaked = answer.match(internalNames);
   if (leaked) issues.push({ code: "internal-detail", detail: `La respuesta expone detalles internos ("${leaked[0]}").` });
-  const foreign = answer.match(foreignScript);
-  if (foreign) issues.push({ code: "foreign-script", detail: `La respuesta mezcla texto en otro idioma ("${foreign[0]}"); responde solo en español.` });
   return { ok: issues.length === 0, issues, mustUseTools: issues.some((issue) => issue.code === "unbacked-write-claim" || issue.code === "announced-not-executed" || issue.code === "unverified-figures") };
 }
 
@@ -147,7 +157,7 @@ export function correctionMessage(verification: Verification): string {
     verification.mustUseTools
       ? "Si la persona pidió guardar algo y tienes los datos, ejecuta ahora la herramienta que corresponde y responde según su resultado. Si pregunta qué quedó guardado, lee primero el estado actual y responde con esa lectura. Si falta un dato, no afirmes que guardaste: pregunta solo lo indispensable."
       : "Vuelve a responder a la persona sin esos problemas.",
-    "No menciones esta verificación ni nombres internos; responde directamente a la persona.",
+    "Escribe tu respuesta completa desde cero, como si fuera la primera: no te disculpes, no digas \"tenés razón\" ni hagas referencia a un mensaje anterior o a esta verificación, y no uses nombres internos. La persona espera la respuesta a su pregunta.",
   ].join("\n");
 }
 
@@ -174,7 +184,7 @@ export function receiptOnlyAnswer(records: TurnToolRecord[]): string {
 function storedSummary(records: TurnToolRecord[]): string {
   const read = [...records].reverse().find((item) => item.name === "readCosts" && item.ok && Array.isArray((item.output as Record<string, unknown> | null)?.products));
   if (!read) return "";
-  const overview = read.output as { currency?: string; products: { name: string; cost?: { unitCost?: number | null; status?: string } | null }[]; materials?: unknown[]; monthlyExpenses?: { name: string; monthlyAmount: number }[] };
+  const overview = read.output as { currency?: string; products: { name: string; cost?: { unitCost?: number | null; status?: string } | null }[]; materials?: unknown[]; monthlyExpenses?: { name: string; monthlyAmount: number }[]; gaps?: string[] };
   const money = (value: number) => `${overview.currency ?? ""} ${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 0 }).format(value)}`.trim();
   const status = { complete: "completo", estimated: "estimado", incomplete: "incompleto" } as Record<string, string>;
   const products = overview.products.map((item) => item.cost?.unitCost != null ? `${item.name} (${money(item.cost.unitCost)} por unidad, ${status[item.cost.status ?? ""] ?? "sin estado"})` : `${item.name} (costo incompleto)`);
@@ -184,5 +194,6 @@ function storedSummary(records: TurnToolRecord[]): string {
     products.length ? `productos ${products.join(", ")};` : "no hay productos;",
     `${overview.materials?.length ?? 0} insumos;`,
     expenses.length ? `gastos mensuales ${expenses.join(", ")}.` : "no hay gastos mensuales.",
-  ].join(" ");
+    overview.gaps?.length ? `Para afinar el costo convendría sumar: ${overview.gaps.slice(0, 4).join("; ")}.` : "",
+  ].filter(Boolean).join(" ");
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -24,6 +25,11 @@ const components: Components = {
   hr: () => <hr className="my-3 border-border" />,
 };
 
-export function AssistantMarkdown({ text }: { text: string }) {
-  return <div className="min-w-0 overflow-x-auto break-words"><Markdown remarkPlugins={plugins} allowedElements={allowedElements} components={components}>{text}</Markdown></div>;
+/** Cozte answers in Spanish; stray words in another script (a known model artifact) are removed before rendering. */
+export function withoutForeignScript(text: string): string {
+  return text.replace(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu, "").replace(/[ \t]{2,}/g, " ");
 }
+
+export const AssistantMarkdown = React.memo(function AssistantMarkdown({ text }: { text: string }) {
+  return <div className="min-w-0 overflow-x-auto break-words"><Markdown remarkPlugins={plugins} allowedElements={allowedElements} components={components}>{withoutForeignScript(text)}</Markdown></div>;
+});

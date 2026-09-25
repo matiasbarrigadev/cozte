@@ -15,4 +15,10 @@ describe("Markdown de Cozte", () => {
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("<img");
   });
+
+  it("quita palabras sueltas en otro alfabeto que a veces agrega el modelo", () => {
+    const html = renderToStaticMarkup(<AssistantMarkdown text={"La tela de filtrado フィルム cuesta ARS 348 por m²."} />);
+    expect(html).toContain("La tela de filtrado cuesta ARS 348 por m².");
+    expect(html).not.toContain("フィルム");
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { correctionMessage, receiptOnlyAnswer, verifyCozteResponse, type TurnToolRecord } from "./cozte-response-verifier";
+import { correctionMessage, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord } from "./cozte-response-verifier";
 
 const read: TurnToolRecord = { name: "readCosts", ok: true, write: false, output: { products: [] } };
 const savedProduct: TurnToolRecord = { name: "saveProduct", ok: true, write: true, output: { ok: true, ids: { product: "5cd7cb0f-e5d3-4ed4-8d6b-a0a7a8c46a23" } } };
@@ -64,8 +64,20 @@ describe("verifyCozteResponse", () => {
     expect(verifyCozteResponse("Listo. Pasemos a los gastos del mes.", []).issues[0].code).toBe("unbacked-write-claim");
   });
 
-  it("rejects stray text in another script", () => {
-    expect(verifyCozteResponse("¿Algo más (sal, agua, 包装/etiquetas si empacan)?", []).issues[0].code).toBe("foreign-script");
+  it("strips stray text in another script instead of rejecting the answer", () => {
+    expect(verifyCozteResponse("¿Algo más (sal, agua, 包装/etiquetas si empacan)?", []).ok).toBe(true);
+    expect(stripForeignScript("La tela フィルム cuesta ARS 348.")).toBe("La tela cuesta ARS 348.");
+  });
+
+  it("does not treat illustrative amounts as claims about stored costs", () => {
+    const context = { sources: ["<costos_al_inicio>{}</costos_al_inicio>", "¿qué costos faltan?"] };
+    expect(verifyCozteResponse("Por ejemplo, si el alquiler fuera ARS 5.000 al mes, se repartiría por horas.", [], context).ok).toBe(true);
+    expect(verifyCozteResponse("El alquiler te suma ARS 5.000 al mes.", [], context).ok).toBe(false);
+  });
+
+  it("separates hard issues from the ones worth only a retry", () => {
+    expect(hasHardIssue(verifyCozteResponse("Guardé el gas.", []))).toBe(true);
+    expect(hasHardIssue(verifyCozteResponse("Usé readCosts para revisar.", [{ name: "readCosts", ok: true, write: false, output: {} }]))).toBe(false);
   });
 
   it("lets a fresh read back first-person claims explicitly about earlier turns", () => {

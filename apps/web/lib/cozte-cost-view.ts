@@ -130,6 +130,17 @@ function costSummary(cost: ProductCost | undefined) {
   };
 }
 
+/** Adds what each shared expense costs per unit, so explanations can quote the engine instead of recomputing. */
+function withSharedBreakdown(state: DomainState, lotUnits: number, cost: ProductCost | undefined) {
+  const summary = costSummary(cost);
+  if (!summary || !cost) return summary;
+  const names = new Map(state.expenses.map((item) => [item.id, item.name]));
+  const sharedPerUnitByExpense = Object.fromEntries(Object.entries(cost.monthly.sharedByExpense).map(([id, monthly]) => [
+    names.get(id) ?? id, Math.round(monthly * 1000 / cost.monthly.batchesMilli / Math.max(lotUnits, 1) * 100) / 100,
+  ]));
+  return { ...summary, sharedPerUnitByExpense };
+}
+
 /** Ordered list of the facts that would most improve the estimate. */
 export function costGaps(state: DomainState, costs: ProductCost[]): string[] {
   const gaps = new Set<string>();
@@ -176,7 +187,7 @@ export function buildCostOverview(state: DomainState, costs: ProductCost[] = cal
           costPerUnit: material?.priceMinor == null ? null : Math.round(material.priceMinor * quantity / Math.max(product.lotUnits, 1) * 100) / 100,
         };
       }),
-      cost: costSummary(costs.find((item) => item.productId === product.id)),
+      cost: withSharedBreakdown(state, product.lotUnits, costs.find((item) => item.productId === product.id)),
     })),
     materials: state.materials.map((item) => ({
       id: item.id, name: item.name, purchaseUnit: item.purchaseUnit, price: item.priceMinor,

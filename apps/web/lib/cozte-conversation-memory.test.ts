@@ -44,10 +44,12 @@ describe("model history", () => {
       { id: "assistant-old", role: "assistant", parts: [{ type: "text", text: "Reporte literal: soja $560.000 guardada en firme" }] },
       { id: "assistant-run2", role: "assistant", parts: [{ type: "tool-saveExpense", toolCallId: "c1", state: "output-available", input: { name: "Gas", amount: 110000, splitBy: "hours" }, output: { ok: true } }, { type: "text", text: "Guardé el gas." }] },
       { id: "cozte-v2-fallback-run3", role: "assistant", parts: [{ type: "tool-saveNote", toolCallId: "c2", state: "output-available", input: { text: "Nota de prueba" }, output: { ok: true } }, { type: "text", text: "En este turno no guardé cambios." }] },
-      { id: "cozte-v2-run4", role: "assistant", parts: [{ type: "text", text: "¿Cuántas tandas hacen al mes?" }] },
+      { id: "cozte-v2-run4", role: "assistant", parts: [{ type: "reasoning", text: "Falta el volumen mensual." }, { type: "text", text: "¿Cuántas tandas hacen al mes?" }] },
     ] as unknown as UIMessage[];
     const result = modelHistory(history);
     expect(result.map((message) => message.id)).toEqual(["u1", "assistant-run2", "cozte-v2-fallback-run3", "cozte-v2-run4"]);
     expect(result[2].parts.map((part) => part.type)).toEqual(["tool-saveNote"]);
+    expect(result[3].parts.map((part) => part.type)).toEqual(["text"]);
+    expect(compactCozteConversation([history[4]])[0].parts.map((part) => part.type)).toEqual(["reasoning", "text"]);
   });
 });

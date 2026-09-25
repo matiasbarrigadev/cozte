@@ -37,6 +37,7 @@ type Part = UIMessage["parts"][number];
 
 function compactPart(part: Part): Part | null {
   if (part.type === "text") return { type: "text", text: part.text.slice(0, 8000) };
+  if (part.type === "reasoning") return part.text.trim() ? { type: "reasoning", text: part.text.slice(0, 2000) } as Part : null;
   if (!part.type.startsWith("tool-")) return null;
   const tool = part as Extract<Part, { type: `tool-${string}` }> & { state?: string; input?: unknown; output?: unknown; toolCallId: string };
   const toolName = part.type.slice("tool-".length);
@@ -73,6 +74,8 @@ export const COZTE_FALLBACK_ID_PREFIX = "cozte-v2-fallback-";
 export function modelHistory(messages: UIMessage[]): UIMessage[] {
   return messages.flatMap((message) => {
     if (message.role !== "assistant") return [message];
+    // Stored reasoning is for the person to review; replaying it would feed old thinking back to the model.
+    message = { ...message, parts: message.parts.filter((part) => part.type !== "reasoning") };
     const tools = message.parts.filter((part) => part.type.startsWith("tool-"));
     if (message.id.startsWith(COZTE_FALLBACK_ID_PREFIX)) return tools.length ? [{ ...message, parts: tools }] : [];
     // Verified turns carry the prefix; earlier verified turns are recognizable by their real tool receipts.

@@ -5,7 +5,7 @@ import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
 import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
 import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
-import { correctionMessage, receiptOnlyAnswer, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
+import { correctionMessage, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import type { Principal } from "./auth";
 import { loadConversation, saveConversation } from "./production-profile";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked, reopenAssistantRunAsFailed } from "./assistant-trace";
@@ -16,20 +16,37 @@ import { buildCostOverview } from "@/lib/cozte-cost-view";
 export type CozteAgentSettings = {
   model: string;
   fallbackModels: string[];
-  reasoning: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  /** Extended-thinking budget per model step. It is a ceiling: the model spends only what it needs. */
+  thinkingBudget: number;
   maxSteps: number;
   maxOutputTokens: number;
 };
 
 /** Reads the model configuration outside the workflow sandbox, where environment variables are available. */
 export function cozteAgentSettings(env: Record<string, string | undefined> = process.env): CozteAgentSettings {
-  const reasoning = env.COZTE_REASONING_EFFORT;
+  const requested = Number(env.COZTE_THINKING_BUDGET);
+  // 24k keeps a worst-case thinking step well inside the 300 s limit of a workflow step.
+  const thinkingBudget = Number.isInteger(requested) && requested >= 1024 && requested <= 64_000 ? requested : 24_000;
   return {
     model: env.COZTE_MODEL?.trim() || "minimax/minimax-m3",
     fallbackModels: (env.COZTE_FALLBACK_MODELS ?? "").split(",").map((item) => item.trim()).filter(Boolean),
-    reasoning: reasoning === "none" || reasoning === "minimal" || reasoning === "low" || reasoning === "high" || reasoning === "xhigh" ? reasoning : "medium",
+    thinkingBudget,
     maxSteps: 24,
-    maxOutputTokens: 16_000,
+    maxOutputTokens: thinkingBudget + 8_000,
+  };
+}
+
+/**
+ * Provider options for extended thinking. The SDK-level `reasoning` setting does not reach MiniMax through the
+ * gateway (it falls back to a fixed 1,024-token budget); an explicit thinking budget does. Anthropic-compatible
+ * providers read the same shape.
+ */
+export function cozteProviderOptions(settings: CozteAgentSettings) {
+  const thinking = { type: "enabled" as const, budgetTokens: settings.thinkingBudget };
+  return {
+    minimax: { thinking },
+    anthropic: { thinking },
+    ...(settings.fallbackModels.length ? { gateway: { models: settings.fallbackModels } } : {}),
   };
 }
 
@@ -51,7 +68,7 @@ type FinalizeInput = {
   responseText?: string;
 };
 
-type StepLike = { text: string; toolCalls: { toolCallId: string; toolName: string; input: unknown }[]; toolResults: { toolCallId: string; toolName: string; output: unknown }[] };
+type StepLike = { text: string; reasoningText?: string; toolCalls: { toolCallId: string; toolName: string; input: unknown }[]; toolResults: { toolCallId: string; toolName: string; output: unknown }[] };
 
 async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   "use step";
@@ -148,7 +165,10 @@ function visibleText(steps: StepLike[], retracted: Set<number>): string {
 function assistantTurn(runId: string, steps: StepLike[], retracted: Set<number>, receiptText: string | null): UIMessage {
   const parts: UIMessage["parts"] = [];
   steps.forEach((step, index) => {
-    if (!retracted.has(index) && step.text.trim()) parts.push({ type: "text", text: step.text });
+    // Reasoning is kept (clipped) so the work between iterations can be reviewed later; it is never replayed to the model.
+    const reasoning = step.reasoningText?.trim();
+    if (reasoning && stripForeignScript(reasoning).trim().length > reasoning.length * 0.8) parts.push({ type: "reasoning", text: reasoning.slice(0, 2_000) } as UIMessage["parts"][number]);
+    if (!retracted.has(index) && step.text.trim()) parts.push({ type: "text", text: stripForeignScript(step.text) });
     for (const call of step.toolCalls) {
       const result = step.toolResults.find((item) => item.toolCallId === call.toolCallId);
       if (!result) continue;
@@ -182,8 +202,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     tools: createCozteTools(input.principal, input.runId),
     stopWhen: isStepCount(settings.maxSteps),
     maxOutputTokens: settings.maxOutputTokens,
-    reasoning: settings.reasoning,
-    ...(settings.fallbackModels.length ? { providerOptions: { gateway: { models: settings.fallbackModels } } } : {}),
+    providerOptions: cozteProviderOptions(settings),
     repairToolCall: repairCozteToolCall,
   });
 
@@ -196,8 +215,10 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     const context = { sources: [input.instructions, lastUserText(input.messages)] };
     let verification: Verification = verifyCozteResponse(text, toolRecords(steps), context);
     let modelError = "error" in first ? errorDetails(first.error) : undefined;
+    let corrected = false;
 
     if (!verification.ok && !modelError) {
+      corrected = true;
       await recordCozteEvent(input.runId, "answer_rejected", { pass: 1, issues: verification.issues, response: text.slice(0, 4000) });
       retracted.add(steps.length - 1);
       try {
@@ -219,7 +240,8 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
 
     const records = toolRecords(steps);
     let receiptText: string | null = null;
-    if (!verification.ok || modelError) {
+    // After a correction only hard issues (unbacked saves, invented ids…) discard the answer; minor ones don't.
+    if (modelError || (corrected ? hasHardIssue(verification) : !verification.ok)) {
       await recordCozteEvent(input.runId, "answer_replaced", { issues: verification.issues, modelError, response: text.slice(0, 4000) });
       // Without a read in the turn, the fallback reads the stored state itself so it can still say what is saved.
       const hasRead = records.some((item) => item.name === "readCosts" && item.ok);
