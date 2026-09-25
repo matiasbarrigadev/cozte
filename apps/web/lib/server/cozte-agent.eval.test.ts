@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { experimental_evaluate as evaluate, generateText, isStepCount, type ModelMessage } from "ai";
-import { QUALITY_QUESTIONS, qualityState, summarizeQuality, type QualityAnswers } from "@/lib/cozte-quality";
+import { QUALITY_QUESTIONS, actionableFlags, qualityFeedback, qualityState, summarizeQuality, type QualityAnswers, type QualitySummary } from "@/lib/cozte-quality";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 // Reads AI_GATEWAY_API_KEY and COZTE_* from apps/web/.env.local, the same file `next dev` uses.
@@ -53,7 +53,7 @@ const conversation: Turn[] = [
   { user: "Somos 2 personas en producción, el mes pasado pagamos 1.600.000 de sueldos en total. Hay un tercer socio que trabaja pero cobra solo cuando hay ganancia.",
     // Handled if it says so or records the decision; the final-state check confirms it is not an expense.
     check: (answer, records) => /socio|fundador/i.test(answer) || records.some((item) => item.name === "saveNote" && item.ok) ? null : "no registró ni explicó cómo trata al socio" },
-  { user: "El gas es una garrafa de 110.000 que recargamos una vez por mes y la luz son 350.000 por mes.", expectTools: ["saveExpense"] },
+  { user: "El gas es una garrafa de 110.000 que recargamos una vez por mes y la luz son 350.000 por mes. Los sueldos, el gas y la luz repartilos por horas de producción.", expectTools: ["saveExpense"] },
   { user: "¿Ya quedaron guardados los gastos? No me mientas.", check: (answer, records) => records.some((item) => item.name === "readCosts") || /sí|quedaron|están/i.test(answer) ? null : "no verificó el estado" },
   { user: "¿Cuánto me cuesta hacer un tofu de 300g y qué es lo que más pesa en ese costo?",
     check: (answer, _records, costs) => {
@@ -87,8 +87,30 @@ async function productionTurn(input: { model: string; principal: Principal; hist
     steps = [...steps, ...collect(result.steps)];
     verification = verifyCozteResponse(answerOf(), records(), { sources: [instructions, input.text] });
   }
-  input.history.push(...result.response.messages);
-  return { answer: answerOf(), records: records(), rejected, verified: verification.ok };
+  // Jev review as in production: clear failures get one rewrite that must pass the verifier again.
+  const level = input.level ?? "simple";
+  const review = async (answer: string) => summarizeQuality((await evaluate({ model: "typesafe-ai/jev", state: qualityState({ level, userMessage: input.text, answer, actions: records().map((item) => item.name) }), questions: QUALITY_QUESTIONS })).answers as QualityAnswers);
+  let quality: { first: QualitySummary | null; flags: string[]; revised: QualitySummary | null; kept: "original" | "revised" } = { first: null, flags: [], revised: null, kept: "original" };
+  const turnMessages = [...result.response.messages];
+  if (verification.ok && answerOf()) {
+    const first = await review(answerOf());
+    const asked = steps[finalAnswerStep(steps)]?.toolCalls.some((call) => call.toolName === "askQuestions") ?? false;
+    const flags = asked ? [] : actionableFlags(first, { wrote: records().some((item) => item.write && item.ok) });
+    quality = { first, flags, revised: null, kept: "original" };
+    if (flags.length) {
+      const revision = await pass([...input.history, ...result.response.messages, { role: "user", content: qualityFeedback(flags) }]);
+      const before = steps;
+      steps = [...steps, ...collect(revision.steps)];
+      if (answerOf() && verifyCozteResponse(answerOf(), records(), { sources: [instructions, input.text] }).ok) {
+        turnMessages.push(...revision.response.messages);
+        quality = { ...quality, revised: await review(answerOf()), kept: "revised" };
+      } else {
+        steps = before;
+      }
+    }
+  }
+  input.history.push(...turnMessages);
+  return { answer: answerOf(), records: records(), rejected, verified: verification.ok, quality };
 }
 
 describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, () => {
@@ -227,10 +249,10 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     const failures: string[] = [];
     const transcript: { user: string; tools: string[]; rejected: unknown; answer: string }[] = [];
     const turn = async (text: string, expected: string[]) => {
-      const { answer, records, rejected, verified } = await productionTurn({ model, principal, history, text });
+      const { answer, records, rejected, verified, quality } = await productionTurn({ model, principal, history, text });
       for (const name of expected) if (!records.some((item) => item.name === name && item.ok)) failures.push(`"${text.slice(0, 40)}…": no ejecutó ${name}`);
       if (!verified) failures.push(`"${text.slice(0, 40)}…": respuesta sin respaldo tras la corrección`);
-      transcript.push({ user: text, tools: records.map((item) => item.name + (item.ok ? "" : " (falló)")), rejected, answer });
+      transcript.push({ user: text, tools: records.map((item) => item.name + (item.ok ? "" : " (falló)")), rejected, answer, quality } as never);
       return { records, answer };
     };
     await turn("Vendemos por Instagram. Mercado Pago nos cobra 10 % de cada venta y el envío en moto nos cuesta 1500 por pedido; los pedidos suelen ser de 3 tofus.", ["saveChannel"]);

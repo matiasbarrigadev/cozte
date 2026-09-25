@@ -13,6 +13,7 @@ import type { ProposalSection } from "@/lib/proposal-presentation";
 import { assistantToolOutcome } from "@/lib/assistant-run-activity";
 import { COZTE_COST_WRITE_TOOLS, COZTE_TOOL_LABELS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
 import { activityHeadline, answerTextIndexes, turnActivity, type ActivityItem, type ActivityPart } from "@/lib/cozte-turn-activity";
+import { qualityChecks, type QualitySummary } from "@/lib/cozte-quality";
 import { answered, formatCozteAnswers, parseCozteQuestions, type CozteQuestionAnswer, type CozteQuestionSet } from "@/lib/cozte-questions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -620,6 +621,7 @@ function CozteTurnActivity({ parts, persisted, streaming }: { parts: UIMessage["
     <ol className="flex flex-col gap-2 border-t px-3 py-2.5">
       {items.map((item, index) => item.kind === "reasoning" ? <li key={`reasoning-${index}`}><ActivityReasoning text={item.text} streaming={item.streaming} /></li>
         : item.kind === "note" ? <li key={`note-${index}`}><ActivityText label="Mientras trabajaba" text={item.text} /></li>
+        : item.kind === "quality" ? <li key={`quality-${index}`}><ActivityQuality summary={item.summary} revised={item.revised} /></li>
         : item.kind === "discarded" ? <li key={`draft-${index}`}><ActivityText label="Borrador descartado" detail={item.reason} text={item.text} tone="warning" /></li>
         : <li key={item.toolCallId}><ActivityTool item={item} /></li>)}
       {persisted.map((execution) => <li key={`${execution.runId}:${execution.toolCallId}`}><AssistantMessageToolTag toolName={execution.toolName} persisted={execution} /></li>)}
@@ -635,6 +637,18 @@ function ActivityReasoning({ text, streaming }: { text: string; streaming: boole
     </summary>
     <p className="mt-1 whitespace-pre-wrap pl-4 leading-relaxed text-muted-foreground">{text}</p>
   </details>;
+}
+
+/** Jev's review of the answer: five checks, and whether the answer was rewritten after it. */
+function ActivityQuality({ summary, revised }: { summary: QualitySummary; revised: boolean }) {
+  const checks = qualityChecks(summary);
+  const failed = checks.filter((check) => !check.ok).length;
+  return <div className="flex flex-col gap-1">
+    <p className="flex items-center gap-2"><span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", failed ? "bg-amber-500" : "bg-emerald-500")} /><span className="font-medium text-foreground/80">{revised ? "Revisión de calidad de la versión final" : "Revisión de calidad"}</span></p>
+    <ul className="flex flex-wrap gap-1 pl-3.5" aria-label="Revisión de calidad">
+      {checks.map((check) => <li key={check.label} className={cn("rounded-full border px-2 py-0.5 text-[11px]", check.ok ? "text-muted-foreground" : "border-amber-500/50 text-amber-700 dark:text-amber-400")}>{check.ok ? "✓" : "✗"} {check.label}{check.value ? ` ${check.value}` : ""}</li>)}
+    </ul>
+  </div>;
 }
 
 /** A working note or a discarded draft: one clamped line in the trace, the full text on demand. */

@@ -6,9 +6,9 @@ import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
 import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded, questionsShown } from "@/lib/cozte-tool-catalog";
 import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
 import { cleanLegacyWording, correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
-import { QUALITY_QUESTIONS, qualityState, summarizeQuality, type QualityAnswers } from "@/lib/cozte-quality";
+import { QUALITY_QUESTIONS, actionableFlags, qualityFeedback, qualityLine, qualityMode, qualityState, summarizeQuality, type QualityAnswers, type QualityMode, type QualitySummary } from "@/lib/cozte-quality";
 import type { ExplanationLevel } from "@/lib/cozte-levels";
-import { discardedDraftMetadata } from "@/lib/cozte-turn-activity";
+import { discardedDraftMetadata, qualityNoteMetadata } from "@/lib/cozte-turn-activity";
 import type { Principal } from "./auth";
 import { loadConversation, saveConversation } from "./production-profile";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked, reopenAssistantRunAsFailed } from "./assistant-trace";
@@ -23,6 +23,8 @@ export type CozteAgentSettings = {
   thinkingBudget: number;
   maxSteps: number;
   maxOutputTokens: number;
+  /** Jev review of each answer: "revise" rewrites clear failures once, "observe" only scores, "off" skips it. */
+  qualityMode?: QualityMode;
 };
 
 /** Reads the model configuration outside the workflow sandbox, where environment variables are available. */
@@ -36,6 +38,7 @@ export function cozteAgentSettings(env: Record<string, string | undefined> = pro
     thinkingBudget,
     maxSteps: 24,
     maxOutputTokens: thinkingBudget + 8_000,
+    qualityMode: qualityMode(env.COZTE_QUALITY),
   };
 }
 
@@ -97,20 +100,41 @@ async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   }
 }
 
+type QualityNote = { id: string; summary: QualitySummary; revised: boolean };
+
 /**
- * Scores the finished turn with TypeSafe Jev and records it. Observation only: it never changes the answer,
- * and a failure is logged and ignored.
+ * Reviews an answer with TypeSafe Jev and records the scores. Returns null when the review is unavailable,
+ * so a Jev failure never blocks or changes the answer.
  */
-async function scoreTurnQuality(input: { runId: string; level: ExplanationLevel; userMessage: string; actions: string[]; answer: string }): Promise<void> {
+async function evaluateAnswer(input: { runId: string; level: ExplanationLevel; userMessage: string; actions: string[]; answer: string; pass: "first" | "revised" }): Promise<QualitySummary | null> {
   "use step";
-  if (process.env.COZTE_QUALITY === "off" || !input.answer.trim()) return;
   try {
     const result = await evaluate({ model: process.env.COZTE_QUALITY_MODEL || "typesafe-ai/jev", state: qualityState(input), questions: QUALITY_QUESTIONS, maxRetries: 1, abortSignal: AbortSignal.timeout(15_000) });
     const answers = result.answers as QualityAnswers;
-    await addAssistantEvent(input.runId, "quality_scored", { model: result.response.modelId, level: input.level, ...summarizeQuality(answers), answers });
+    const summary = summarizeQuality(answers);
+    await addAssistantEvent(input.runId, "quality_scored", { pass: input.pass, model: result.response.modelId, level: input.level, ...summary, answers });
+    return summary;
   } catch (error) {
-    await addAssistantEvent(input.runId, "quality_failed", { error: errorDetails(error).slice(0, 300) }).catch(() => {});
+    await addAssistantEvent(input.runId, "quality_failed", { pass: input.pass, error: errorDetails(error).slice(0, 300) }).catch(() => {});
+    return null;
   }
+}
+
+async function writeQualityParts(writer: WritableStreamDefaultWriter<ModelCallStreamPart>, notes: QualityNote[]): Promise<void> {
+  for (const note of notes) {
+    const providerMetadata = qualityNoteMetadata(note.summary, note.revised);
+    await writer.write({ type: "reasoning-start", id: note.id, providerMetadata } as ModelCallStreamPart);
+    await writer.write({ type: "reasoning-delta", id: note.id, text: qualityLine(note.summary), providerMetadata } as ModelCallStreamPart);
+    await writer.write({ type: "reasoning-end", id: note.id, providerMetadata } as ModelCallStreamPart);
+  }
+}
+
+/** Shows the review of the final answer in the collapsed trace. */
+async function writeQualityNote(writable: WritableStream<ModelCallStreamPart>, note: QualityNote): Promise<void> {
+  "use step";
+  const writer = writable.getWriter();
+  try { await writeQualityParts(writer, [note]); }
+  finally { writer.releaseLock(); }
 }
 
 async function readCostOverview(principal: Principal): Promise<Record<string, unknown>> {
@@ -139,13 +163,14 @@ type Draft = { id: string; text: string; reason: string };
  * Takes the last step off the screen and, when it held an answer, leaves it in the trace as a discarded draft.
  * The closing step boundary keeps the draft in place when the next model call resets its own step.
  */
-async function writeRetraction(writer: WritableStreamDefaultWriter<ModelCallStreamPart>, draft: Draft | null): Promise<void> {
+async function writeRetraction(writer: WritableStreamDefaultWriter<ModelCallStreamPart>, draft: Draft | null, notes: QualityNote[] = []): Promise<void> {
   await writer.write({ type: "reset-step" });
   if (!draft) return;
   const providerMetadata = discardedDraftMetadata(draft.reason);
   await writer.write({ type: "reasoning-start", id: draft.id, providerMetadata } as ModelCallStreamPart);
   await writer.write({ type: "reasoning-delta", id: draft.id, text: stripForeignScript(draft.text).slice(0, 4000), providerMetadata } as ModelCallStreamPart);
   await writer.write({ type: "reasoning-end", id: draft.id, providerMetadata } as ModelCallStreamPart);
+  await writeQualityParts(writer, notes);
   await writer.write({ type: "finish-step" } as unknown as ModelCallStreamPart);
   await writer.write({ type: "start-step" } as unknown as ModelCallStreamPart);
 }
@@ -155,10 +180,10 @@ async function writeRetraction(writer: WritableStreamDefaultWriter<ModelCallStre
  * An answer sent together with questions sits behind a step boundary the reset cannot cross; the stored turn is
  * still right, and the screen matches it on the next load.
  */
-async function retractAnswer(writable: WritableStream<ModelCallStreamPart>, draft: Draft): Promise<void> {
+async function retractAnswer(writable: WritableStream<ModelCallStreamPart>, draft: Draft, notes: QualityNote[] = []): Promise<void> {
   "use step";
   const writer = writable.getWriter();
-  try { await writeRetraction(writer, draft); }
+  try { await writeRetraction(writer, draft, notes); }
   finally { writer.releaseLock(); }
 }
 
@@ -225,7 +250,8 @@ function answerDraft(runId: string, steps: StepLike[], retracted: Map<number, st
  * The persisted assistant turn mirrors the screen: each step's reasoning, text and tool receipts in order, discarded
  * drafts with their reason, then any receipt-only answer.
  */
-function assistantTurn(runId: string, steps: StepLike[], retracted: Map<number, string>, receiptText: string | null): UIMessage {
+function assistantTurn(runId: string, steps: StepLike[], retracted: Map<number, string>, receiptText: string | null, quality: { after: Map<number, QualityNote[]>; final: QualityNote | null } = { after: new Map(), final: null }): UIMessage {
+  const note = (item: QualityNote) => ({ type: "reasoning", text: qualityLine(item.summary), providerMetadata: qualityNoteMetadata(item.summary, item.revised) }) as UIMessage["parts"][number];
   const parts: UIMessage["parts"] = [];
   steps.forEach((step, index) => {
     // Reasoning is kept (clipped) so the work between iterations can be reviewed later; it is never replayed to the model.
@@ -241,8 +267,10 @@ function assistantTurn(runId: string, steps: StepLike[], retracted: Map<number, 
       if (!result) continue;
       parts.push({ type: `tool-${call.toolName}`, toolCallId: call.toolCallId, state: "output-available", input: call.input, output: compactToolOutputForHistory(call.toolName, result.output) } as UIMessage["parts"][number]);
     }
+    for (const item of quality.after.get(index) ?? []) parts.push(note(item));
   });
   if (receiptText) parts.push({ type: "text", text: receiptText });
+  if (quality.final) parts.push(note(quality.final));
   return { id: `${receiptText ? COZTE_FALLBACK_ID_PREFIX : COZTE_ASSISTANT_ID_PREFIX}${runId}`, role: "assistant", parts };
 }
 
@@ -277,6 +305,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
   try {
     const first = await agent.stream({ messages: input.messages, writable, preventClose: true, sendFinish: false });
     const steps: StepLike[] = [...first.steps];
+    let conversation = first.messages as ModelMessage[];
     // Answer steps taken off the screen, with the reason: they stay in the trace as discarded drafts.
     const retracted = new Map<number, string>();
     let text = answerText(steps, retracted);
@@ -302,6 +331,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
           stopWhen: [isStepCount(Math.max(4, Math.floor(settings.maxSteps / 2))), questionsShown],
         });
         steps.push(...second.steps);
+        conversation = second.messages as ModelMessage[];
         text = answerText(steps, retracted);
         verification = verifyCozteResponse(text, toolRecords(steps), context);
         if ("error" in second) modelError = errorDetails(second.error);
@@ -324,20 +354,64 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
       await writeReceiptAnswer(writable, receiptText, `receipt-${input.runId}`, replaced?.draft ?? null);
       text = receiptText;
     }
+    // Quality review with Jev: the verifier already vouched for the facts; Jev judges whether the answer serves the
+    // person (answers, explains its assumptions, teaches, fits their level, reads clearly). Clear failures get one
+    // rewrite that must pass the verifier again; otherwise the verified original stays.
+    const qualityAfter = new Map<number, QualityNote[]>();
+    let finalQuality: QualityNote | null = null;
+    if (!receiptText && text.trim() && settings.qualityMode !== "off") {
+      const level = input.level ?? "simple";
+      const review = (answer: string, pass: "first" | "revised") => evaluateAnswer({
+        runId: input.runId, level, userMessage: lastUserText(input.messages), answer: cleanLegacyWording(answer), pass,
+        actions: toolRecords(steps).map((item) => {
+          const done = (item.output as { done?: unknown } | null)?.done;
+          return `${item.name}${item.ok ? "" : " (falló)"}${Array.isArray(done) && done.length ? `: ${done.map(String).join("; ")}` : ""}`;
+        }),
+      });
+      const firstReview = await review(text, "first");
+      // A turn that ends with questions shows a form Jev cannot see: it is scored, never rewritten.
+      const askedQuestions = steps[finalAnswerStep(steps)]?.toolCalls.some((call) => call.toolName === "askQuestions") ?? false;
+      const flags = firstReview && settings.qualityMode === "revise" && !askedQuestions ? actionableFlags(firstReview, { wrote: records.some((item) => item.write && item.ok) }) : [];
+      const original = flags.length ? answerDraft(input.runId, steps, retracted, `Revisión de calidad: ${flags.join(", ")}`) : null;
+      if (firstReview && original) {
+        const firstNote = { id: `quality-${input.runId}-first`, summary: firstReview, revised: false };
+        retracted.set(original.index, original.draft.reason);
+        qualityAfter.set(original.index, [firstNote]);
+        await retractAnswer(writable, original.draft, [firstNote]);
+        await recordCozteEvent(input.runId, "quality_revision", { flags, response: text.slice(0, 4000) });
+        let revisedText = "";
+        try {
+          const revision = await agent.stream({
+            messages: [...conversation.filter((message) => message.role !== "system"), { role: "user", content: qualityFeedback(flags) }],
+            writable, preventClose: true, sendFinish: false, stopWhen: [isStepCount(3), questionsShown],
+          });
+          steps.push(...revision.steps);
+          revisedText = "error" in revision ? "" : answerText(steps, retracted);
+        } catch { revisedText = ""; }
+        if (revisedText && verifyCozteResponse(revisedText, toolRecords(steps), context).ok) {
+          text = revisedText;
+          const secondReview = await review(revisedText, "revised");
+          if (secondReview) finalQuality = { id: `quality-${input.runId}-revised`, summary: secondReview, revised: true };
+        } else {
+          // The rewrite did not hold up: the verified original comes back.
+          retracted.delete(original.index);
+          const failed = answerDraft(input.runId, steps, retracted, "La versión revisada no pasó la verificación");
+          if (failed && failed.index !== original.index) retracted.set(failed.index, failed.draft.reason);
+          await writeReceiptAnswer(writable, cleanLegacyWording(stripForeignScript(original.draft.text)), `restored-${input.runId}`, failed && failed.index !== original.index ? failed.draft : null);
+          await recordCozteEvent(input.runId, "quality_revision_rejected", {});
+        }
+      } else if (firstReview) {
+        finalQuality = { id: `quality-${input.runId}-first`, summary: firstReview, revised: false };
+      }
+      if (finalQuality) await writeQualityNote(writable, finalQuality);
+    }
     await closeCozteStream(writable);
-    const assistantMessage = assistantTurn(input.runId, steps, retracted, receiptText);
+    const assistantMessage = assistantTurn(input.runId, steps, retracted, receiptText, { after: qualityAfter, final: finalQuality });
     await finalizeCozteRun({
       principal: input.principal, runId: input.runId,
       messages: [...input.persistedMessages, assistantMessage],
       status: modelError && !records.length ? "failed" : "completed",
       error: modelError, responseText: text,
-    });
-    await scoreTurnQuality({
-      runId: input.runId, level: input.level ?? "simple", userMessage: lastUserText(input.messages), answer: cleanLegacyWording(text),
-      actions: records.map((item) => {
-        const done = (item.output as { done?: unknown } | null)?.done;
-        return `${item.name}${item.ok ? "" : " (falló)"}${Array.isArray(done) && done.length ? `: ${done.map(String).join("; ")}` : ""}`;
-      }),
     });
   } catch (error) {
     await recordCozteEvent(input.runId, "stream_error", { error: errorDetails(error) }).catch((traceError) => console.error("Cozte workflow error trace failed", errorDetails(traceError)));

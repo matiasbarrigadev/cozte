@@ -61,3 +61,52 @@ export function summarizeQuality(answers: QualityAnswers) {
     teaches: score("teaches"), levelFit: fit?.choice ?? null, clarity: score("clarity"), flags,
   };
 }
+
+export type QualitySummary = ReturnType<typeof summarizeQuality>;
+export type QualityMode = "off" | "observe" | "revise";
+
+export function qualityMode(value: string | undefined): QualityMode {
+  return value === "off" || value === "observe" ? value : "revise";
+}
+
+/**
+ * The failures worth a rewrite. "Decided without explaining" only counts when the turn saved something:
+ * explaining a cost involves no decision to justify, and Jev sometimes flags it anyway.
+ */
+export function actionableFlags(summary: QualitySummary, context: { wrote: boolean }): string[] {
+  return summary.flags.filter((flag) => flag !== "decidió sin explicar" || context.wrote);
+}
+
+const FEEDBACK: Record<string, string> = {
+  "no responde lo pedido": "No responde directamente lo que la persona preguntó: respóndelo primero, en una o dos frases.",
+  "decidió sin explicar": "Tomaste una decisión o supuesto en su nombre sin decir por qué ni cómo cambiarlo: agrégalo en una frase.",
+  "muy técnica para el nivel": "Es demasiado técnica para su nivel: usa palabras simples y explica cada término que no puedas evitar.",
+  "muy básica para el nivel": "Es demasiado básica o larga para su nivel: sé más concisa y usa el vocabulario técnico que maneja.",
+  "poco clara": "Cuesta leerla: ordénala para que el resultado se entienda de un vistazo.",
+};
+
+/** Internal note for the rewrite: what to improve, keeping every fact and figure of the verified answer. */
+export function qualityFeedback(flags: string[]): string {
+  return [
+    "[Nota interna de Cozte: la persona no la ve y no debes mencionarla]",
+    "Tu respuesta es correcta en los datos, pero se puede mejorar para la persona:",
+    ...flags.map((flag) => `- ${FEEDBACK[flag] ?? flag}`),
+    "Reescribe el mensaje final completo conservando las mismas cifras y lo que hiciste. No llames herramientas salvo que falte algo imprescindible, no digas que reescribes ni menciones esta nota.",
+  ].join("\n");
+}
+
+/** The five checks as short labels, for the collapsed work trace. */
+export function qualityChecks(summary: QualitySummary): { label: string; ok: boolean; value?: string }[] {
+  const scoreText = (value: number | null) => value === null ? "—" : `${Math.round(value * 10) / 10}/2`;
+  return [
+    { label: "Responde lo pedido", ok: (summary.answersRequest ?? 2) >= 1.2 },
+    { label: "Explica sus supuestos", ok: (summary.explainsAssumptions ?? 1) >= 0.35 },
+    { label: "Enseña", ok: (summary.teaches ?? 2) >= 1, value: scoreText(summary.teaches) },
+    { label: "A tu nivel", ok: summary.levelFit === null || summary.levelFit === "fits" || !summary.flags.some((flag) => flag.includes("para el nivel")) },
+    { label: "Clara", ok: (summary.clarity ?? 2) >= 1 },
+  ];
+}
+
+export function qualityLine(summary: QualitySummary): string {
+  return qualityChecks(summary).map((check) => `${check.label} ${check.ok ? "✓" : "✗"}${check.value ? ` (${check.value})` : ""}`).join(" · ");
+}

@@ -1,4 +1,5 @@
 import { COZTE_TOOL_LABELS } from "./cozte-tool-catalog";
+import type { QualitySummary } from "./cozte-quality";
 
 /** Minimal shape of the UI message parts this module reads (text, reasoning and tool parts). */
 export type ActivityPart = { type: string; text?: string; state?: string; input?: unknown; output?: unknown; errorText?: string; toolCallId?: string; providerMetadata?: unknown };
@@ -7,6 +8,7 @@ export type ActivityItem =
   | { kind: "reasoning"; text: string; streaming: boolean }
   | { kind: "note"; text: string }
   | { kind: "discarded"; text: string; reason: string }
+  | { kind: "quality"; summary: QualitySummary; revised: boolean }
   | { kind: "tool"; toolCallId: string; name: string; label: string; running: boolean; failed: boolean; needsInput: boolean; summary: string; input?: unknown; output?: unknown; errorText?: string };
 
 const running: Record<string, string> = {
@@ -97,6 +99,17 @@ export function discardedDraftMetadata(reason: string) {
   return { cozte: { kind: "discarded", reason } };
 }
 
+/** Jev's review of an answer travels the same way: shown in the trace, never replayed to the model. */
+export function qualityNoteMetadata(summary: QualitySummary, revised: boolean) {
+  return { cozte: { kind: "quality", revised, summary } };
+}
+
+function qualityNote(part: ActivityPart): { summary: QualitySummary; revised: boolean } | null {
+  if (part.type !== "reasoning" || !part.providerMetadata || typeof part.providerMetadata !== "object") return null;
+  const cozte = (part.providerMetadata as Record<string, unknown>).cozte as Record<string, unknown> | undefined;
+  return cozte?.kind === "quality" && cozte.summary && typeof cozte.summary === "object" ? { summary: cozte.summary as QualitySummary, revised: cozte.revised === true } : null;
+}
+
 function discardedDraft(part: ActivityPart): { reason: string } | null {
   if (part.type !== "reasoning" || !part.providerMetadata || typeof part.providerMetadata !== "object") return null;
   const cozte = (part.providerMetadata as Record<string, unknown>).cozte as Record<string, unknown> | undefined;
@@ -124,6 +137,8 @@ export function turnActivity(parts: ActivityPart[], streaming = false): Activity
   const items: ActivityItem[] = [];
   const answer = answerTextIndexes(parts, streaming);
   parts.forEach((part, index) => {
+    const quality = qualityNote(part);
+    if (quality) { items.push({ kind: "quality", ...quality }); return; }
     const draft = discardedDraft(part);
     if (draft) {
       if (part.text?.trim()) items.push({ kind: "discarded", text: part.text.trim(), reason: draft.reason });
@@ -154,8 +169,10 @@ export function activityHeadline(items: ActivityItem[]): string {
   const active = items.findLast((item) => item.kind === "tool" && item.running);
   if (active && active.kind === "tool") return active.summary;
   const tools = items.filter((item): item is Extract<ActivityItem, { kind: "tool" }> => item.kind === "tool");
-  const drafts = items.filter((item) => item.kind === "discarded").length;
-  if (!tools.length && !drafts) return items.some((item) => item.kind === "reasoning" && item.streaming) ? "Pensando…" : "Razonamiento";
+  // Drafts rewritten for quality are counted as an improvement, not as a correction.
+  const drafts = items.filter((item) => item.kind === "discarded" && !item.reason.startsWith("Revisión de calidad")).length;
+  const improved = items.some((item) => item.kind === "discarded" && item.reason.startsWith("Revisión de calidad"));
+  if (!tools.length && !drafts && !improved) return items.some((item) => item.kind === "reasoning" && item.streaming) ? "Pensando…" : "Razonamiento";
   const counts = new Map<string, number>();
   for (const tool of tools) if (!tool.failed && !tool.needsInput) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
   const phrases = [...counts].map(([name, count]) => {
@@ -167,6 +184,7 @@ export function activityHeadline(items: ActivityItem[]): string {
   const failed = tools.filter((tool) => tool.failed).length;
   if (failed) phrases.push(failed === 1 ? "1 paso falló" : `${failed} pasos fallaron`);
   if (drafts) phrases.push(drafts === 1 ? "corrigió 1 borrador" : `corrigió ${drafts} borradores`);
+  if (improved) phrases.push("mejoró la respuesta");
   const text = phrases.join(" · ");
   return text.charAt(0).toLocaleUpperCase("es") + text.slice(1);
 }
