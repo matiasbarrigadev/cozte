@@ -26,7 +26,7 @@ vi.mock("./assistant-trace", async (original) => ({ ...(await original<typeof im
 vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOString(), rates: { USD: 1 }, source: "FXRatesAPI" }), quotesFor: () => ({}) }));
 
 import { COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
-import { correctionMessage, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
+import { correctionMessage, finalAnswerStep, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
 import { createCozteTools } from "./cozte-agent-tools";
 import { buildCozteInstructions } from "./cozte-instructions";
 import { cozteAgentSettings, cozteProviderOptions } from "./cozte-workflow";
@@ -38,6 +38,8 @@ import { formatCozteAnswers, parseCozteQuestions } from "@/lib/cozte-questions";
 
 type EngineCost = { name: string; unitCost: number | null };
 type Turn = { user: string; expectTools?: string[]; check?: (answer: string, records: TurnToolRecord[], costs: EngineCost[]) => string | null };
+/** Phrases about the harness itself that must never reach the person's final message. */
+const metaTalk = /(?<![\p{L}])(?:en este turno no|no pude ejecutar|ten[eé]s raz[oó]n|tienes raz[oó]n|me adelant[eé]|verificaci[oó]n autom[aá]tica|nota interna)(?![\p{L}])/iu;
 
 /** "1.070", "1070" or "1,070" all count as quoting the engine figure. */
 const mentions = (answer: string, value: number) => [String(value), value.toLocaleString("es-AR"), value.toLocaleString("en-US")].some((form) => answer.includes(form));
@@ -95,20 +97,20 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       });
       let result = await pass(history);
       // Plain copies: StepResult exposes its fields as getters, which a spread would lose.
-      type StepView = { text: string; toolResults: { toolName: string; output: unknown }[] };
-      const view = (list: typeof result.steps): StepView[] => list.map((step) => ({ text: step.text, toolResults: step.toolResults.map((item) => ({ toolName: item.toolName, output: item.output })) }));
+      type StepView = { text: string; toolCalls: { toolName: string }[]; toolResults: { toolName: string; output: unknown }[] };
+      const view = (list: typeof result.steps): StepView[] => list.map((step) => ({ text: step.text, toolCalls: step.toolCalls.map((call) => ({ toolName: call.toolName })), toolResults: step.toolResults.map((item) => ({ toolName: item.toolName, output: item.output })) }));
       let steps = view(result.steps);
       const records = () => steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), write: COZTE_WRITE_TOOLS.has(item.toolName), output: item.output })));
       const context = { sources: [instructions, turn.user] };
-      // Like the workflow: every step's text is visible, so all of it is verified and kept; a rejected final step is dropped.
-      const visible = (list: StepView[]) => list.map((step) => step.text.trim()).filter(Boolean).join("\n\n");
-      let verification = verifyCozteResponse(visible(steps), records(), context);
+      // Like the workflow: the answer is the closing step's text; notes written before tools stay in the trace.
+      const visible = (list: StepView[]) => { const at = finalAnswerStep(list); return at >= 0 ? list[at].text.trim() : ""; };
       let answer = visible(steps);
+      let verification = verifyCozteResponse(answer, records(), context);
       const rejectedAnswer = verification.ok ? null : { text: answer, issues: verification.issues.map((issue) => issue.code) };
       if (!verification.ok) {
         rejected++;
         result = await pass([...history, ...result.response.messages, { role: "user", content: correctionMessage(verification) }]);
-        steps = [...steps.slice(0, -1), { ...steps.at(-1)!, text: "" }, ...view(result.steps)];
+        steps = [...steps, ...view(result.steps)];
         answer = visible(steps);
         verification = verifyCozteResponse(answer, records(), context);
         if (!verification.ok) failures.push(`turno ${index + 1}: respuesta sin respaldo tras corrección (${verification.issues.map((item) => item.code).join(", ")})`);
@@ -119,6 +121,7 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       for (const expected of turn.expectTools ?? []) if (!turnRecords.some((item) => item.name === expected && item.ok)) failures.push(`turno ${index + 1}: no ejecutó ${expected} con éxito`);
       const latest = await loadState(principal);
       const engineCosts = calculateCosts(latest).map((cost) => ({ name: latest.products.find((item) => item.id === cost.productId)?.name ?? "", unitCost: cost.unitMinor }));
+      if (metaTalk.test(answer)) failures.push(`turno ${index + 1}: el mensaje final habla del proceso ("${answer.match(metaTalk)![0]}")`);
       const problem = turn.check?.(answer, turnRecords, engineCosts);
       if (problem) failures.push(`turno ${index + 1}: ${problem}`);
       transcript.push({ user: turn.user, tools: turnRecords.map((item) => `${item.name}${item.ok ? "" : " (falló)"}`), rejected: rejectedAnswer, answer });

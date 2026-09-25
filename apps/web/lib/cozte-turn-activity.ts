@@ -1,10 +1,12 @@
 import { COZTE_TOOL_LABELS } from "./cozte-tool-catalog";
 
 /** Minimal shape of the UI message parts this module reads (text, reasoning and tool parts). */
-export type ActivityPart = { type: string; text?: string; state?: string; input?: unknown; output?: unknown; errorText?: string; toolCallId?: string };
+export type ActivityPart = { type: string; text?: string; state?: string; input?: unknown; output?: unknown; errorText?: string; toolCallId?: string; providerMetadata?: unknown };
 
 export type ActivityItem =
   | { kind: "reasoning"; text: string; streaming: boolean }
+  | { kind: "note"; text: string }
+  | { kind: "discarded"; text: string; reason: string }
   | { kind: "tool"; toolCallId: string; name: string; label: string; running: boolean; failed: boolean; needsInput: boolean; summary: string; input?: unknown; output?: unknown; errorText?: string };
 
 const running: Record<string, string> = {
@@ -67,10 +69,50 @@ export function toolOutcomeLine(name: string, output: unknown, errorText?: strin
 /** Reasoning in another script (models sometimes think in Chinese) is not shown to the person. */
 const readableReasoning = (text: string) => text.trim().length > 0 && !/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text);
 
-/** Ordered work trace of an assistant message: reasoning and tool calls, without the answer text. */
+/**
+ * A draft answer the verifier took off the screen travels as a reasoning part with this metadata: it stays
+ * reviewable in the collapsed trace and, like all reasoning, is never replayed to the model.
+ */
+export function discardedDraftMetadata(reason: string) {
+  return { cozte: { kind: "discarded", reason } };
+}
+
+function discardedDraft(part: ActivityPart): { reason: string } | null {
+  if (part.type !== "reasoning" || !part.providerMetadata || typeof part.providerMetadata !== "object") return null;
+  const cozte = (part.providerMetadata as Record<string, unknown>).cozte as Record<string, unknown> | undefined;
+  return cozte?.kind === "discarded" ? { reason: typeof cozte.reason === "string" ? cozte.reason : "" } : null;
+}
+
+const isWorkTool = (part: ActivityPart) => part.type.startsWith("tool-") && part.type !== "tool-askQuestions";
+const hasText = (part: ActivityPart) => part.type === "text" && Boolean(part.text?.trim());
+
+/**
+ * Which text parts are the answer the person reads: the ones after the turn's last working tool call.
+ * Text written before a tool is a working note and goes in the trace; asking questions ends a turn, it is not work.
+ * Older turns sometimes ran a tool after answering, so once the reply is complete their last text still counts.
+ */
+export function answerTextIndexes(parts: ActivityPart[], streaming = false): Set<number> {
+  const lastWork = parts.findLastIndex(isWorkTool);
+  const after = parts.flatMap((part, index) => index > lastWork && hasText(part) ? [index] : []);
+  if (after.length || streaming) return new Set(after);
+  const last = parts.findLastIndex(hasText);
+  return new Set(last >= 0 ? [last] : []);
+}
+
+/** Ordered work trace of an assistant message: reasoning, working notes, discarded drafts and tool calls, without the answer. */
 export function turnActivity(parts: ActivityPart[], streaming = false): ActivityItem[] {
   const items: ActivityItem[] = [];
+  const answer = answerTextIndexes(parts, streaming);
   parts.forEach((part, index) => {
+    const draft = discardedDraft(part);
+    if (draft) {
+      if (part.text?.trim()) items.push({ kind: "discarded", text: part.text.trim(), reason: draft.reason });
+      return;
+    }
+    if (part.type === "text") {
+      if (hasText(part) && !answer.has(index)) items.push({ kind: "note", text: part.text!.trim() });
+      return;
+    }
     if (part.type === "reasoning" && typeof part.text === "string" && readableReasoning(part.text)) {
       items.push({ kind: "reasoning", text: part.text.trim(), streaming: streaming && index === parts.length - 1 });
       return;
@@ -92,7 +134,8 @@ export function activityHeadline(items: ActivityItem[]): string {
   const active = items.findLast((item) => item.kind === "tool" && item.running);
   if (active && active.kind === "tool") return active.summary;
   const tools = items.filter((item): item is Extract<ActivityItem, { kind: "tool" }> => item.kind === "tool");
-  if (!tools.length) return items.some((item) => item.kind === "reasoning" && item.streaming) ? "Pensando…" : "Razonamiento";
+  const drafts = items.filter((item) => item.kind === "discarded").length;
+  if (!tools.length && !drafts) return items.some((item) => item.kind === "reasoning" && item.streaming) ? "Pensando…" : "Razonamiento";
   const counts = new Map<string, number>();
   for (const tool of tools) if (!tool.failed && !tool.needsInput) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
   const phrases = [...counts].map(([name, count]) => {
@@ -103,6 +146,7 @@ export function activityHeadline(items: ActivityItem[]): string {
   if (pending) phrases.push(pending === 1 ? "faltó un dato" : `faltaron ${pending} datos`);
   const failed = tools.filter((tool) => tool.failed).length;
   if (failed) phrases.push(failed === 1 ? "1 paso falló" : `${failed} pasos fallaron`);
+  if (drafts) phrases.push(drafts === 1 ? "corrigió 1 borrador" : `corrigió ${drafts} borradores`);
   const text = phrases.join(" · ");
   return text.charAt(0).toLocaleUpperCase("es") + text.slice(1);
 }

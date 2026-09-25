@@ -54,7 +54,7 @@ const illustrative = /(?<![\p{L}])(?:por ejemplo|ejemplo|supongamos|imagin[aá]|
 
 /** Announcing an imminent action ("voy a guardar", "ahora ejecuto") and then ending the turn without doing it. */
 const announcedAction = /(?<![\p{L}\p{N}])(?:(?:voy a|vamos a|procedo a|paso a|ahora mismo|ahora)\s+(?:\p{L}+\s+){0,2}?(?:guardar|registrar|crear|cargar|actualizar|ejecutar|agregar|aplicar|llamar|invocar)|(?:pruebo|ejecuto|guardo|actualizo|aplico|agrego|invoco))(?![\p{L}\p{N}])/iu;
-const waitsForPerson = /\?\s*$|(?<![\p{L}\p{N}])(?:cuando|apenas|en cuanto|si me|si confirmas|si quieres|si quer[eé]s|cuando me)(?![\p{L}\p{N}])/iu;
+const waitsForPerson = /\?\s*$|(?<![\p{L}\p{N}])(?:cuando|apenas|en cuanto|si me|si confirmas|si quieres|si quer[eé]s|cuando me|m[aá]s adelante|antes de (?:guardar|seguir|cargar)|falta(?:n)? (?:definir|saber|confirmar))(?![\p{L}\p{N}])/iu;
 
 const negatedContext = /(?:(?<![\p{L}\p{N}])(?:no|nada|ni|aún no|todavía no|nunca|sin|antes de|para|puedo|podemos|podría|voy a|vamos a|quieres que|quer[eé]s que|si|cuando)\s+|¿\s*)(?:\S+\s+){0,2}$/iu;
 
@@ -149,17 +149,48 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
   return { ok: issues.length === 0, issues, mustUseTools: issues.some((issue) => issue.code === "unbacked-write-claim" || issue.code === "announced-not-executed" || issue.code === "unverified-figures") };
 }
 
-/** Feedback sent back to the model when the answer does not match the turn's evidence. */
+/**
+ * Index of the step whose text is the turn's answer: the last one, unless it stopped to run tools
+ * (asking the person questions ends a turn; it is not work). Text written before tools is a working note.
+ */
+export function finalAnswerStep(steps: { toolCalls: { toolName: string }[] }[]): number {
+  const last = steps.length - 1;
+  return last >= 0 && steps[last].toolCalls.every((call) => call.toolName === "askQuestions") ? last : -1;
+}
+
+const DISCARD_REASONS: Record<VerificationIssue["code"], string> = {
+  "unbacked-write-claim": "Decía que había guardado algo que no se guardó.",
+  "announced-not-executed": "Anunciaba una acción que no llegó a hacer.",
+  "unverified-figures": "Mostraba montos que no salían del cálculo.",
+  "unknown-identifier": "Mostraba un código interno.",
+  "internal-detail": "Usaba nombres internos del sistema.",
+  "empty-answer": "Quedó sin mensaje final.",
+};
+
+/** Plain-language reason shown next to a discarded draft in the collapsed work trace. */
+export function discardReason(verification: Verification): string {
+  const issue = verification.issues.find((item) => HARD_ISSUES.has(item.code)) ?? verification.issues[0];
+  return issue ? DISCARD_REASONS[issue.code] : "No coincidía con lo que pasó.";
+}
+
+const INTERNAL_NOTE = "[Nota interna de Cozte: la persona no la ve y no debes mencionarla]";
+
+/** Feedback sent back to the model when the answer does not match the turn's evidence, or is missing. */
 export function correctionMessage(verification: Verification): string {
-  const lines = verification.issues.map((issue) => `- ${issue.detail}`);
+  if (verification.issues.length && verification.issues.every((issue) => issue.code === "empty-answer")) {
+    return [
+      INTERNAL_NOTE,
+      "Terminaste de trabajar sin escribir el mensaje final. Escríbelo ahora, breve y completo: qué hiciste según los resultados de las herramientas, cómo queda el costo y cuál es el próximo paso. Usa herramientas solo si falta algo imprescindible.",
+    ].join("\n");
+  }
   return [
-    "[Verificación automática de Cozte — no la escribió la persona]",
-    "Tu respuesta anterior no se mostró porque no coincide con lo que realmente pasó en este turno:",
-    ...lines,
+    INTERNAL_NOTE,
+    "Tu borrador no se mostró porque no coincide con lo que pasó:",
+    ...verification.issues.map((issue) => `- ${issue.detail}`),
     verification.mustUseTools
-      ? "Si la persona pidió guardar algo y tienes los datos, ejecuta ahora la herramienta que corresponde y responde según su resultado. Si pregunta qué quedó guardado, lee primero el estado actual y responde con esa lectura. Si falta un dato, no afirmes que guardaste: pregunta solo lo indispensable."
-      : "Vuelve a responder a la persona sin esos problemas.",
-    "Escribe tu respuesta completa desde cero, como si fuera la primera: no te disculpes, no digas \"tenés razón\" ni hagas referencia a un mensaje anterior o a esta verificación, y no uses nombres internos. La persona espera la respuesta a su pregunta.",
+      ? "Si la persona pidió guardar algo y tienes los datos, ejecuta ahora la herramienta que corresponde y responde según su resultado. Si pregunta qué quedó guardado, lee primero el estado actual y responde con esa lectura. Si falta un dato, pregúntalo sin afirmar que guardaste."
+      : "Vuelve a escribir la respuesta sin esos problemas.",
+    "Lo que escribas al terminar es el mensaje final que verá la persona: escríbelo completo, como si fuera tu primera respuesta, y conserva lo que tu borrador explicaba bien. No menciones esta nota, ni borradores, ni lo que pasó \"en este turno\"; no te disculpes ni digas que tiene razón, y no uses nombres internos.",
   ].join("\n");
 }
 
@@ -174,7 +205,7 @@ export function receiptOnlyAnswer(records: TurnToolRecord[]): string {
     return typeof output?.error === "string" ? output.error : "Un cambio no se pudo guardar.";
   });
   const lines = [
-    done.length ? `Esto quedó guardado: ${done.join("; ")}.` : "En este turno no guardé cambios.",
+    done.length ? `Esto quedó guardado: ${done.join("; ")}.` : "No llegué a guardar cambios.",
     failed.length ? `No se guardó: ${[...new Set(failed)].join(" ")}` : "",
     storedSummary(records),
     "Si quieres, dime qué dato registrar o revisar y sigo.",

@@ -52,4 +52,20 @@ describe("model history", () => {
     expect(result[3].parts.map((part) => part.type)).toEqual(["text"]);
     expect(compactCozteConversation([history[4]])[0].parts.map((part) => part.type)).toEqual(["reasoning", "text"]);
   });
+
+  it("replays only each turn's answer and tools, never working notes or discarded drafts", async () => {
+    const { modelHistory } = await import("./cozte-conversation-memory");
+    const { discardedDraftMetadata } = await import("./cozte-turn-activity");
+    const turn = { id: "cozte-v2-run5", role: "assistant", parts: [
+      { type: "reasoning", text: "Listo, guardé la nafta.", providerMetadata: discardedDraftMetadata("Decía que había guardado algo que no se guardó.") },
+      { type: "text", text: "En este turno no se guardaron cambios." },
+      { type: "tool-saveExpense", toolCallId: "n1", state: "output-available", input: { name: "Nafta", amount: 40000, splitBy: "hours" }, output: { ok: true, done: ["Gasto Nafta creado"] } },
+      { type: "text", text: "Guardé la nafta del generador." },
+    ] } as unknown as UIMessage;
+    const [replayed] = modelHistory([turn]);
+    expect(replayed.parts.map((part) => part.type === "text" ? part.text : part.type)).toEqual(["tool-saveExpense", "Guardé la nafta del generador."]);
+    // The stored turn keeps the draft and its marker so the trace can show it after a reload.
+    const [stored] = compactCozteConversation([turn]);
+    expect(stored.parts[0]).toMatchObject({ type: "reasoning", providerMetadata: { cozte: { kind: "discarded" } } });
+  });
 });

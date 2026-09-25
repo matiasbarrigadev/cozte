@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import { COZTE_TOOL_NAMES } from "./cozte-tool-catalog";
+import { answerTextIndexes, type ActivityPart } from "./cozte-turn-activity";
 
 export const COZTE_MAX_HISTORY_MESSAGES = 80;
 export const COZTE_MAX_HISTORY_BYTES = 90_000;
@@ -37,7 +38,8 @@ type Part = UIMessage["parts"][number];
 
 function compactPart(part: Part): Part | null {
   if (part.type === "text") return { type: "text", text: part.text.slice(0, 8000) };
-  if (part.type === "reasoning") return part.text.trim() ? { type: "reasoning", text: part.text.slice(0, 2000) } as Part : null;
+  // Metadata marks discarded drafts, which keep a little more room so the person can read what was corrected.
+  if (part.type === "reasoning") return part.text.trim() ? { type: "reasoning", text: part.text.slice(0, part.providerMetadata ? 4000 : 2000), ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {}) } as Part : null;
   if (!part.type.startsWith("tool-")) return null;
   const tool = part as Extract<Part, { type: `tool-${string}` }> & { state?: string; input?: unknown; output?: unknown; toolCallId: string };
   const toolName = part.type.slice("tool-".length);
@@ -74,8 +76,10 @@ export const COZTE_FALLBACK_ID_PREFIX = "cozte-v2-fallback-";
 export function modelHistory(messages: UIMessage[]): UIMessage[] {
   return messages.flatMap((message) => {
     if (message.role !== "assistant") return [message];
-    // Stored reasoning is for the person to review; replaying it would feed old thinking back to the model.
-    message = { ...message, parts: message.parts.filter((part) => part.type !== "reasoning") };
+    // Stored reasoning and discarded drafts are for the person to review; working notes written before a tool are
+    // superseded by the turn's answer. Replaying either would feed stale or wrong text back to the model.
+    const answer = answerTextIndexes(message.parts as ActivityPart[]);
+    message = { ...message, parts: message.parts.filter((part, index) => part.type !== "reasoning" && (part.type !== "text" || answer.has(index))) };
     const tools = message.parts.filter((part) => part.type.startsWith("tool-"));
     if (message.id.startsWith(COZTE_FALLBACK_ID_PREFIX)) return tools.length ? [{ ...message, parts: tools }] : [];
     // Verified turns carry the prefix; earlier verified turns are recognizable by their real tool receipts.

@@ -5,7 +5,8 @@ import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
 import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
 import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
-import { correctionMessage, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
+import { correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
+import { discardedDraftMetadata } from "@/lib/cozte-turn-activity";
 import type { Principal } from "./auth";
 import { loadConversation, saveConversation } from "./production-profile";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked, reopenAssistantRunAsFailed } from "./assistant-trace";
@@ -113,12 +114,41 @@ async function closeCozteStream(writable: WritableStream<ModelCallStreamPart>): 
   await writable.close();
 }
 
+type Draft = { id: string; text: string; reason: string };
+
+/**
+ * Takes the last step off the screen and, when it held an answer, leaves it in the trace as a discarded draft.
+ * The closing step boundary keeps the draft in place when the next model call resets its own step.
+ */
+async function writeRetraction(writer: WritableStreamDefaultWriter<ModelCallStreamPart>, draft: Draft | null): Promise<void> {
+  await writer.write({ type: "reset-step" });
+  if (!draft) return;
+  const providerMetadata = discardedDraftMetadata(draft.reason);
+  await writer.write({ type: "reasoning-start", id: draft.id, providerMetadata } as ModelCallStreamPart);
+  await writer.write({ type: "reasoning-delta", id: draft.id, text: stripForeignScript(draft.text).slice(0, 4000), providerMetadata } as ModelCallStreamPart);
+  await writer.write({ type: "reasoning-end", id: draft.id, providerMetadata } as ModelCallStreamPart);
+  await writer.write({ type: "finish-step" } as unknown as ModelCallStreamPart);
+  await writer.write({ type: "start-step" } as unknown as ModelCallStreamPart);
+}
+
+/**
+ * Moves a rejected answer from the screen into the trace before the correction pass writes the new one.
+ * An answer sent together with questions sits behind a step boundary the reset cannot cross; the stored turn is
+ * still right, and the screen matches it on the next load.
+ */
+async function retractAnswer(writable: WritableStream<ModelCallStreamPart>, draft: Draft): Promise<void> {
+  "use step";
+  const writer = writable.getWriter();
+  try { await writeRetraction(writer, draft); }
+  finally { writer.releaseLock(); }
+}
+
 /** Replaces the unverified last step on screen with an answer built only from tool receipts. */
-async function writeReceiptAnswer(writable: WritableStream<ModelCallStreamPart>, text: string, id: string): Promise<void> {
+async function writeReceiptAnswer(writable: WritableStream<ModelCallStreamPart>, text: string, id: string, draft: Draft | null): Promise<void> {
   "use step";
   const writer = writable.getWriter();
   try {
-    await writer.write({ type: "reset-step" });
+    await writeRetraction(writer, draft);
     await writer.write({ type: "text-start", id } as ModelCallStreamPart);
     await writer.write({ type: "text-delta", id, text } as ModelCallStreamPart);
     await writer.write({ type: "text-end", id } as ModelCallStreamPart);
@@ -156,20 +186,38 @@ function toolRecords(steps: StepLike[]): TurnToolRecord[] {
   })));
 }
 
-/** Text the person sees: every step's text in order, except steps whose text was retracted from the screen. */
-function visibleText(steps: StepLike[], retracted: Set<number>): string {
-  return steps.map((step, index) => retracted.has(index) ? "" : step.text.trim()).filter(Boolean).join("\n\n");
+/**
+ * The answer the person reads: the text of the step that closed the turn. Text written before tools is a working
+ * note shown in the collapsed trace, so it is neither verified as the answer nor able to contradict it.
+ */
+function answerText(steps: StepLike[], retracted: Map<number, string>): string {
+  const index = finalAnswerStep(steps);
+  return index >= 0 && !retracted.has(index) ? steps[index].text.trim() : "";
 }
 
-/** The persisted assistant turn mirrors the screen: each step's text and tool receipts in order, then any receipt-only answer. */
-function assistantTurn(runId: string, steps: StepLike[], retracted: Set<number>, receiptText: string | null): UIMessage {
+/** The answer step, if it still holds text on screen: what a retraction turns into a discarded draft. */
+function answerDraft(runId: string, steps: StepLike[], retracted: Map<number, string>, reason: string): { index: number; draft: Draft } | null {
+  const index = finalAnswerStep(steps);
+  if (index < 0 || retracted.has(index) || !steps[index].text.trim()) return null;
+  return { index, draft: { id: `draft-${runId}-${index}`, text: steps[index].text, reason } };
+}
+
+/**
+ * The persisted assistant turn mirrors the screen: each step's reasoning, text and tool receipts in order, discarded
+ * drafts with their reason, then any receipt-only answer.
+ */
+function assistantTurn(runId: string, steps: StepLike[], retracted: Map<number, string>, receiptText: string | null): UIMessage {
   const parts: UIMessage["parts"] = [];
   steps.forEach((step, index) => {
     // Reasoning is kept (clipped) so the work between iterations can be reviewed later; it is never replayed to the model.
     const reasoning = step.reasoningText?.trim();
     if (reasoning && stripForeignScript(reasoning).trim().length > reasoning.length * 0.8) parts.push({ type: "reasoning", text: reasoning.slice(0, 2_000) } as UIMessage["parts"][number]);
-    if (!retracted.has(index) && step.text.trim()) parts.push({ type: "text", text: stripForeignScript(step.text) });
+    const discarded = retracted.get(index);
+    if (discarded !== undefined && step.text.trim()) parts.push({ type: "reasoning", text: stripForeignScript(step.text).slice(0, 4_000), providerMetadata: discardedDraftMetadata(discarded) } as UIMessage["parts"][number]);
+    else if (discarded === undefined && step.text.trim()) parts.push({ type: "text", text: stripForeignScript(step.text) });
     for (const call of step.toolCalls) {
+      // Questions attached to a discarded answer left the screen with it.
+      if (discarded !== undefined && call.toolName === "askQuestions") continue;
       const result = step.toolResults.find((item) => item.toolCallId === call.toolCallId);
       if (!result) continue;
       parts.push({ type: `tool-${call.toolName}`, toolCallId: call.toolCallId, state: "output-available", input: call.input, output: compactToolOutputForHistory(call.toolName, result.output) } as UIMessage["parts"][number]);
@@ -210,9 +258,9 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
   try {
     const first = await agent.stream({ messages: input.messages, writable, preventClose: true, sendFinish: false });
     const steps: StepLike[] = [...first.steps];
-    // Steps whose text a later "reset-step" removed from the screen; they are neither verified again nor stored.
-    const retracted = new Set<number>();
-    let text = visibleText(steps, retracted);
+    // Answer steps taken off the screen, with the reason: they stay in the trace as discarded drafts.
+    const retracted = new Map<number, string>();
+    let text = answerText(steps, retracted);
     const context = { sources: [input.instructions, lastUserText(input.messages)] };
     let verification: Verification = verifyCozteResponse(text, toolRecords(steps), context);
     let modelError = "error" in first ? errorDetails(first.error) : undefined;
@@ -221,9 +269,13 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     if (!verification.ok && !modelError) {
       corrected = true;
       await recordCozteEvent(input.runId, "answer_rejected", { pass: 1, issues: verification.issues, response: text.slice(0, 4000) });
-      retracted.add(steps.length - 1);
+      // A missing answer needs no retraction: the correction pass then only writes the closing message.
+      const rejected = answerDraft(input.runId, steps, retracted, discardReason(verification));
+      if (rejected) {
+        retracted.set(rejected.index, rejected.draft.reason);
+        await retractAnswer(writable, rejected.draft);
+      }
       try {
-        // The correction's first model step resets the rejected text on screen before streaming the new answer.
         // Tool use is requested in the correction text, not forced: MiniMax ignores toolChoice "required" and the SDK then throws.
         const second = await agent.stream({
           messages: [...(first.messages as ModelMessage[]).filter((message) => message.role !== "system"), { role: "user", content: correctionMessage(verification) }],
@@ -231,7 +283,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
           stopWhen: [isStepCount(Math.max(4, Math.floor(settings.maxSteps / 2))), hasToolCall("askQuestions")],
         });
         steps.push(...second.steps);
-        text = visibleText(steps, retracted);
+        text = answerText(steps, retracted);
         verification = verifyCozteResponse(text, toolRecords(steps), context);
         if ("error" in second) modelError = errorDetails(second.error);
       } catch (error) {
@@ -248,9 +300,10 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
       const hasRead = records.some((item) => item.name === "readCosts" && item.ok);
       const evidence = hasRead ? records : [...records, { name: "readCosts", ok: true, write: false, output: await readCostOverview(input.principal).catch(() => null) }];
       receiptText = receiptOnlyAnswer(evidence);
-      await writeReceiptAnswer(writable, receiptText, `receipt-${input.runId}`);
-      if (steps.length) retracted.add(steps.length - 1);
-      text = [visibleText(steps, retracted), receiptText].filter(Boolean).join("\n\n");
+      const replaced = answerDraft(input.runId, steps, retracted, modelError && verification.ok ? "Se interrumpió por un error del modelo." : discardReason(verification));
+      if (replaced) retracted.set(replaced.index, replaced.draft.reason);
+      await writeReceiptAnswer(writable, receiptText, `receipt-${input.runId}`, replaced?.draft ?? null);
+      text = receiptText;
     }
     await closeCozteStream(writable);
     const assistantMessage = assistantTurn(input.runId, steps, retracted, receiptText);

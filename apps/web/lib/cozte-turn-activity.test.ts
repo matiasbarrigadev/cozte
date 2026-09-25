@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityHeadline, toolOutcomeLine, turnActivity, type ActivityPart } from "./cozte-turn-activity";
+import { activityHeadline, answerTextIndexes, discardedDraftMetadata, toolOutcomeLine, turnActivity, type ActivityPart } from "./cozte-turn-activity";
 
 const parts: ActivityPart[] = [
   { type: "reasoning", text: "La persona dio gas y luz; los guardo como gastos mensuales repartidos por horas." },
@@ -11,11 +11,39 @@ const parts: ActivityPart[] = [
 ];
 
 describe("turn activity", () => {
-  it("lists reasoning and tools in order without the answer text", () => {
+  it("lists reasoning, working notes and tools in order without the answer text", () => {
     const items = turnActivity(parts);
-    expect(items.map((item) => item.kind === "tool" ? item.name : item.kind)).toEqual(["reasoning", "saveExpense", "saveExpense", "readCosts"]);
-    expect(items[1]).toMatchObject({ summary: "Gasto Gas creado: 110000 ARS al mes", failed: false, running: false });
-    expect(items[3]).toMatchObject({ summary: "2 productos, 1 insumos y 3 gastos del mes" });
+    expect(items.map((item) => item.kind === "tool" ? item.name : item.kind)).toEqual(["reasoning", "note", "saveExpense", "saveExpense", "readCosts"]);
+    expect(items[1]).toEqual({ kind: "note", text: "Voy con eso." });
+    expect(items[2]).toMatchObject({ summary: "Gasto Gas creado: 110000 ARS al mes", failed: false, running: false });
+    expect(items[4]).toMatchObject({ summary: "2 productos, 1 insumos y 3 gastos del mes" });
+  });
+
+  it("treats only the text after the last working tool as the answer", () => {
+    expect([...answerTextIndexes(parts)]).toEqual([5]);
+    // A confusing first attempt written before the save stays in the trace; the closing message is the answer.
+    const confused: ActivityPart[] = [
+      { type: "text", text: "En este turno no se guardaron cambios." },
+      { type: "tool-saveExpense", toolCallId: "g", state: "output-available", output: { ok: true, done: ["Gasto Nafta creado"] } },
+      { type: "text", text: "Listo, nafta del generador guardada." },
+    ];
+    expect([...answerTextIndexes(confused)]).toEqual([2]);
+    // Asking questions ends the turn: the text before the form is the answer.
+    expect([...answerTextIndexes([...confused, { type: "tool-askQuestions", toolCallId: "q", state: "output-available", output: { ok: true } }])]).toEqual([2]);
+    // While a reply streams, a turn that is still working has no answer yet.
+    expect([...answerTextIndexes(confused.slice(0, 2), true)]).toEqual([]);
+    // Older turns that ran a tool after answering keep their last text once complete.
+    expect([...answerTextIndexes(confused.slice(0, 2))]).toEqual([0]);
+  });
+
+  it("keeps a discarded draft reviewable with its reason and counts the correction", () => {
+    const items = turnActivity([
+      { type: "reasoning", text: "Listo, guardé el gas.", providerMetadata: discardedDraftMetadata("Decía que había guardado algo que no se guardó.") },
+      { type: "tool-saveExpense", toolCallId: "g", state: "output-available", output: { ok: true, done: ["Gasto Gas creado"] } },
+      { type: "text", text: "Guardé el gas." },
+    ]);
+    expect(items[0]).toEqual({ kind: "discarded", text: "Listo, guardé el gas.", reason: "Decía que había guardado algo que no se guardó." });
+    expect(activityHeadline(items)).toBe("Guardó 1 gasto · corrigió 1 borrador");
   });
 
   it("summarizes the turn in one line and shows what is running", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { correctionMessage, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord } from "./cozte-response-verifier";
+import { correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord } from "./cozte-response-verifier";
 
 const read: TurnToolRecord = { name: "readCosts", ok: true, write: false, output: { products: [] } };
 const savedProduct: TurnToolRecord = { name: "saveProduct", ok: true, write: true, output: { ok: true, ids: { product: "5cd7cb0f-e5d3-4ed4-8d6b-a0a7a8c46a23" } } };
@@ -89,6 +89,8 @@ describe("verifyCozteResponse", () => {
   it("rejects announcing an action and stopping (production trace)", () => {
     const result = verifyCozteResponse("Perfecto, pruebo de nuevo crear el producto. Esta vez con el esquema real:", []);
     expect(result.issues.map((issue) => issue.code)).toEqual(["announced-not-executed"]);
+    // Waiting for a missing fact is not an unkept promise (eval trace: partner's pay and how to split salaries).
+    expect(verifyCozteResponse("El socio no es costo de producción; lo guardo aparte más adelante si quieren. Antes de guardar los sueldos falta definir cómo repartirlos entre los productos.", []).ok).toBe(true);
     expect(result.mustUseTools).toBe(true);
     expect(verifyCozteResponse("Voy a registrar la luz apenas me confirmes el monto.", []).ok).toBe(true);
     expect(verifyCozteResponse("¿Quieres que ahora guarde el gas con 110.000 al mes?", []).ok).toBe(true);
@@ -111,17 +113,34 @@ describe("verifyCozteResponse", () => {
 
   it("builds a correction that asks for real execution", () => {
     const message = correctionMessage(verifyCozteResponse("Ya quedó creado el producto.", []));
-    expect(message).toMatch(/Verificación automática/);
+    expect(message).toMatch(/Nota interna de Cozte/);
     expect(message).toMatch(/ejecuta ahora la herramienta/);
   });
 
   it("builds a receipt-only fallback that still reports what is stored", () => {
     const overview: TurnToolRecord = { name: "readCosts", ok: true, write: false, output: { ok: true, currency: "ARS", products: [{ name: "Tofu 300g", cost: { unitCost: 1070, status: "estimated" } }, { name: "Tofu 500g", cost: { unitCost: null, status: "incomplete" } }], materials: [{}, {}], monthlyExpenses: [{ name: "Gas", monthlyAmount: 110000 }] } };
     const text = receiptOnlyAnswer([overview, failedWrite]);
-    expect(text).toContain("En este turno no guardé cambios.");
+    expect(text).toContain("No llegué a guardar cambios.");
     expect(text).toContain("No se guardó: No se pudo guardar");
     expect(text).toContain("productos Tofu 300g (ARS 1.070 por unidad, estimado)");
     expect(text).toContain("Gas (ARS 110.000 al mes)");
     expect(verifyCozteResponse(text, [overview, failedWrite]).ok).toBe(true);
+  });
+});
+
+describe("final answer", () => {
+  it("is the closing step, unless the turn stopped while still running tools", () => {
+    const step = (...toolNames: string[]) => ({ toolCalls: toolNames.map((toolName) => ({ toolName })) });
+    expect(finalAnswerStep([step("saveExpense"), step()])).toBe(1);
+    expect(finalAnswerStep([step("saveExpense"), step("askQuestions")])).toBe(1);
+    expect(finalAnswerStep([step(), step("saveRecipe")])).toBe(-1);
+    expect(finalAnswerStep([])).toBe(-1);
+  });
+
+  it("asks only for the closing message when the work ended without one, and never lets the note leak", () => {
+    const empty = verifyCozteResponse("", [savedProduct]);
+    expect(correctionMessage(empty)).toMatch(/sin escribir el mensaje final/);
+    expect(correctionMessage(verifyCozteResponse("Ya quedó creado el producto.", []))).toMatch(/No menciones esta nota/);
+    expect(discardReason(verifyCozteResponse("Ya quedó creado el producto.", []))).toBe("Decía que había guardado algo que no se guardó.");
   });
 });

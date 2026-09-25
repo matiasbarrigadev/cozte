@@ -12,7 +12,7 @@ import type { AssistantDataSource } from "@/lib/server/assistant-trace";
 import type { ProposalSection } from "@/lib/proposal-presentation";
 import { assistantToolOutcome } from "@/lib/assistant-run-activity";
 import { COZTE_COST_WRITE_TOOLS, COZTE_TOOL_LABELS, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
-import { activityHeadline, turnActivity, type ActivityItem, type ActivityPart } from "@/lib/cozte-turn-activity";
+import { activityHeadline, answerTextIndexes, turnActivity, type ActivityItem, type ActivityPart } from "@/lib/cozte-turn-activity";
 import { answered, formatCozteAnswers, parseCozteQuestions, type CozteQuestionAnswer, type CozteQuestionSet } from "@/lib/cozte-questions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -466,7 +466,8 @@ const noExecutions: PersistedToolExecution[] = [];
 
 /** One chat message. Memoized so only the reply that is streaming re-renders on each update. */
 const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void }) {
-  return <div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
+  const answer = message.role === "assistant" ? answerTextIndexes(message.parts as ActivityPart[], streaming) : null;
+  return<div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
     <span className="text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}</span>
     {message.role === "assistant" ? (() => {
       // Work (reasoning and tools) goes in one collapsed block above the answer, like a compact trace.
@@ -474,7 +475,8 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
       return <CozteTurnActivity parts={message.parts} persisted={persisted.filter((execution) => !liveToolCallIds.has(execution.toolCallId))} streaming={streaming} />;
     })() : null}
     {message.parts.map((part, index) => {
-      if (part.type === "text") return message.role === "assistant" ? <AssistantMarkdown key={index} text={part.text} /> : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
+      // Only the final message is the answer; notes written before tools live in the collapsed trace.
+      if (part.type === "text") return message.role === "assistant" ? answer?.has(index) ? <AssistantMarkdown key={index} text={part.text} /> : null : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
       if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
       if (part.type === "file" && part.mediaType === "application/pdf") return <Badge key={index} variant="outline">PDF · {part.filename ?? "Documento adjunto"}</Badge>;
       if (part.type === "file" && part.mediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return <Badge key={index} variant="outline">Excel · {part.filename ?? "Planilla adjunta"}</Badge>;
@@ -524,10 +526,10 @@ function CozteQuestionForm({ set, onAnswer }: { set: CozteQuestionSet; onAnswer?
   </form>;
 }
 
-function CozteTurnActivity({ parts, persisted, streaming }:{ parts: UIMessage["parts"]; persisted: PersistedToolExecution[]; streaming: boolean }) {
+function CozteTurnActivity({ parts, persisted, streaming }: { parts: UIMessage["parts"]; persisted: PersistedToolExecution[]; streaming: boolean }) {
   const items = turnActivity(parts as ActivityPart[], streaming);
   if (!items.length && !persisted.length) return null;
-  const live = streaming && items.some((item) => item.kind === "tool" ? item.running : item.streaming);
+  const live = streaming && items.some((item) => item.kind === "tool" ? item.running : item.kind === "reasoning" && item.streaming);
   const failed = items.some((item) => item.kind === "tool" && item.failed);
   const pending = !failed && items.some((item) => item.kind === "tool" && item.needsInput);
   const headline = items.length ? activityHeadline(items) : persisted.length === 1 ? "1 acción registrada" : `${persisted.length} acciones registradas`;
@@ -538,8 +540,9 @@ function CozteTurnActivity({ parts, persisted, streaming }:{ parts: UIMessage["p
       {live ? <TextShimmer className="min-w-0 truncate">{headline}</TextShimmer> : <span className={cn("min-w-0 truncate", failed && "text-destructive")}>{headline}</span>}
     </summary>
     <ol className="flex flex-col gap-2 border-t px-3 py-2.5">
-      {items.map((item, index) => item.kind === "reasoning"
-        ? <li key={`reasoning-${index}`}><ActivityReasoning text={item.text} streaming={item.streaming} /></li>
+      {items.map((item, index) => item.kind === "reasoning" ? <li key={`reasoning-${index}`}><ActivityReasoning text={item.text} streaming={item.streaming} /></li>
+        : item.kind === "note" ? <li key={`note-${index}`}><ActivityText label="Mientras trabajaba" text={item.text} /></li>
+        : item.kind === "discarded" ? <li key={`draft-${index}`}><ActivityText label="Borrador descartado" detail={item.reason} text={item.text} tone="warning" /></li>
         : <li key={item.toolCallId}><ActivityTool item={item} /></li>)}
       {persisted.map((execution) => <li key={`${execution.runId}:${execution.toolCallId}`}><AssistantMessageToolTag toolName={execution.toolName} persisted={execution} /></li>)}
     </ol>
@@ -556,7 +559,19 @@ function ActivityReasoning({ text, streaming }: { text: string; streaming: boole
   </details>;
 }
 
-function ActivityTool({ item }: { item: Extract<ActivityItem, { kind: "tool" }> }) {
+/** A working note or a discarded draft: one clamped line in the trace, the full text on demand. */
+function ActivityText({ label, detail, text, tone }: { label: string; detail?: string; text: string; tone?: "warning" }) {
+  const plain = text.replace(/\*\*(.+?)\*\*/g, "$1");
+  return <details className="group/text">
+    <summary className="flex cursor-pointer list-none items-start gap-2 text-muted-foreground [&::-webkit-details-marker]:hidden">
+      <span aria-hidden="true" className={cn("mt-1 size-1.5 shrink-0 rounded-full", tone === "warning" ? "bg-amber-500" : "bg-muted-foreground/50")} />
+      <span className="min-w-0"><span className={cn("font-medium", tone === "warning" ? "text-amber-700 dark:text-amber-400" : "text-foreground/80")}>{label}</span>{detail ? <span> · {detail}</span> : null} <span className="line-clamp-2 group-open/text:hidden">{plain}</span></span>
+    </summary>
+    <p className="mt-1 whitespace-pre-wrap pl-3.5 leading-relaxed text-muted-foreground">{plain}</p>
+  </details>;
+}
+
+function ActivityTool({ item }:{ item: Extract<ActivityItem, { kind: "tool" }> }) {
   return <details className="group/tool">
     <summary className="flex cursor-pointer list-none items-start gap-2 [&::-webkit-details-marker]:hidden">
       <span aria-hidden="true" className={cn("mt-1 size-1.5 shrink-0 rounded-full", item.running ? "animate-pulse bg-primary" : item.failed ? "bg-destructive" : item.needsInput ? "bg-amber-500" : "bg-emerald-500")} />
