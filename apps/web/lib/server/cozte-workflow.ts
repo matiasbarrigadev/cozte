@@ -129,18 +129,24 @@ function toolRecords(steps: StepLike[]): TurnToolRecord[] {
   })));
 }
 
-/** The persisted assistant turn: real tool calls with compact receipts, then the accepted answer. */
-function assistantTurn(runId: string, steps: StepLike[], text: string, fallback: boolean): UIMessage {
+/** Text the person sees: every step's text in order, except steps whose text was retracted from the screen. */
+function visibleText(steps: StepLike[], retracted: Set<number>): string {
+  return steps.map((step, index) => retracted.has(index) ? "" : step.text.trim()).filter(Boolean).join("\n\n");
+}
+
+/** The persisted assistant turn mirrors the screen: each step's text and tool receipts in order, then any receipt-only answer. */
+function assistantTurn(runId: string, steps: StepLike[], retracted: Set<number>, receiptText: string | null): UIMessage {
   const parts: UIMessage["parts"] = [];
-  for (const step of steps) {
+  steps.forEach((step, index) => {
+    if (!retracted.has(index) && step.text.trim()) parts.push({ type: "text", text: step.text });
     for (const call of step.toolCalls) {
       const result = step.toolResults.find((item) => item.toolCallId === call.toolCallId);
       if (!result) continue;
       parts.push({ type: `tool-${call.toolName}`, toolCallId: call.toolCallId, state: "output-available", input: call.input, output: compactToolOutputForHistory(call.toolName, result.output) } as UIMessage["parts"][number]);
     }
-  }
-  if (text.trim()) parts.push({ type: "text", text });
-  return { id: `${fallback ? COZTE_FALLBACK_ID_PREFIX : COZTE_ASSISTANT_ID_PREFIX}${runId}`, role: "assistant", parts };
+  });
+  if (receiptText) parts.push({ type: "text", text: receiptText });
+  return { id: `${receiptText ? COZTE_FALLBACK_ID_PREFIX : COZTE_ASSISTANT_ID_PREFIX}${runId}`, role: "assistant", parts };
 }
 
 export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise<void> {
@@ -174,13 +180,16 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
   try {
     const first = await agent.stream({ messages: input.messages, writable, preventClose: true, sendFinish: false });
     const steps: StepLike[] = [...first.steps];
-    let text = first.steps.at(-1)?.text ?? "";
+    // Steps whose text a later "reset-step" removed from the screen; they are neither verified again nor stored.
+    const retracted = new Set<number>();
+    let text = visibleText(steps, retracted);
     const context = { sources: [input.instructions, lastUserText(input.messages)] };
     let verification: Verification = verifyCozteResponse(text, toolRecords(steps), context);
     let modelError = "error" in first ? errorDetails(first.error) : undefined;
 
     if (!verification.ok && !modelError) {
       await recordCozteEvent(input.runId, "answer_rejected", { pass: 1, issues: verification.issues, response: text.slice(0, 4000) });
+      retracted.add(steps.length - 1);
       try {
         // The correction's first model step resets the rejected text on screen before streaming the new answer.
         // Tool use is requested in the correction text, not forced: MiniMax ignores toolChoice "required" and the SDK then throws.
@@ -190,7 +199,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
           stopWhen: isStepCount(Math.max(4, Math.floor(settings.maxSteps / 2))),
         });
         steps.push(...second.steps);
-        text = second.steps.at(-1)?.text ?? "";
+        text = visibleText(steps, retracted);
         verification = verifyCozteResponse(text, toolRecords(steps), context);
         if ("error" in second) modelError = errorDetails(second.error);
       } catch (error) {
@@ -199,17 +208,19 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     }
 
     const records = toolRecords(steps);
-    const replaced = !verification.ok || Boolean(modelError);
-    if (replaced) {
+    let receiptText: string | null = null;
+    if (!verification.ok || modelError) {
       await recordCozteEvent(input.runId, "answer_replaced", { issues: verification.issues, modelError, response: text.slice(0, 4000) });
       // Without a read in the turn, the fallback reads the stored state itself so it can still say what is saved.
       const hasRead = records.some((item) => item.name === "readCosts" && item.ok);
       const evidence = hasRead ? records : [...records, { name: "readCosts", ok: true, write: false, output: await readCostOverview(input.principal).catch(() => null) }];
-      text = receiptOnlyAnswer(evidence);
-      await writeReceiptAnswer(writable, text, `receipt-${input.runId}`);
+      receiptText = receiptOnlyAnswer(evidence);
+      await writeReceiptAnswer(writable, receiptText, `receipt-${input.runId}`);
+      if (steps.length) retracted.add(steps.length - 1);
+      text = [visibleText(steps, retracted), receiptText].filter(Boolean).join("\n\n");
     }
     await closeCozteStream(writable);
-    const assistantMessage = assistantTurn(input.runId, steps, text, replaced);
+    const assistantMessage = assistantTurn(input.runId, steps, retracted, receiptText);
     await finalizeCozteRun({
       principal: input.principal, runId: input.runId,
       messages: [...input.persistedMessages, assistantMessage],

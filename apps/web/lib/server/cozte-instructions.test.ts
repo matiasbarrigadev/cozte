@@ -15,6 +15,7 @@ describe("Cozte instructions", () => {
     expect(text).toContain("Solo di \"guardé\"");
     expect(text).toContain("No hagas cuentas de memoria");
     expect(text).toContain("Nunca cargues la misma mano de obra de las dos formas");
+    expect(text).toContain("**Para entender:**");
   });
 
   it("grounds the turn on the live cost snapshot and remembered decisions", () => {

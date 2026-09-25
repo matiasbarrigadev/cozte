@@ -96,14 +96,16 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       let steps = [...result.steps];
       const records = () => steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), write: COZTE_WRITE_TOOLS.has(item.toolName), output: item.output })));
       const context = { sources: [instructions, turn.user] };
-      let verification = verifyCozteResponse(result.text, records(), context);
-      let answer = result.text;
-      const rejectedAnswer = verification.ok ? null : { text: result.text, issues: verification.issues.map((issue) => issue.code) };
+      // Like the workflow: every step's text is visible, so all of it is verified and kept; a rejected final step is dropped.
+      const visible = (list: typeof steps) => list.map((step) => step.text.trim()).filter(Boolean).join("\n\n");
+      let verification = verifyCozteResponse(visible(steps), records(), context);
+      let answer = visible(steps);
+      const rejectedAnswer = verification.ok ? null : { text: answer, issues: verification.issues.map((issue) => issue.code) };
       if (!verification.ok) {
         rejected++;
         result = await pass([...history, ...result.response.messages, { role: "user", content: correctionMessage(verification) }]);
-        steps = [...steps, ...result.steps];
-        answer = result.text;
+        steps = [...steps.slice(0, -1), { ...steps.at(-1)!, text: "" }, ...result.steps];
+        answer = visible(steps);
         verification = verifyCozteResponse(answer, records(), context);
         if (!verification.ok) failures.push(`turno ${index + 1}: respuesta sin respaldo tras corrección (${verification.issues.map((item) => item.code).join(", ")})`);
       }

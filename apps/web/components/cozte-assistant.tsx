@@ -12,6 +12,7 @@ import type { AssistantDataSource } from "@/lib/server/assistant-trace";
 import type { ProposalSection } from "@/lib/proposal-presentation";
 import { assistantToolOutcome } from "@/lib/assistant-run-activity";
 import { COZTE_COST_WRITE_TOOLS, COZTE_TOOL_LABELS, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
+import { activityHeadline, turnActivity, type ActivityItem, type ActivityPart } from "@/lib/cozte-turn-activity";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -314,23 +315,23 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
               {messages.map((message) => <React.Fragment key={message.id}>
                 <div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
                   <span className="text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}</span>
+                  {message.role === "assistant" ? (() => {
+                    // Work (reasoning and tools) goes in one collapsed block above the answer, like a compact trace.
+                    const liveToolCallIds = new Set(message.parts.filter(isToolUIPart).map((part) => part.toolCallId));
+                    const persisted = (toolsByAssistantMessage.get(message.id) ?? []).filter((execution) => !liveToolCallIds.has(execution.toolCallId));
+                    return <CozteTurnActivity parts={message.parts} persisted={persisted} streaming={status === "streaming" && message.id === messages.at(-1)?.id} />;
+                  })() : null}
                   {message.parts.map((part, index) => {
                     if (part.type === "text") return message.role === "assistant" ? <AssistantMarkdown key={index} text={part.text} /> : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
-                    if (isToolUIPart(part) && (part.state === "output-available" || part.state === "output-error")) return <AssistantMessageToolTag key={index} toolName={part.type.slice("tool-".length)} input={part.input} output={part.state === "output-available" ? part.output : undefined} errorText={part.state === "output-error" ? part.errorText : undefined} />;
                     if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
                     if (part.type === "file" && part.mediaType === "application/pdf") return <Badge key={index} variant="outline">PDF · {part.filename ?? "Documento adjunto"}</Badge>;
                     if (part.type === "file" && part.mediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return <Badge key={index} variant="outline">Excel · {part.filename ?? "Planilla adjunta"}</Badge>;
-                    if (isToolUIPart(part) && (part.state === "input-streaming" || part.state === "input-available")) return <TextShimmer key={index} className="text-xs">Consultando datos…</TextShimmer>;
                     return null;
                   })}
-                  {message.role === "assistant" ? (() => {
-                    const liveToolCallIds = new Set(message.parts.filter(isToolUIPart).map((part) => part.toolCallId));
-                    return (toolsByAssistantMessage.get(message.id) ?? []).filter((execution) => !liveToolCallIds.has(execution.toolCallId)).map((execution) => <AssistantMessageToolTag key={`${execution.runId}:${execution.toolCallId}`} toolName={execution.toolName} persisted={execution} />);
-                  })() : null}
                 </div>
                 {(proposalsAfterMessage.get(message.id) ?? []).map((proposal) => <ProposalTurnCard key={proposal.id} proposal={proposal} onOpen={() => setSelectedProposalId(proposal.id)} />)}
               </React.Fragment>)}
-              {status === "submitted" || status === "streaming" ? <TextShimmer className="text-sm">Cozte está analizando…</TextShimmer> : null}
+              {status === "submitted" ? <TextShimmer className="text-sm">Cozte está analizando…</TextShimmer> : null}
               <ChatContainerScrollAnchor />
             </ChatContainerContent></ChatContainerRoot></CardContent>
             <CardFooter className="flex flex-col items-stretch gap-3 border-t px-4 py-4 md:px-8">
@@ -439,6 +440,52 @@ function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; o
       <Button type="button" size="sm" variant="outline" className="self-start" onClick={onOpen}>Ver propuesta y decisión</Button>
     </CardContent>
   </Card>;
+}
+
+function CozteTurnActivity({ parts, persisted, streaming }: { parts: UIMessage["parts"]; persisted: PersistedToolExecution[]; streaming: boolean }) {
+  const items = turnActivity(parts as ActivityPart[], streaming);
+  if (!items.length && !persisted.length) return null;
+  const live = streaming && items.some((item) => item.kind === "tool" ? item.running : item.streaming);
+  const failed = items.some((item) => item.kind === "tool" && item.failed);
+  const pending = !failed && items.some((item) => item.kind === "tool" && item.needsInput);
+  const headline = items.length ? activityHeadline(items) : persisted.length === 1 ? "1 acción registrada" : `${persisted.length} acciones registradas`;
+  return <details className="group/activity w-full max-w-full rounded-lg border bg-background/60 text-xs text-foreground">
+    <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+      <span aria-hidden="true" className="shrink-0 transition-transform group-open/activity:rotate-90">▸</span>
+      <span className={cn("size-1.5 shrink-0 rounded-full", live ? "animate-pulse bg-primary" : failed ? "bg-destructive" : pending ? "bg-amber-500" : "bg-emerald-500")} aria-hidden="true" />
+      {live ? <TextShimmer className="min-w-0 truncate">{headline}</TextShimmer> : <span className={cn("min-w-0 truncate", failed && "text-destructive")}>{headline}</span>}
+    </summary>
+    <ol className="flex flex-col gap-2 border-t px-3 py-2.5">
+      {items.map((item, index) => item.kind === "reasoning"
+        ? <li key={`reasoning-${index}`}><ActivityReasoning text={item.text} streaming={item.streaming} /></li>
+        : <li key={item.toolCallId}><ActivityTool item={item} /></li>)}
+      {persisted.map((execution) => <li key={`${execution.runId}:${execution.toolCallId}`}><AssistantMessageToolTag toolName={execution.toolName} persisted={execution} /></li>)}
+    </ol>
+  </details>;
+}
+
+function ActivityReasoning({ text, streaming }: { text: string; streaming: boolean }) {
+  return <details className="group/reasoning">
+    <summary className="flex cursor-pointer list-none items-start gap-2 text-muted-foreground [&::-webkit-details-marker]:hidden">
+      <span aria-hidden="true" className="mt-0.5 shrink-0 text-[10px] transition-transform group-open/reasoning:rotate-90">▸</span>
+      <span className="min-w-0"><span className="font-medium text-foreground/80">{streaming ? "Pensando" : "Cómo lo pensó"}</span> <span className="line-clamp-2 group-open/reasoning:hidden">{text}</span></span>
+    </summary>
+    <p className="mt-1 whitespace-pre-wrap pl-4 leading-relaxed text-muted-foreground">{text}</p>
+  </details>;
+}
+
+function ActivityTool({ item }: { item: Extract<ActivityItem, { kind: "tool" }> }) {
+  return <details className="group/tool">
+    <summary className="flex cursor-pointer list-none items-start gap-2 [&::-webkit-details-marker]:hidden">
+      <span aria-hidden="true" className={cn("mt-1 size-1.5 shrink-0 rounded-full", item.running ? "animate-pulse bg-primary" : item.failed ? "bg-destructive" : item.needsInput ? "bg-amber-500" : "bg-emerald-500")} />
+      <span className="min-w-0"><span className="font-medium">{item.label}</span> <span className={cn("text-muted-foreground", item.failed && "text-destructive")}>{item.running ? <TextShimmer>{item.summary}</TextShimmer> : item.summary}</span></span>
+    </summary>
+    {!item.running ? <div className="mt-1.5 flex max-h-[min(18rem,45vh)] flex-col gap-2 overflow-auto pl-3.5">
+      {item.input !== undefined ? <AssistantToolPayload title="Datos que usó" value={item.input} /> : null}
+      {item.output !== undefined ? <AssistantToolPayload title="Resultado" value={item.output} /> : null}
+      {item.errorText ? <AssistantToolPayload title="Qué pasó" value={item.errorText} /> : null}
+    </div> : null}
+  </details>;
 }
 
 function AssistantMessageToolTag({ toolName, input, output, errorText, persisted, onEdit }: { toolName: string; input?: unknown; output?: unknown; errorText?: string; persisted?: PersistedToolExecution; onEdit?: (prompt: string) => void }) {
