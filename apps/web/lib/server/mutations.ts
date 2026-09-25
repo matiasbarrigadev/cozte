@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { allocateMinor, calculateCosts, convertToOrganizationCurrency, productionExpenses, COST_AREAS, type DomainState } from "@/lib/domain";
+import { allocateMinor, calculateCosts, convertToOrganizationCurrency, productionCostSources, COST_AREAS, type DomainState } from "@/lib/domain";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, type SqlStatement } from "./db";
@@ -89,6 +89,11 @@ export const mutationSchema = z.discriminatedUnion("action", [
   common.extend({ action: z.literal("create-category"), name: category }),
   common.extend({ action: z.literal("rename-category"), id, name: category }),
   common.extend({ action: z.literal("update-expense-allocation"), id, basis: z.enum(["hours", "units", "manual"]), shares: z.record(z.string(), z.number().int().min(0).max(10000)).default({}), acknowledgeImpact: z.boolean().optional() }),
+  common.extend({
+    action: z.literal("set-investment-cost"), id,
+    include: z.boolean(),
+    allocationBasis: z.enum(["hours", "units"]).optional(),
+  }),
   common.extend({
     action: z.literal("record-decision"), productId: id,
     kind: z.enum(["price", "supplier", "production", "other"]),
@@ -285,6 +290,14 @@ function projection(state: DomainState, input: Mutation): DomainState {
     case "record-decision":
       if (!next.products.some((item) => item.id === input.productId)) throw new ApiError(404, "Producto no encontrado");
       break;
+    case "set-investment-cost": {
+      const investment = next.investments?.find((item) => item.id === input.id);
+      if (!investment) throw new ApiError(404, "Inversión no encontrada");
+      if (investment.area !== "production") throw new ApiError(400, "Solo las inversiones del taller se suman al costo de cada producto");
+      investment.includeInUnitCost = input.include;
+      if (input.allocationBasis) investment.allocationBasis = input.allocationBasis;
+      break;
+    }
   }
   next.revision++;
   return next;
@@ -453,6 +466,11 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
     case "update-expense-allocation":
       statements.push({ sql: "UPDATE shared_expenses SET allocation_basis=?, allocation_mode=?, allocation_shares_json=? WHERE id=? AND organization_id=?", params: [input.basis === "manual" ? "units" : input.basis, input.basis === "manual" ? "manual" : "automatic", JSON.stringify(input.basis === "manual" ? input.shares : {}), input.id, organizationId] });
       break;
+    case "set-investment-cost": {
+      const investment = next.investments!.find((item) => item.id === input.id)!;
+      statements.push({ sql: "UPDATE purchases SET include_in_unit_cost=?, allocation_basis=? WHERE id=? AND organization_id=? AND kind='investment' AND archived_at IS NULL", params: [investment.includeInUnitCost ? 1 : 0, investment.allocationBasis, input.id, organizationId] });
+      break;
+    }
     case "record-decision":
       statements.push({ sql: "INSERT INTO decisions (id, organization_id, product_id, kind, note, actor_id) VALUES (?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.productId, input.kind, input.note, actorId] });
       break;
@@ -466,7 +484,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       product: next.products.find((item) => item.id === cost.productId),
       components: next.components.filter((item) => item.productId === cost.productId),
       materials: next.materials.filter((item) => next.components.some((component) => component.productId === cost.productId && component.materialId === item.id)),
-      expenses: productionExpenses(next),
+      expenses: productionCostSources(next),
       allocationPeers: next.products.map((item) => ({ id: item.id, lotUnits: item.lotUnits, productionHoursMilli: item.productionHoursMilli, batchesPerMonthMilli: item.batchesPerMonthMilli ?? null })),
       activePeriod: next.activePeriod,
       baseCurrency: next.organization.currency,

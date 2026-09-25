@@ -217,13 +217,17 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     };
     await turn("Vendemos por Instagram. Mercado Pago nos cobra 10 % de cada venta y el envío en moto nos cuesta 1500 por pedido; los pedidos suelen ser de 3 tofus.", ["saveChannel"]);
     await turn("Hoy compré 50 kilos de soja orgánica por 60000 en CEAPE, una cinta de embalaje de 3500 para los envíos y una balanza digital de 45000 para el taller que debería durar unos 5 años.", ["recordPurchase"]);
+    // Whether the scale goes into each unit's cost is the person's call: Cozte may advise or ask, never decide alone.
+    const decidedAlone = await dbQuery("SELECT 1 AS found FROM purchases WHERE organization_id=? AND kind='investment' AND include_in_unit_cost=1", [principal.organizationId]);
+    if (decidedAlone.length) failures.push("sumó la balanza al costo por unidad sin que la persona lo decidiera");
+    await turn("La balanza sí, sumala al costo de cada tofu.", []);
     await turn("Ayer vendí 12 tofus de 300g por Instagram al precio de lista.", ["recordSale"]);
     const month = await turn("¿Cómo vengo este mes? ¿Estoy ganando?", ["readBusiness"]);
     if (!/pérdida|perd|gananc|resultado/i.test(month.answer)) failures.push("no explicó el resultado del mes");
 
     const [channels, purchases, sales] = await Promise.all([
       dbQuery<{ commission_bps: number; delivery_cost_per_order_minor: number; units_per_order_milli: number }>("SELECT commission_bps, delivery_cost_per_order_minor, units_per_order_milli FROM sales_channels WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]),
-      dbQuery<{ kind: string; area: string; amount_minor: number; useful_life_months: number | null }>("SELECT kind, area, amount_minor, useful_life_months FROM purchases WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]),
+      dbQuery<{ kind: string; area: string; amount_minor: number; useful_life_months: number | null; include_in_unit_cost: number }>("SELECT kind, area, amount_minor, useful_life_months, include_in_unit_cost FROM purchases WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]),
       dbQuery<{ total_minor: number }>("SELECT total_minor FROM sales WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]),
     ]);
     const soy = (await loadState(principal)).materials.find((item) => /soja/i.test(item.name));
@@ -232,6 +236,7 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       soyPurchase: purchases.some((item) => item.kind === "material" && item.amount_minor === 60000) && soy?.priceMinor === 1200,
       tape: purchases.some((item) => item.kind === "expense" && item.amount_minor === 3500 && item.area === "delivery"),
       scale: purchases.some((item) => item.kind === "investment" && item.amount_minor === 45000 && item.area === "production" && item.useful_life_months === 60),
+      scaleInUnitCost: purchases.some((item) => item.kind === "investment" && item.amount_minor === 45000 && item.include_in_unit_cost === 1),
       sale: sales.length === 1 && sales[0].total_minor === 24000,
     };
     for (const [name, passed] of Object.entries(checks)) if (!passed) failures.push(`estado final: ${name}`);

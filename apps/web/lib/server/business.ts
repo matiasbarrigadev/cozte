@@ -6,7 +6,7 @@ import { calculateCosts, convertToOrganizationCurrency, type CostArea, type Doma
 import { AREA_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, priceSale, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement } from "./db";
-import { commitMutation } from "./mutations";
+import { commitMutation, type Mutation } from "./mutations";
 import { loadState } from "./state";
 
 const areaSchema = z.enum(["production", "delivery", "sales", "admin"]);
@@ -37,6 +37,9 @@ export const purchaseInputSchema = z.object({
   updateMaterialPrice: z.boolean().default(true),
   expenseId: z.string().min(1).max(120).optional(),
   usefulLifeMonths: z.number().int().min(1).max(600).optional(),
+  /** Workshop investments: spread their monthly share into each unit's cost (the person's decision). */
+  includeInUnitCost: z.boolean().optional(),
+  allocationBasis: z.enum(["hours", "units"]).optional(),
   documentId: z.string().min(1).max(120).optional(),
 });
 
@@ -64,6 +67,22 @@ function derivedKey(key: string, suffix: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/** Applies a costing change against the latest state, once per key, retrying revision races. */
+async function commitOnce(principal: Principal, key: string, source: "user" | "cozte", build: (state: DomainState) => Omit<Mutation, "expectedRevision" | "idempotencyKey">) {
+  const applied = await dbQuery("SELECT 1 AS found FROM change_sets WHERE organization_id=? AND idempotency_key=?", [principal.organizationId, key]);
+  if (applied.length) return;
+  for (let attempt = 0; ; attempt++) {
+    const state = await loadState(principal);
+    try {
+      await commitMutation(principal, { ...build(state), expectedRevision: state.revision, idempotencyKey: key } as Mutation, { source });
+      return;
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 409 || attempt >= 5) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 80 * (attempt + 1)));
+    }
+  }
+}
+
 function assertEditor(principal: Principal) {
   if (principal.role === "viewer") throw new ApiError(403, "No tienes permiso para registrar movimientos");
 }
@@ -75,14 +94,14 @@ function monthBounds(value: string): [string, string] {
 }
 
 type ChannelRow = { id: string; name: string; delivery_method: string; commission_bps: number; fee_per_order_minor: number; delivery_cost_per_order_minor: number; units_per_order_milli: number; price_adjustment_bps: number };
-type PurchaseRow = { id: string; purchased_on: string; description: string; supplier: string; amount_minor: number; kind: PurchaseKind; area: CostArea; material_name: string | null; quantity_milli: number | null; expense_id: string | null; expense_name: string | null; useful_life_months: number | null; document_id: string | null; source: "user" | "cozte" };
+type PurchaseRow = { id: string; purchased_on: string; description: string; supplier: string; amount_minor: number; kind: PurchaseKind; area: CostArea; material_name: string | null; quantity_milli: number | null; expense_id: string | null; expense_name: string | null; useful_life_months: number | null; include_in_unit_cost: number; document_id: string | null; source: "user" | "cozte" };
 type SaleRow = { id: string; sold_on: string; channel_id: string | null; channel_name: string; customer: string; note: string; total_minor: number; selling_cost_minor: number; delivery_cost_minor: number; variable_cost_minor: number | null; production_cost_minor: number | null; document_id: string | null; source: "user" | "cozte" };
 type SaleItemRow = { sale_id: string; product_id: string; product_name: string; quantity_milli: number; unit_price_minor: number; unit_variable_cost_minor: number | null; unit_cost_minor: number | null };
 
 const toChannel = (row: ChannelRow): SalesChannel => ({ id: row.id, name: row.name, deliveryMethod: row.delivery_method, commissionBps: row.commission_bps, feePerOrderMinor: row.fee_per_order_minor, deliveryCostPerOrderMinor: row.delivery_cost_per_order_minor, unitsPerOrderMilli: row.units_per_order_milli, priceAdjustmentBps: row.price_adjustment_bps });
-const toPurchase = (row: PurchaseRow): Purchase => ({ id: row.id, purchasedOn: row.purchased_on, description: row.description, supplier: row.supplier, amountMinor: row.amount_minor, kind: row.kind, area: row.area, materialName: row.material_name, quantityMilli: row.quantity_milli, expenseId: row.expense_id, expenseName: row.expense_name, usefulLifeMonths: row.useful_life_months, documentId: row.document_id, source: row.source });
+const toPurchase = (row: PurchaseRow): Purchase => ({ id: row.id, purchasedOn: row.purchased_on, description: row.description, supplier: row.supplier, amountMinor: row.amount_minor, kind: row.kind, area: row.area, materialName: row.material_name, quantityMilli: row.quantity_milli, expenseId: row.expense_id, expenseName: row.expense_name, usefulLifeMonths: row.useful_life_months, includeInUnitCost: row.include_in_unit_cost === 1, documentId: row.document_id, source: row.source });
 
-const PURCHASE_COLUMNS = "p.id, p.purchased_on, p.description, p.supplier, p.amount_minor, p.kind, p.area, m.name AS material_name, p.quantity_milli, p.expense_id, e.name AS expense_name, p.useful_life_months, p.document_id, p.source FROM purchases p LEFT JOIN materials m ON m.id=p.material_id LEFT JOIN shared_expenses e ON e.id=p.expense_id";
+const PURCHASE_COLUMNS = "p.id, p.purchased_on, p.description, p.supplier, p.amount_minor, p.kind, p.area, m.name AS material_name, p.quantity_milli, p.expense_id, e.name AS expense_name, p.useful_life_months, p.include_in_unit_cost, p.document_id, p.source FROM purchases p LEFT JOIN materials m ON m.id=p.material_id LEFT JOIN shared_expenses e ON e.id=p.expense_id";
 
 export async function loadChannels(principal: Principal): Promise<SalesChannel[]> {
   const rows = await dbQuery<ChannelRow>("SELECT id, name, delivery_method, commission_bps, fee_per_order_minor, delivery_cost_per_order_minor, units_per_order_milli, price_adjustment_bps FROM sales_channels WHERE organization_id=? AND archived_at IS NULL ORDER BY created_at", [principal.organizationId]);
@@ -154,6 +173,10 @@ function audit(principal: Principal, action: string, entityId: string, details: 
 /** Archives a channel, purchase or sale: it leaves every view and total, and the audit trail keeps it. */
 export async function archiveRecord(principal: Principal, kind: "channel" | "purchase" | "sale", id: string, reason = ""): Promise<void> {
   assertEditor(principal);
+  if (kind === "purchase") {
+    const [row] = await dbQuery<{ include_in_unit_cost: number }>("SELECT include_in_unit_cost FROM purchases WHERE id=? AND organization_id=? AND kind='investment' AND archived_at IS NULL", [id, principal.organizationId]);
+    if (row?.include_in_unit_cost === 1) await commitOnce(principal, crypto.randomUUID(), "user", () => ({ action: "set-investment-cost", id, include: false }));
+  }
   const table = { channel: "sales_channels", purchase: "purchases", sale: "sales" }[kind];
   const [rows] = await dbBatch<{ id: string }>([
     { sql: `UPDATE ${table} SET archived_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND archived_at IS NULL RETURNING id`, params: [id, principal.organizationId] },
@@ -204,26 +227,12 @@ export async function recordPurchase(principal: Principal, input: PurchaseInput,
   let priceUpdated: RecordedPurchase["priceUpdated"] = null;
   if (value.kind === "material" && material && value.quantity && value.updateMaterialPrice) {
     const unitPrice = Math.round(value.amount / value.quantity * 1000) / 1000;
-    const priceKey = derivedKey(options.idempotencyKey, "price");
-    const applied = await dbQuery("SELECT 1 AS found FROM change_sets WHERE organization_id=? AND idempotency_key=?", [principal.organizationId, priceKey]);
-    if (!applied.length) {
-      for (let attempt = 0; ; attempt++) {
-        const latest = attempt ? await loadState(principal) : state;
-        const expectedFxRates = Object.fromEntries([...new Set([...latest.materials, ...latest.expenses, { currency }].map((item) => item.currency ?? latest.organization.currency))]
-          .filter((code) => code !== latest.organization.currency).flatMap((code) => latest.fxQuotes?.[code] ? [[code, latest.fxQuotes[code]!.ratePpm]] : []));
-        try {
-          await commitMutation(principal, {
-            action: "bulk-prices", materials: [{ id: material.id, amount: unitPrice, currency }], expenses: [], expectedFxRates,
-            source: `Compra${value.supplier ? ` a ${value.supplier}` : ""} del ${value.purchasedOn}`.slice(0, 200), effectiveDate: value.purchasedOn,
-            expectedRevision: latest.revision, idempotencyKey: priceKey,
-          }, { source: options.source });
-          break;
-        } catch (error) {
-          if (!(error instanceof ApiError) || error.status !== 409 || attempt >= 5) throw error;
-          await new Promise((resolve) => setTimeout(resolve, 80 * (attempt + 1)));
-        }
-      }
-    }
+    await commitOnce(principal, derivedKey(options.idempotencyKey, "price"), options.source, (latest) => ({
+      action: "bulk-prices", materials: [{ id: material.id, amount: unitPrice, currency }], expenses: [],
+      expectedFxRates: Object.fromEntries([...new Set([...latest.materials, ...latest.expenses, { currency }].map((item) => item.currency ?? latest.organization.currency))]
+        .filter((code) => code !== latest.organization.currency).flatMap((code) => latest.fxQuotes?.[code] ? [[code, latest.fxQuotes[code]!.ratePpm]] : [])),
+      source: `Compra${value.supplier ? ` a ${value.supplier}` : ""} del ${value.purchasedOn}`.slice(0, 200), effectiveDate: value.purchasedOn,
+    }));
     priceUpdated = { material: material.name, unitPrice, currency };
   }
 
@@ -236,9 +245,11 @@ export async function recordPurchase(principal: Principal, input: PurchaseInput,
     ] },
     audit(principal, "record-purchase", id, { ...value, amountMinor, area, source: options.source }),
   ]);
+  const includeInUnitCost = value.kind === "investment" && area === "production" && Boolean(value.includeInUnitCost);
+  if (includeInUnitCost) await commitOnce(principal, derivedKey(options.idempotencyKey, "investment"), options.source, () => ({ action: "set-investment-cost", id, include: true, allocationBasis: value.allocationBasis ?? "hours" }));
   return {
     id, duplicate: false, priceUpdated,
-    purchase: { id, purchasedOn: value.purchasedOn, description: value.description, supplier: value.supplier, amountMinor, kind: value.kind, area, materialName: material?.name ?? null, quantityMilli: value.quantity ? Math.round(value.quantity * 1000) : null, expenseId: expense?.id ?? null, expenseName: expense?.name ?? null, usefulLifeMonths: lifeMonths, documentId, source: options.source },
+    purchase: { id, purchasedOn: value.purchasedOn, description: value.description, supplier: value.supplier, amountMinor, kind: value.kind, area, materialName: material?.name ?? null, quantityMilli: value.quantity ? Math.round(value.quantity * 1000) : null, expenseId: expense?.id ?? null, expenseName: expense?.name ?? null, usefulLifeMonths: lifeMonths, includeInUnitCost, documentId, source: options.source },
   };
 }
 

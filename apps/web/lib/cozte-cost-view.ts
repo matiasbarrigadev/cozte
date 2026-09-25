@@ -1,4 +1,4 @@
-import { calculateCosts, productionExpenses, type DomainState, type ProductCost } from "./domain";
+import { calculateCosts, investmentMonthlyShare, productionCostSources, productionExpenses, type DomainState, type ProductCost } from "./domain";
 
 /** Accent-, case- and punctuation-insensitive key used to match names people type. */
 export function normalizeName(value: string): string {
@@ -134,7 +134,7 @@ function costSummary(cost: ProductCost | undefined) {
 function withSharedBreakdown(state: DomainState, lotUnits: number, cost: ProductCost | undefined) {
   const summary = costSummary(cost);
   if (!summary || !cost) return summary;
-  const names = new Map(state.expenses.map((item) => [item.id, item.name]));
+  const names = new Map([...state.expenses, ...productionCostSources(state)].map((item) => [item.id, item.name]));
   const sharedPerUnitByExpense = Object.fromEntries(Object.entries(cost.monthly.sharedByExpense).map(([id, monthly]) => [
     names.get(id) ?? id, Math.round(monthly * 1000 / cost.monthly.batchesMilli / Math.max(lotUnits, 1) * 100) / 100,
   ]));
@@ -203,6 +203,12 @@ export function buildCostOverview(state: DomainState, costs: ProductCost[] = cal
       percentages: item.allocationBasis === "manual" ? Object.fromEntries(Object.entries(item.allocationShares ?? {}).map(([id, share]) => [productNames.get(id) ?? id, share / 100])) : undefined,
     })),
     categories: (state.categories ?? []).map((item) => item.name),
+    // Workshop investments: the person decides whether their monthly share goes into each unit's cost.
+    workshopInvestments: (state.investments ?? []).filter((item) => item.area === "production").map((item) => ({
+      id: item.id, name: item.name, price: item.amountMinor, usefulLifeMonths: item.usefulLifeMonths,
+      monthlyShare: investmentMonthlyShare(item, state.activePeriod), includedInUnitCost: item.includeInUnitCost,
+      splitBy: item.includeInUnitCost ? (item.allocationBasis === "hours" ? "production hours" : "good units") : undefined,
+    })).filter((item) => item.monthlyShare > 0),
     gaps: costGaps(state, costs),
   };
 }
@@ -212,7 +218,7 @@ export function buildProductDetail(state: DomainState, productId: string, costs:
   const product = state.products.find((item) => item.id === productId);
   const cost = costs.find((item) => item.productId === productId);
   if (!product || !cost) return null;
-  const expenseNames = new Map(state.expenses.map((item) => [item.id, item]));
+  const expenseNames = new Map([...state.expenses, ...productionCostSources(state)].map((item) => [item.id, item]));
   const lotTotal = cost.totalLotMinor ?? cost.lines.reduce((sum, line) => sum + line.amountMinor, 0);
   const drivers = cost.lines.filter((line) => line.amountMinor > 0).map((line) => ({
     concept: line.label,

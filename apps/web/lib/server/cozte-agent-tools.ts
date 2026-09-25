@@ -128,7 +128,14 @@ export const cozteToolInputSchemas = {
     quantity: z.number().positive().max(1_000_000_000).optional().describe("Solo para material: cuántas unidades de compra se compraron; con eso se actualiza su precio"),
     expense: reference.optional().describe("Solo para fixed_payment: nombre o ID del gasto mensual que se pagó"),
     usefulLifeMonths: z.number().int().min(1).max(600).optional().describe("Solo para investment: meses que se va a usar"),
+    includeInUnitCost: z.boolean().optional().describe("Solo para una inversión del taller (area production), según lo que decida la persona: true suma su parte mensual al costo de cada producto; false la deja solo en el resultado del mes"),
+    splitBy: z.enum(["hours", "units"]).optional().describe("Si includeInUnitCost: cómo repartirla entre productos (horas de producción o unidades); por defecto horas"),
     receipt: receipt.optional().describe("Comprobante: número del archivo adjunto en el mensaje (1, 2…) o su nombre"),
+  }),
+  setInvestmentCost: z.object({
+    investment: reference.describe("Nombre o ID de una inversión del taller ya registrada"),
+    includeInUnitCost: z.boolean().describe("La decisión de la persona: true suma su parte mensual al costo de cada producto; false la deja solo en el resultado del mes"),
+    splitBy: z.enum(["hours", "units"]).optional().describe("Cómo repartirla entre productos: horas de producción o unidades; por defecto horas"),
   }),
   recordSale: z.object({
     date: isoDateToolInputSchema.optional().describe("Fecha de la venta (AAAA-MM-DD); por defecto hoy"),
@@ -175,6 +182,7 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   saveChannel: "Crea o modifica un canal de venta (local, feria, Instagram, Mercado Libre, mayorista…) con su comisión, cargo por venta, costo de entrega por pedido y ajuste de precio. Devuelve cuánto queda por unidad de cada producto en ese canal.",
   recordPurchase: "Registra una compra del día a día con su tipo y área, y le adjunta el comprobante. Un insumo con cantidad actualiza su precio; una inversión se reparte en su vida útil.",
   recordSale: "Registra una venta: productos, cantidades y canal, con su remito o factura. Calcula lo cobrado, lo que cuesta vender y entregar, y lo que dejó.",
+  setInvestmentCost: "Guarda la decisión de la persona sobre una inversión del taller: si su parte mensual se suma al costo de cada producto o queda solo en el resultado del mes. Devuelve el costo antes y después.",
   voidRecord: "Anula una compra o venta mal registrada (queda en el historial). Después puedes registrarla bien.",
   readBusiness: "Lee cómo va un mes: canales y lo que queda por unidad en cada uno, gastos fijos por área e inversiones, compras, ventas, resultado del mes y punto de equilibrio.",
   askQuestions: "Muestra a la persona de 1 a 4 preguntas con opciones para elegir; siempre puede responder con texto libre. Úsala cuando necesites datos o decisiones que solo ella conoce. Termina tu turno: las respuestas llegan en su próximo mensaje, así que no escribas nada después de llamarla.",
@@ -512,7 +520,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       const recorded = await recordPurchase(principal, {
         purchasedOn: value.date ?? today(), description: value.description, supplier: value.supplier ?? "", amount: value.total, currency: value.currency,
         kind: value.kind, area: value.area, materialId: material?.item?.id, quantity: value.quantity, expenseId: expense?.item?.id,
-        usefulLifeMonths: value.usefulLifeMonths, documentId: document?.id,
+        usefulLifeMonths: value.usefulLifeMonths, includeInUnitCost: value.includeInUnitCost, allocationBasis: value.splitBy, documentId: document?.id,
       }, { source: "cozte", idempotencyKey: stableKey(input.runId, input.toolCallId) });
       const purchase = recorded.purchase;
       const done = [
@@ -522,7 +530,15 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       ];
       return {
         ok: true, done, ids: { purchase: recorded.id },
-        ...(purchase.kind === "investment" && purchase.usefulLifeMonths ? { monthlyShare: Math.round(purchase.amountMinor / purchase.usefulLifeMonths), note: "Una inversión no es un gasto del mes ni entra en el costo por unidad: el resultado de cada mes suma su parte (monthlyShare) durante su vida útil." } : {}),
+        ...(purchase.kind === "investment" && purchase.usefulLifeMonths ? {
+          monthlyShare: Math.round(purchase.amountMinor / purchase.usefulLifeMonths), includedInUnitCost: Boolean(purchase.includeInUnitCost),
+          note: purchase.includeInUnitCost
+            ? "Su parte mensual se suma al costo de cada producto y también cuenta en el resultado de cada mes durante su vida útil."
+            : purchase.area === "production"
+              ? "Por ahora su parte mensual cuenta solo en el resultado del mes, no en el costo por unidad. Si la persona no lo decidió, asesórala y guarda su decisión con setInvestmentCost."
+              : "Una inversión no es un gasto del mes: el resultado de cada mes suma su parte (monthlyShare) durante su vida útil.",
+          ...(purchase.includeInUnitCost ? { costs: await costReceipt(principal) } : {}),
+        } : {}),
         ...(purchase.kind === "material" ? { note: "Los insumos no son un gasto del mes: se vuelven costo cuando se vende lo que se produce con ellos." } : {}),
         ...(value.receipt && !document ? { receiptWarning: "No encontré ese archivo; la compra quedó sin comprobante." } : {}),
         ...(recorded.priceUpdated && material?.item ? { costs: await costReceipt(principal, productsUsing(state, material.item.id)) } : {}),
@@ -554,6 +570,19 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         ...(value.receipt && !document ? { receiptWarning: "No encontré ese archivo; la venta quedó sin remito." } : {}),
       };
     }
+    case "setInvestmentCost": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.setInvestmentCost>;
+      const state = await loadState(principal);
+      const workshop = (state.investments ?? []).filter((item) => item.area === "production");
+      const found = resolveEntity(workshop, value.investment);
+      if (!found.item) return notFound("la inversión del taller", value.investment, found.candidates);
+      const investment = found.item;
+      if (investment.includeInUnitCost === value.includeInUnitCost && (!value.splitBy || value.splitBy === investment.allocationBasis)) return { ok: true, done: [], unchanged: true, note: "Ya estaba así; no hubo cambios." };
+      const before = await costReceipt(principal);
+      const { done } = await commitPlans(input, [{ description: value.includeInUnitCost ? `${investment.name}: su parte mensual se suma al costo de cada producto` : `${investment.name}: su parte mensual queda solo en el resultado del mes`, build: () => ({ action: "set-investment-cost", id: investment.id, include: value.includeInUnitCost, allocationBasis: value.splitBy }) }]);
+      const after = await costReceipt(principal);
+      return { ok: true, done, costs: after.map((item) => ({ ...item, unitCostBefore: before.find((old) => old.id === item.id)?.unitCost ?? null })) };
+    }
     case "voidRecord": {
       const value = args as z.infer<typeof cozteToolInputSchemas.voidRecord>;
       await archiveRecord(principal, value.kind, value.id, value.reason);
@@ -566,7 +595,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         ok: true, readAt: new Date().toISOString(), currency: view.currency, month: view.month,
         channels: view.channels.map((channel) => ({ id: channel.id, name: channel.name, delivery: channel.deliveryMethod, commissionPercent: channel.commissionBps / 100, feePerSale: channel.feePerOrderMinor, deliveryCostPerOrder: channel.deliveryCostPerOrderMinor, unitsPerOrder: channel.unitsPerOrderMilli / 1000, priceAdjustmentPercent: channel.priceAdjustmentBps / 100 })),
         perUnitByChannel: view.economics.map((row) => ({ channel: row.channelName, product: row.productName, price: row.price, productionCost: row.productionCost, sellingCost: row.sellingCost, deliveryCost: row.deliveryCost, leftPerUnit: row.left })),
-        fixedCostsByArea: view.structure.areas.map((item) => ({ area: item.label, monthlyTotal: item.monthlyTotal, expenses: item.expenses.map((expense) => ({ name: expense.name, monthlyAmount: expense.monthlyAmount })), investments: item.investments.map((asset) => ({ description: asset.description, monthlyShare: asset.monthlyShare, monthsLeft: asset.monthsLeft })) })),
+        fixedCostsByArea: view.structure.areas.map((item) => ({ area: item.label, monthlyTotal: item.monthlyTotal, expenses: item.expenses.map((expense) => ({ name: expense.name, monthlyAmount: expense.monthlyAmount })), investments: item.investments.map((asset) => ({ description: asset.description, monthlyShare: asset.monthlyShare, monthsLeft: asset.monthsLeft, ...(item.area === "production" ? { includedInUnitCost: asset.includeInUnitCost } : {}) })) })),
         result: view.result,
         purchases: view.purchases.slice(0, 40).map((purchase) => ({ id: purchase.id, date: purchase.purchasedOn, description: purchase.description, amount: purchase.amountMinor, kind: PURCHASE_KIND_LABELS[purchase.kind], area: AREA_LABELS[purchase.area], hasReceipt: Boolean(purchase.documentId) })),
         sales: view.sales.slice(0, 40).map((sale) => ({ id: sale.id, date: sale.soldOn, channel: sale.channelName, total: sale.totalMinor, items: sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", "), hasReceipt: Boolean(sale.documentId) })),
@@ -619,6 +648,7 @@ export function createCozteTools(principal: Principal, runId: string) {
     saveChannel: tool({ description: describe.saveChannel, inputSchema: schemas.saveChannel, execute: execute("saveChannel") }),
     recordPurchase: tool({ description: describe.recordPurchase, inputSchema: schemas.recordPurchase, execute: execute("recordPurchase") }),
     recordSale: tool({ description: describe.recordSale, inputSchema: schemas.recordSale, execute: execute("recordSale") }),
+    setInvestmentCost: tool({ description: describe.setInvestmentCost, inputSchema: schemas.setInvestmentCost, execute: execute("setInvestmentCost") }),
     voidRecord: tool({ description: describe.voidRecord, inputSchema: schemas.voidRecord, execute: execute("voidRecord") }),
     readBusiness: tool({ description: describe.readBusiness, inputSchema: schemas.readBusiness, execute: execute("readBusiness") }),
     askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),

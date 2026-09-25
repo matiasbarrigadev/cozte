@@ -1,4 +1,4 @@
-import { calculateCosts, type DomainState, type ProductCost } from "./domain";
+import { calculateCosts, productionCostSources, type DomainState, type ProductCost } from "./domain";
 import { costGaps } from "./cozte-cost-view";
 
 export type DashboardLesson = { id: "driver" | "volume" | "contribution" | "price"; title: string; text: string };
@@ -45,7 +45,7 @@ export function dashboardSummary(state: DomainState, costs: ProductCost[], money
       ...main.lines.filter((line) => line.kind === "material").map((line) => ({ label: line.label, perUnit: line.amountMinor / lotUnits })),
       ...(main.perUnit!.laborMinor > 0 ? [{ label: "la mano de obra directa", perUnit: main.perUnit!.laborMinor }] : []),
       ...Object.entries(main.monthly.sharedByExpense).map(([id, amount]) => ({
-        label: `el gasto de ${state.expenses.find((expense) => expense.id === id)?.name ?? "un gasto compartido"}`,
+        label: `el gasto de ${productionCostSources(state).find((expense) => expense.id === id)?.name ?? "un gasto compartido"}`,
         perUnit: amount / Math.max(main.monthly.units, 1),
       })),
     ].sort((a, b) => b.perUnit - a.perUnit);

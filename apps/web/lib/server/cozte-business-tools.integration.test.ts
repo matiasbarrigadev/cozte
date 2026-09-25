@@ -70,4 +70,23 @@ describe.skipIf(!bridgeUrl)("Cozte business tools against D1", { timeout: 60_000
     expect(rows[0].archived_at).not.toBeNull();
     expect(await run("readBusiness", { month })).toMatchObject({ result: { sales: 0 } });
   });
+
+  it("leaves a workshop investment out of the unit cost until the person decides, then applies the choice", async () => {
+    const drill = await run("recordPurchase", { description: "Prensa de tofu", total: 120000, kind: "investment", area: "production", usefulLifeMonths: 60 });
+    expect(drill).toMatchObject({ ok: true, includedInUnitCost: false, note: expect.stringContaining("asesórala") });
+    const before = (await loadState(principal)).investments!.find((item) => item.name === "Prensa de tofu")!;
+    expect(before.includeInUnitCost).toBe(false);
+    const decided = await run("setInvestmentCost", { investment: "Prensa de tofu", includeInUnitCost: true });
+    // 120 000 over 60 months = 2 000 a month, over 2 000 units = 1 more per unit.
+    const tofu = (decided.costs as { product: string; unitCost: number; unitCostBefore: number }[]).find((item) => item.product === "Tofu 300g")!;
+    expect(tofu.unitCost - tofu.unitCostBefore).toBe(1);
+    expect(await run("setInvestmentCost", { investment: "Prensa de tofu", includeInUnitCost: true })).toMatchObject({ ok: true, unchanged: true });
+    // Voiding it takes it back out of the cost first.
+    const purchaseId = drill.ids!.purchase;
+    expect(await run("voidRecord", { kind: "purchase", id: purchaseId, reason: "Prueba" })).toMatchObject({ ok: true });
+    const after = await loadState(principal);
+    expect(after.investments!.some((item) => item.id === purchaseId)).toBe(false);
+    const snapshots = await dbQuery<{ context_json: string }>("SELECT context_json FROM cost_snapshots WHERE organization_id=? ORDER BY created_at DESC LIMIT 1", [principal.organizationId]);
+    expect(snapshots[0].context_json).not.toContain("investment:");
+  });
 });

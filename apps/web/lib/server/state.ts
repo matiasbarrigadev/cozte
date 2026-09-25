@@ -1,5 +1,5 @@
 import "server-only";
-import { calculateCosts, COST_AREAS, type CostArea, type DomainState } from "@/lib/domain";
+import { calculateCosts, COST_AREAS, type CostArea, type DomainState, type Investment } from "@/lib/domain";
 import { convertNativeMilli, isCurrency, type Currency, type FxQuote } from "@/lib/currency";
 import { calculateProductionCosts, evaluableProfileProducts, productionProfileSchema } from "@/lib/production-profile";
 import { dbBatch, dbQuery } from "./db";
@@ -23,6 +23,7 @@ type ExpenseRow = {
   currency: string | null; native_amount_milli: number | null; area: string | null;
 };
 type CategoryRow = { id: string; name: string };
+type InvestmentRow = { id: string; description: string; amount_minor: number; purchased_on: string; useful_life_months: number | null; area: string; include_in_unit_cost: number; allocation_basis: string };
 
 export async function ensureOrganization(principal: Principal): Promise<void> {
   await dbBatch([
@@ -38,13 +39,14 @@ export async function loadState(principal: Principal): Promise<DomainState> {
 }
 
 export async function loadStateForOrganization(org: string): Promise<DomainState> {
-  const [organizations, materials, products, components, expenses, categories] = await dbBatch<OrganizationRow | MaterialRow | ProductRow | ComponentRow | ExpenseRow | CategoryRow>([
+  const [organizations, materials, products, components, expenses, categories, investments] = await dbBatch<OrganizationRow | MaterialRow | ProductRow | ComponentRow | ExpenseRow | CategoryRow | InvestmentRow>([
     { sql: "SELECT id, name, currency, revision FROM organizations WHERE id=?", params: [org] },
     { sql: "SELECT m.id, m.name, m.supplier, m.purchase_unit, m.category, m.version, p.amount_minor AS price_minor, p.source, p.effective_date, p.currency, p.native_amount_milli FROM materials m LEFT JOIN material_prices p ON p.material_id=m.id AND p.version=m.version WHERE m.organization_id=? AND m.archived_at IS NULL ORDER BY m.name", params: [org] },
     { sql: "SELECT id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli, batches_per_month_milli, version FROM products WHERE organization_id=? AND archived_at IS NULL ORDER BY name", params: [org] },
     { sql: "SELECT pm.product_id, pm.material_id, pm.quantity_milli FROM product_materials pm JOIN products p ON p.id=pm.product_id JOIN materials m ON m.id=pm.material_id WHERE p.organization_id=? AND p.archived_at IS NULL AND m.archived_at IS NULL", params: [org] },
     { sql: "SELECT id, name, period, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, version, currency, native_amount_milli, area FROM shared_expenses WHERE organization_id=? ORDER BY name", params: [org] },
     { sql: "SELECT id, name FROM cost_categories WHERE organization_id=? ORDER BY name", params: [org] },
+    { sql: "SELECT id, description, amount_minor, purchased_on, useful_life_months, area, include_in_unit_cost, allocation_basis FROM purchases WHERE organization_id=? AND kind='investment' AND archived_at IS NULL ORDER BY purchased_on", params: [org] },
   ]);
   const organization = organizations[0] as OrganizationRow | undefined;
   if (!organization) throw new Error("Organization was not provisioned");
@@ -58,6 +60,11 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
     organization: { id: organization.id, name: organization.name, currency: base },
     fxQuotes,
     categories: categories as CategoryRow[],
+    investments: (investments as InvestmentRow[]).filter((row) => row.useful_life_months).map((row): Investment => ({
+      id: row.id, name: row.description, amountMinor: row.amount_minor, purchasedOn: row.purchased_on, usefulLifeMonths: row.useful_life_months!,
+      area: (COST_AREAS as string[]).includes(row.area) ? row.area as CostArea : "production", includeInUnitCost: row.include_in_unit_cost === 1,
+      allocationBasis: row.allocation_basis === "units" ? "units" : "hours",
+    })),
     materials: (materials as MaterialRow[]).map((row) => ({
       id: row.id, name: row.name, supplier: row.supplier, purchaseUnit: row.purchase_unit, category: row.category,
       version: row.version, priceMinor: row.price_minor === null ? null : normalize(row.native_amount_milli ?? row.price_minor * 1000, isCurrency(row.currency ?? "") ? row.currency as Currency : base), source: row.source, effectiveDate: row.effective_date,

@@ -35,6 +35,8 @@ export type Purchase = {
   expenseId?: string | null;
   expenseName?: string | null;
   usefulLifeMonths?: number | null;
+  /** Workshop investments only: whether the person chose to spread it into each unit's cost. */
+  includeInUnitCost?: boolean;
   documentId?: string | null;
   source: "user" | "cozte";
 };
@@ -200,7 +202,7 @@ export type CompanyStructure = {
     label: string;
     hint: string;
     expenses: { id: string; name: string; category: string; monthlyAmount: number }[];
-    investments: { id: string; description: string; amount: number; monthlyShare: number; usefulLifeMonths: number; monthsLeft: number; documentId?: string | null }[];
+    investments: { id: string; description: string; amount: number; monthlyShare: number; usefulLifeMonths: number; monthsLeft: number; includeInUnitCost: boolean; documentId?: string | null }[];
     monthlyTotal: number;
   }[];
   /** Monthly fixed costs of every area, including the workshop's, plus this month's share of investments. */
@@ -213,7 +215,7 @@ export function companyStructure(state: Pick<DomainState, "expenses" | "activePe
   const areas = (["production", "delivery", "sales", "admin"] as CostArea[]).map((area) => {
     const expenses = active.filter((item) => (item.area ?? "production") === area).map((item) => ({ id: item.id, name: item.name, category: item.category, monthlyAmount: item.amountMinor }));
     const assets = investments.filter((item) => item.kind === "investment" && item.area === area && item.usefulLifeMonths)
-      .map((item) => ({ id: item.id, description: item.description, amount: item.amountMinor, monthlyShare: round2(investmentShare(item, month)), usefulLifeMonths: item.usefulLifeMonths!, monthsLeft: monthsLeft(item, month), documentId: item.documentId }))
+      .map((item) => ({ id: item.id, description: item.description, amount: item.amountMinor, monthlyShare: round2(investmentShare(item, month)), usefulLifeMonths: item.usefulLifeMonths!, monthsLeft: monthsLeft(item, month), includeInUnitCost: Boolean(item.includeInUnitCost), documentId: item.documentId }))
       .filter((item) => item.monthsLeft > 0);
     return {
       area, label: AREA_LABELS[area], hint: AREA_HINTS[area], expenses, investments: assets,

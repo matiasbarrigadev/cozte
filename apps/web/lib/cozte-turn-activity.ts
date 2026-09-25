@@ -23,6 +23,7 @@ const running: Record<string, string> = {
   saveChannel: "Guardando el canal",
   recordPurchase: "Registrando la compra",
   recordSale: "Registrando la venta",
+  setInvestmentCost: "Ajustando la inversión",
   voidRecord: "Anulando el registro",
   readBusiness: "Revisando el mes",
 };
@@ -42,6 +43,7 @@ const summaryVerb: Record<string, [string, string]> = {
   saveChannel: ["guardó 1 canal", "guardó {n} canales"],
   recordPurchase: ["registró 1 compra", "registró {n} compras"],
   recordSale: ["registró 1 venta", "registró {n} ventas"],
+  setInvestmentCost: ["ajustó 1 inversión", "ajustó {n} inversiones"],
   voidRecord: ["anuló 1 registro", "anuló {n} registros"],
   readBusiness: ["revisó el mes", "revisó el mes"],
 };

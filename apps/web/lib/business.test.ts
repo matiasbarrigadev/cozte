@@ -89,4 +89,16 @@ describe("business engine", () => {
     expect(admin).toMatchObject({ monthlyTotal: 120_000, investments: [{ description: "Notebook", monthlyShare: 20_000, monthsLeft: 36 }] });
     expect(structure.monthlyFixedTotal).toBe(370_000);
   });
+
+  it("adds a workshop investment to each unit's cost only when the person chose it", () => {
+    const scale = { id: "balanza", name: "Balanza", amountMinor: 60_000, purchasedOn: "2026-09-10", usefulLifeMonths: 60, area: "production" as const, includeInUnitCost: false, allocationBasis: "hours" as const };
+    expect(calculateCosts({ ...state, investments: [scale] })[0].unitMinor).toBe(500);
+    // 60 000 over 60 months = 1 000 a month, over 2 000 units = 0.5 per unit.
+    const included = calculateCosts({ ...state, investments: [{ ...scale, includeInUnitCost: true }] })[0];
+    expect(included.monthly.sharedByExpense).toEqual({ luz: 200_000, "investment:balanza": 1_000 });
+    expect(included.unitMinor).toBe(501);
+    // An office investment never enters the unit cost, and neither does one past its useful life.
+    expect(calculateCosts({ ...state, investments: [{ ...scale, area: "admin", includeInUnitCost: true }] })[0].unitMinor).toBe(500);
+    expect(calculateCosts({ ...state, activePeriod: "2031-09", expenses: state.expenses.map((item) => ({ ...item, period: "2031-09" })), investments: [{ ...scale, includeInUnitCost: true }] })[0].unitMinor).toBe(500);
+  });
 });

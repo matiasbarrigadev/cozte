@@ -53,6 +53,19 @@ export type SharedExpense = {
   fxMissing?: boolean;
 };
 
+/** Something bought to last (a tool, a machine, a computer), spread over the months it is used. */
+export type Investment = {
+  id: string;
+  name: string;
+  amountMinor: number;
+  purchasedOn: string;
+  usefulLifeMonths: number;
+  area: CostArea;
+  /** The person's choice: whether a workshop investment's monthly share goes into each unit's cost. */
+  includeInUnitCost: boolean;
+  allocationBasis: "hours" | "units";
+};
+
 export type ProductionWorkMap = {
   isDraft: boolean;
   products: { name: string; finishedUnit: string; goodUnitsPerBatch: number | null; startedUnitsPerBatch: number | null; normalScrapUnitsPerBatch: number | null; batchesPerMonth: number | null; hoursPerBatch: number | null }[];
@@ -73,6 +86,7 @@ export type DomainState = {
   expenses: SharedExpense[];
   categories?: { id: string; name: string }[];
   productionWork?: ProductionWorkMap | null;
+  investments?: Investment[];
 };
 
 export type CostLine = {
@@ -116,9 +130,29 @@ export function convertToOrganizationCurrency(state: DomainState, nativeAmountMi
   return quote ? convertNativeMilli(nativeAmountMilli, quote) : null;
 }
 
-/** Monthly expenses of the workshop for the active period: the only ones that go into the cost of each unit. */
+/** Monthly expenses of the workshop for the active period. */
 export function productionExpenses(state: Pick<DomainState, "expenses" | "activePeriod">): SharedExpense[] {
   return state.expenses.filter((item) => item.period === state.activePeriod && (item.area ?? "production") === "production");
+}
+
+const monthNumber = (month: string) => Number(month.slice(0, 4)) * 12 + Number(month.slice(5, 7)) - 1;
+
+/** An investment's share of a month (whole units): its price over its useful life, while it lasts. */
+export function investmentMonthlyShare(item: Pick<Investment, "amountMinor" | "purchasedOn" | "usefulLifeMonths">, month: string): number {
+  const elapsed = monthNumber(month) - monthNumber(item.purchasedOn.slice(0, 7));
+  return item.usefulLifeMonths > 0 && elapsed >= 0 && elapsed < item.usefulLifeMonths ? Math.round(item.amountMinor / item.usefulLifeMonths) : 0;
+}
+
+/**
+ * Everything spread into each unit's cost: the workshop's monthly expenses plus the workshop investments the person
+ * chose to include, as their monthly share. Investment sources carry an "investment:" id.
+ */
+export function productionCostSources(state: Pick<DomainState, "expenses" | "activePeriod" | "investments">): SharedExpense[] {
+  const investments = (state.investments ?? []).filter((item) => item.area === "production" && item.includeInUnitCost).flatMap((item): SharedExpense[] => {
+    const amountMinor = investmentMonthlyShare(item, state.activePeriod);
+    return amountMinor > 0 ? [{ id: `investment:${item.id}`, name: `${item.name} (inversión)`, period: state.activePeriod, area: "production", amountMinor, allocationBasis: item.allocationBasis, category: "Inversiones", version: 1 }] : [];
+  });
+  return [...productionExpenses(state), ...investments];
 }
 
 function safeInteger(value: bigint): number {
@@ -188,7 +222,7 @@ export function calculateCosts(
   const monthlyShared: Record<string, number> = Object.fromEntries(state.products.map((product) => [product.id, 0]));
   const sharedByExpense: Record<string, Record<string, number>> = Object.fromEntries(state.products.map((product) => [product.id, {}]));
   const unallocatedExpenses: string[] = [];
-  const periodExpenses = productionExpenses(state);
+  const periodExpenses = productionCostSources(state);
   const missingExpenseFx = periodExpenses.some((expense) => expense.fxMissing);
   let sharedExpensesActive = false;
   for (const expense of periodExpenses) {

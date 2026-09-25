@@ -69,13 +69,23 @@ export function ExpensesSection({ state, demo, month, onSave, onOpenProduction, 
         const workshop = structure.areas.find((item) => item.area === "production")!;
         return <Card>
           <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
-            <div className="flex flex-col gap-1.5"><CardTitle>Taller (producción)</CardTitle><CardDescription>Sus gastos fijos ya están dentro del costo de cada producto: se reparten según cuánto produces. Sus inversiones se cuentan en el resultado del mes.</CardDescription></div>
+            <div className="flex flex-col gap-1.5"><CardTitle>Taller (producción)</CardTitle><CardDescription>Sus gastos fijos ya están dentro del costo de cada producto: se reparten según cuánto produces. Sus inversiones cuentan en el resultado del mes y, si lo eliges, también en el costo de cada producto.</CardDescription></div>
             <Button size="sm" variant="outline" onClick={onOpenProduction}>Ver costos de producción</Button>
           </CardHeader>
           <CardContent className="flex flex-col gap-1 text-sm">
             {workshop.expenses.map((expense) => <div key={expense.id} className="flex justify-between gap-3"><span>{expense.name}</span><span className="tabular-nums">{money(expense.monthlyAmount)}</span></div>)}
-            {workshop.investments.map((asset) => <div key={asset.id} className="flex justify-between gap-3"><span>{asset.description} <span className="text-xs text-muted-foreground">(inversión, faltan {asset.monthsLeft} meses)</span></span><span className="tabular-nums">{money(asset.monthlyShare)}</span></div>)}
+            {workshop.investments.map((asset) => <div key={asset.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+              <span>{asset.description} <span className="text-xs text-muted-foreground">(inversión, faltan {asset.monthsLeft} meses)</span></span>
+              <span className="flex items-center gap-3">
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground"><input type="checkbox" className="size-3.5" checked={asset.includeInUnitCost} onChange={async (event) => {
+                  const include = event.target.checked;
+                  if (await onSave({ action: "set-investment-cost", id: asset.id, include }, true)) toast.success(include ? "Ahora su parte se suma al costo de cada producto" : "Ahora cuenta solo en el resultado del mes");
+                }} />Sumar al costo de cada producto</label>
+                <span className="tabular-nums">{money(asset.monthlyShare)}</span>
+              </span>
+            </div>)}
             <div className="mt-1 flex justify-between gap-3 border-t pt-2 font-medium"><span>Total del taller</span><span className="tabular-nums">{money(workshop.monthlyTotal)}</span></div>
+            {workshop.investments.length ? <Tip title="¿Sumar una inversión al costo de cada producto?" className="mt-3">Si la máquina o herramienta se usa para producir y algún día habrá que reemplazarla, sumar su parte mensual al costo hace que tu precio pague su desgaste. Si es chica o se usa poco, puede quedar solo en el resultado del mes. Lo decides tú; Cozte te puede ayudar a elegir con tus números.</Tip> : null}
           </CardContent>
         </Card>;
       })()}

@@ -55,7 +55,7 @@ export function PurchasesSection({ state, demo, month, onMonthChange, onOpenCozt
               purchase.supplier,
               purchase.kind === "material" && purchase.materialName ? `${purchase.materialName}${purchase.quantityMilli ? ` · ${purchase.quantityMilli / 1000} u.` : ""}` : null,
               purchase.kind === "fixed_payment" && purchase.expenseName ? `Paga: ${purchase.expenseName}` : null,
-              purchase.kind === "investment" && purchase.usefulLifeMonths ? `${money(purchase.amountMinor / purchase.usefulLifeMonths)} por mes durante ${purchase.usefulLifeMonths} meses` : null,
+              purchase.kind === "investment" && purchase.usefulLifeMonths ? `${money(purchase.amountMinor / purchase.usefulLifeMonths)} por mes durante ${purchase.usefulLifeMonths} meses${purchase.includeInUnitCost ? ", sumado al costo de cada producto" : ""}` : null,
               purchase.source === "cozte" ? "Registrada por Cozte" : null,
             ].filter(Boolean).join(" · ")}</div></TableCell>
             <TableCell><Badge variant="outline" title={PURCHASE_KIND_HINTS[purchase.kind]}>{PURCHASE_KIND_LABELS[purchase.kind]}</Badge></TableCell>
@@ -98,7 +98,7 @@ function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: Domai
         ...(areaLocked ? {} : { area }),
         ...(kind === "material" ? { materialId: text("material"), ...(text("quantity") ? { quantity: Number(text("quantity")) } : {}), updateMaterialPrice: data.get("updatePrice") === "on" } : {}),
         ...(kind === "fixed_payment" ? { expenseId: text("expense") } : {}),
-        ...(kind === "investment" ? { usefulLifeMonths: Number(text("life")) } : {}),
+        ...(kind === "investment" ? { usefulLifeMonths: Number(text("life")), ...(area === "production" ? { includeInUnitCost: data.get("includeInUnitCost") === "on" } : {}) } : {}),
         documentId,
       } });
       toast.success("Compra registrada");
@@ -128,6 +128,10 @@ function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: Domai
       {kind === "fixed_payment" ? <Field><FieldLabel htmlFor="purchase-expense">Gasto mensual que pagaste</FieldLabel><NativeSelect id="purchase-expense" name="expense" className="w-full">{activeExpenses.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.name} ({AREA_LABELS[item.area ?? "production"]})</NativeSelectOption>)}</NativeSelect></Field> : null}
       {kind === "investment" ? <Field><FieldLabel htmlFor="purchase-life">¿Cuántos meses la vas a usar?</FieldLabel><Input id="purchase-life" name="life" type="number" min="1" max="600" step="1" required defaultValue={36} /><FieldDescription>Como referencia: 36 meses para tecnología, 60 para máquinas y herramientas.</FieldDescription></Field> : null}
       {!areaLocked ? <Field><FieldLabel htmlFor="purchase-area">Área</FieldLabel><NativeSelect id="purchase-area" className="w-full" value={area} onChange={(event) => setArea(event.target.value as CostArea)}>{AREAS.map((item) => <NativeSelectOption key={item} value={item}>{AREA_LABELS[item]}</NativeSelectOption>)}</NativeSelect></Field> : null}
+      {kind === "investment" && area === "production" ? <Field>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="includeInUnitCost" className="size-4" />Sumar su parte mensual al costo de cada producto</label>
+        <FieldDescription>Conviene si se usa para producir y habrá que reemplazarla: así tu precio paga su desgaste. Si no, cuenta solo en el resultado del mes. Puedes cambiarlo después en Gastos de la empresa.</FieldDescription>
+      </Field> : null}
       <Field><FieldLabel htmlFor="purchase-receipt">Comprobante</FieldLabel><Input id="purchase-receipt" type="file" accept=".pdf,image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><FieldDescription>Foto o PDF de hasta 4 MB. Opcional.</FieldDescription></Field>
     </FieldGroup>
     <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancelar</Button><Button type="submit" disabled={busy}>{busy ? "Guardando…" : "Registrar compra"}</Button></DialogFooter></form>
