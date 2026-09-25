@@ -1,8 +1,9 @@
 const numericKeys = new Set([
   "goodUnitsPerLot", "lotsPerMonth", "hoursPerLot", "directLaborPerLot", "salePrice", "salesVariablePerUnit",
   "price", "amount", "monthlyAmount", "perUnit", "perLot", "quantityPerLot", "usageUnitsPerPurchaseUnit", "percent",
+  "commissionPercent", "feePerSale", "deliveryCostPerOrder", "unitsPerOrder", "priceAdjustmentPercent", "total", "quantity", "unitPrice", "deliveryCost", "usefulLifeMonths",
 ]);
-const structuredKeys = new Set(["items", "percentages", "materialPrices", "expenseAmounts", "products", "recipe"]);
+const structuredKeys = new Set(["items", "percentages", "materialPrices", "expenseAmounts", "products", "recipe", "questions", "options"]);
 
 function parseStructuredValue(value: unknown): unknown {
   if (typeof value !== "string") return value;

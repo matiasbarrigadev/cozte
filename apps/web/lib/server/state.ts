@@ -1,5 +1,5 @@
 import "server-only";
-import { calculateCosts, type DomainState } from "@/lib/domain";
+import { calculateCosts, COST_AREAS, type CostArea, type DomainState } from "@/lib/domain";
 import { convertNativeMilli, isCurrency, type Currency, type FxQuote } from "@/lib/currency";
 import { calculateProductionCosts, evaluableProfileProducts, productionProfileSchema } from "@/lib/production-profile";
 import { dbBatch, dbQuery } from "./db";
@@ -20,7 +20,7 @@ type ComponentRow = { product_id: string; material_id: string; quantity_milli: n
 type ExpenseRow = {
   id: string; name: string; period: string; amount_minor: number;
   allocation_basis: "hours" | "units"; allocation_mode: "automatic" | "manual"; allocation_shares_json: string; category: string; version: number;
-  currency: string | null; native_amount_milli: number | null;
+  currency: string | null; native_amount_milli: number | null; area: string | null;
 };
 type CategoryRow = { id: string; name: string };
 
@@ -43,7 +43,7 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
     { sql: "SELECT m.id, m.name, m.supplier, m.purchase_unit, m.category, m.version, p.amount_minor AS price_minor, p.source, p.effective_date, p.currency, p.native_amount_milli FROM materials m LEFT JOIN material_prices p ON p.material_id=m.id AND p.version=m.version WHERE m.organization_id=? AND m.archived_at IS NULL ORDER BY m.name", params: [org] },
     { sql: "SELECT id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli, batches_per_month_milli, version FROM products WHERE organization_id=? AND archived_at IS NULL ORDER BY name", params: [org] },
     { sql: "SELECT pm.product_id, pm.material_id, pm.quantity_milli FROM product_materials pm JOIN products p ON p.id=pm.product_id JOIN materials m ON m.id=pm.material_id WHERE p.organization_id=? AND p.archived_at IS NULL AND m.archived_at IS NULL", params: [org] },
-    { sql: "SELECT id, name, period, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, version, currency, native_amount_milli FROM shared_expenses WHERE organization_id=? ORDER BY name", params: [org] },
+    { sql: "SELECT id, name, period, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, version, currency, native_amount_milli, area FROM shared_expenses WHERE organization_id=? ORDER BY name", params: [org] },
     { sql: "SELECT id, name FROM cost_categories WHERE organization_id=? ORDER BY name", params: [org] },
   ]);
   const organization = organizations[0] as OrganizationRow | undefined;
@@ -72,7 +72,7 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
       productId: row.product_id, materialId: row.material_id, quantityMilli: row.quantity_milli,
     })),
     expenses: (expenses as ExpenseRow[]).map((row) => ({
-      id: row.id, name: row.name, period: row.period, amountMinor: normalize(row.native_amount_milli ?? row.amount_minor * 1000, isCurrency(row.currency ?? "") ? row.currency as Currency : base) ?? row.amount_minor,
+      id: row.id, name: row.name, period: row.period, area: (COST_AREAS as string[]).includes(row.area ?? "") ? row.area as CostArea : "production", amountMinor: normalize(row.native_amount_milli ?? row.amount_minor * 1000, isCurrency(row.currency ?? "") ? row.currency as Currency : base) ?? row.amount_minor,
       allocationBasis: row.allocation_mode === "manual" ? "manual" : row.allocation_basis, allocationShares: JSON.parse(row.allocation_shares_json), category: row.category, version: row.version,
       currency: isCurrency(row.currency ?? "") ? row.currency as Currency : base, nativeAmountMilli: row.native_amount_milli ?? row.amount_minor * 1000,
       fxMissing: isCurrency(row.currency ?? "") && row.currency !== base && !fxQuotes[row.currency as Currency],

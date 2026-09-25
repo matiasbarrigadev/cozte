@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateText, hasToolCall, isStepCount, type ModelMessage } from "ai";
+import { generateText, isStepCount, type ModelMessage } from "ai";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 // Reads AI_GATEWAY_API_KEY and COZTE_* from apps/web/.env.local, the same file `next dev` uses.
@@ -25,7 +25,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("./assistant-trace", async (original) => ({ ...(await original<typeof import("./assistant-trace")>()), addAssistantToolEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOString(), rates: { USD: 1 }, source: "FXRatesAPI" }), quotesFor: () => ({}) }));
 
-import { COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
+import { COZTE_WRITE_TOOLS, cozteToolSucceeded, questionsShown } from "@/lib/cozte-tool-catalog";
 import { correctionMessage, finalAnswerStep, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
 import { createCozteTools } from "./cozte-agent-tools";
 import { buildCozteInstructions } from "./cozte-instructions";
@@ -33,7 +33,7 @@ import { cozteAgentSettings, cozteProviderOptions } from "./cozte-workflow";
 import { loadCozteNotes } from "./cozte-notes";
 import { loadState } from "./state";
 import { calculateCosts } from "@/lib/domain";
-import { dbBatch } from "./db";
+import { dbBatch, dbQuery } from "./db";
 import { formatCozteAnswers, parseCozteQuestions } from "@/lib/cozte-questions";
 
 type EngineCost = { name: string; unitCost: number | null };
@@ -93,7 +93,7 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       history.push({ role: "user", content: turn.user });
       // Mirrors the workflow: the correction asks for tool use in text; toolChoice "required" is not forced.
       const pass = async (messages: ModelMessage[]) => generateText({
-        model, system: instructions, messages, tools, stopWhen: [isStepCount(settings.maxSteps), hasToolCall("askQuestions")], maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings),
+        model, system: instructions, messages, tools, stopWhen: [isStepCount(settings.maxSteps), questionsShown], maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings),
       });
       let result = await pass(history);
       // Plain copies: StepResult exposes its fields as getters, which a spread would lose.
@@ -160,7 +160,7 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       const state = await loadState(principal);
       const result = await generateText({
         model, system: buildCozteInstructions({ state, notes: await loadCozteNotes(principal), legacyProfile: null }), messages: history,
-        tools: createCozteTools(principal, crypto.randomUUID()), stopWhen: [isStepCount(settings.maxSteps), hasToolCall("askQuestions")],
+        tools: createCozteTools(principal, crypto.randomUUID()), stopWhen: [isStepCount(settings.maxSteps), questionsShown],
         maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings),
       });
       history.push(...result.response.messages);
@@ -169,7 +169,7 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       return calls;
     };
     const first = await turn("Hola, hago velas de soja en casa y quiero saber cuánto me cuesta hacer cada una. ¿Por dónde empezamos?");
-    const asked = first.find((call) => call.name === "askQuestions");
+    const asked = first.findLast((call) => call.name === "askQuestions");
     const set = parseCozteQuestions(asked?.input);
     console.log(JSON.stringify(asked?.input, null, 2));
     expect(set?.questions.length).toBeGreaterThan(0);
@@ -179,5 +179,64 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     expect(second.some((call) => call.name === "saveProduct")).toBe(true);
     const final = await loadState(principal);
     expect(final.products.map((product) => product.lotUnits)).toContain(24);
+  });
+
+  it.each(models)("works as the business's secretary: channel, purchases and a sale, then the month, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET currency='ARS' WHERE id=?", params: [principal.organizationId] }]);
+    const seed = createCozteTools(principal, crypto.randomUUID());
+    let seedCall = 0;
+    const setup = async (name: keyof typeof seed, input: Record<string, unknown>) => await (seed[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<unknown>)(input, { toolCallId: `seed-${++seedCall}` });
+    await setup("saveProduct", { name: "Tofu 300g", goodUnitsPerLot: 100, lotsPerMonth: 20, hoursPerLot: 5, salePrice: 2000 });
+    await setup("saveMaterial", { name: "Soja orgánica", purchaseUnit: "kg", price: 1000 });
+    await setup("saveRecipe", { product: "Tofu 300g", items: [{ material: "Soja orgánica", perLot: 30 }] });
+    await setup("saveExpense", { name: "Luz", amount: 200000, splitBy: "hours" });
+
+    const settings = { ...cozteAgentSettings(), model };
+    const history: ModelMessage[] = [];
+    const failures: string[] = [];
+    const transcript: { user: string; tools: string[]; answer: string }[] = [];
+    const turn = async (text: string, expected: string[]) => {
+      history.push({ role: "user", content: text });
+      const state = await loadState(principal);
+      const result = await generateText({
+        model, system: buildCozteInstructions({ state, notes: await loadCozteNotes(principal), legacyProfile: null }), messages: history,
+        tools: createCozteTools(principal, crypto.randomUUID()), stopWhen: [isStepCount(settings.maxSteps), questionsShown],
+        maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings),
+      });
+      history.push(...result.response.messages);
+      const records = result.steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), input: step.toolCalls.find((call) => call.toolCallId === item.toolCallId)?.input })));
+      const answer = result.steps.at(-1)?.text ?? "";
+      for (const name of expected) if (!records.some((item) => item.name === name && item.ok)) failures.push(`"${text.slice(0, 40)}…": no ejecutó ${name}`);
+      console.log(`\n[${model}] tools=${records.map((item) => `${item.name}${item.ok ? "" : "✗"}`).join(",")}\n${JSON.stringify(records.filter((item) => item.name !== "readBusiness").map((item) => item.input))}\n${answer.slice(0, 600)}`);
+      transcript.push({ user: text, tools: records.map((item) => item.name + (item.ok ? "" : " (falló)")), answer });
+      return { records, answer };
+    };
+    await turn("Vendemos por Instagram. Mercado Pago nos cobra 10 % de cada venta y el envío en moto nos cuesta 1500 por pedido; los pedidos suelen ser de 3 tofus.", ["saveChannel"]);
+    await turn("Hoy compré 50 kilos de soja orgánica por 60000 en CEAPE, una cinta de embalaje de 3500 para los envíos y una balanza digital de 45000 para el taller que debería durar unos 5 años.", ["recordPurchase"]);
+    await turn("Ayer vendí 12 tofus de 300g por Instagram al precio de lista.", ["recordSale"]);
+    const month = await turn("¿Cómo vengo este mes? ¿Estoy ganando?", ["readBusiness"]);
+    if (!/pérdida|perd|gananc|resultado/i.test(month.answer)) failures.push("no explicó el resultado del mes");
+
+    const [channels, purchases, sales] = await Promise.all([
+      dbQuery<{ commission_bps: number; delivery_cost_per_order_minor: number; units_per_order_milli: number }>("SELECT commission_bps, delivery_cost_per_order_minor, units_per_order_milli FROM sales_channels WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]),
+      dbQuery<{ kind: string; area: string; amount_minor: number; useful_life_months: number | null }>("SELECT kind, area, amount_minor, useful_life_months FROM purchases WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]),
+      dbQuery<{ total_minor: number }>("SELECT total_minor FROM sales WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]),
+    ]);
+    const soy = (await loadState(principal)).materials.find((item) => /soja/i.test(item.name));
+    const checks = {
+      channel: channels.length === 1 && channels[0].commission_bps === 1000 && channels[0].delivery_cost_per_order_minor === 1500 && channels[0].units_per_order_milli === 3000,
+      soyPurchase: purchases.some((item) => item.kind === "material" && item.amount_minor === 60000) && soy?.priceMinor === 1200,
+      tape: purchases.some((item) => item.kind === "expense" && item.amount_minor === 3500 && item.area === "delivery"),
+      scale: purchases.some((item) => item.kind === "investment" && item.amount_minor === 45000 && item.area === "production" && item.useful_life_months === 60),
+      sale: sales.length === 1 && sales[0].total_minor === 24000,
+    };
+    for (const [name, passed] of Object.entries(checks)) if (!passed) failures.push(`estado final: ${name}`);
+    console.log(`\n[${model}] checks ${JSON.stringify(checks)}`);
+    results.push({ model, scenario: "secretary", failures: failures.length, failureDetails: failures, ...checks, transcript });
+    expect(failures).toEqual([]);
   });
 });

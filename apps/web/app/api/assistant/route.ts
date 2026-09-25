@@ -1,4 +1,4 @@
-import { convertToModelMessages, createUIMessageStreamResponse, validateUIMessages, type UIMessage } from "ai";
+import { convertToModelMessages, createUIMessageStreamResponse, validateUIMessages, type ModelMessage, type UIMessage } from "ai";
 import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
 import { start } from "workflow/api";
 import { z } from "zod";
@@ -12,6 +12,8 @@ import { createCozteTools, cozteToolInputSchemas } from "@/lib/server/cozte-agen
 import { buildCozteInstructions } from "@/lib/server/cozte-instructions";
 import { loadCozteNotes } from "@/lib/server/cozte-notes";
 import { cozteAgentSettings, cozteAssistantWorkflow } from "@/lib/server/cozte-workflow";
+import { storeChatAttachments, type ChatAttachment } from "@/lib/server/documents";
+import { loadChannels } from "@/lib/server/business";
 import { compactCozteConversation, modelHistory } from "@/lib/cozte-conversation-memory";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, COZTE_SPREADSHEET_MEDIA_TYPE, prepareCozteModelMessages } from "@/lib/cozte-assistant-attachments";
 
@@ -69,6 +71,18 @@ function persistableMessages(messages: UIMessage[]): UIMessage[] {
   }));
 }
 
+/** Tells the model which files it received and which ones it can attach, by number, to a purchase or sale. */
+function withAttachmentNote(messages: ModelMessage[], attachments: ChatAttachment[]): ModelMessage[] {
+  if (!attachments.length) return messages;
+  const index = messages.findLastIndex((message) => message.role === "user");
+  if (index < 0) return messages;
+  const list = attachments.map((item) => `${item.ordinal}) ${item.filename}${item.documentId ? " (guardado: se puede adjuntar como comprobante)" : ""}`).join("; ");
+  const note = { type: "text" as const, text: `[Archivos de este mensaje: ${list}. Para adjuntar uno a una compra o venta usa su número en "receipt".]` };
+  const message = messages[index];
+  const content = typeof message.content === "string" ? [{ type: "text" as const, text: message.content }, note] : [...message.content, note];
+  return messages.map((item, position) => position === index ? { ...item, content } as ModelMessage : item);
+}
+
 /** Past tool calls are replayed to the model; drop any that no longer match the current tool schemas. */
 function replayableHistory(messages: UIMessage[]): UIMessage[] {
   return messages.map((message) => ({
@@ -102,7 +116,7 @@ export async function POST(request: Request) {
     if (Number(request.headers.get("content-length") ?? 0) > 17_000_000) throw new ApiError(413, "El mensaje o los archivos adjuntos superan el límite de tamaño");
     const { message } = incomingSchema.parse(await request.json());
     if (!message.parts.some((part) => part.type === "text") && !message.parts.some((part) => part.type === "file")) throw new ApiError(400, "Escribe un mensaje o adjunta una imagen");
-    const [state, profileState, stored, notes] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadConversation(principal), loadCozteNotes(principal)]);
+    const [state, profileState, stored, notes, channels] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadConversation(principal), loadCozteNotes(principal), loadChannels(principal).catch(() => [])]);
     const previous = replayableHistory(stored);
     if (previous.at(-1)?.id === message.id) throw new ApiError(409, "Ese mensaje ya fue recibido");
     await reserveAssistantRequest(principal);
@@ -110,9 +124,12 @@ export async function POST(request: Request) {
     const tools = createCozteTools(principal, candidateRunId);
     const incoming: UIMessage = { id: message.id, role: "user", parts: message.parts };
     const validated = await validateUIMessages({ messages: [...previous, incoming], tools });
-    const instructions = buildCozteInstructions({ state, notes, legacyProfile: profileState.draft ?? profileState.confirmed });
+    const instructions = buildCozteInstructions({ state, notes, channels, legacyProfile: profileState.draft ?? profileState.confirmed });
+    // Receipts and delivery notes sent in the chat are kept so Cozte can attach them to what they back.
+    const files = message.parts.filter((part) => part.type === "file");
+    const attachments = files.length ? await storeChatAttachments(principal, candidateRunId, files) : [];
     // The stored conversation keeps everything for the UI; the model only sees what it can trust.
-    const modelMessages = prepareCozteModelMessages(await convertToModelMessages(modelHistory(validated)));
+    const modelMessages = withAttachmentNote(prepareCozteModelMessages(await convertToModelMessages(modelHistory(validated))), attachments);
     const safeMessages = persistableMessages(validated);
     const agentSettings = cozteAgentSettings();
     const settings = { ...agentSettings, provider: "gateway", harness: "cozte-v2-verified", durable: true, attachmentsPersistedAs: "workflow input only; files are excluded from conversation and tool trace" };

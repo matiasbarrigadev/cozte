@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import type { DomainState, Material, SharedExpense } from "@/lib/domain";
+import { productionExpenses, type DomainState, type Material, type SharedExpense } from "@/lib/domain";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -101,7 +101,8 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   const [usageValues, setUsageValues] = React.useState<Record<string, string>>({});
   const [query, setQuery] = React.useState("");
   const [category, setCategory] = React.useState("all");
-  const expenses = state.expenses.filter((item) => item.period === state.activePeriod);
+  // The company's other monthly expenses (delivery, sales, administration) live in their own section.
+  const expenses = productionExpenses(state);
   const categories = [...new Set([...(state.categories ?? []).map((item) => item.name), ...state.materials.map((item) => item.category), ...expenses.map((item) => item.category)])].sort();
   const activeAllocation = expenses.find((item) => item.id === allocationId);
   const usageMaterial = state.materials.find((item) => item.id === usageMaterialId);

@@ -23,6 +23,12 @@ import { CostSheet } from "./cost-sheet";
 import { CozteAssistant } from "./cozte-assistant";
 import { CostHistory, type CostSnapshotRow, type HistoryEntry, type ProfileSnapshotRow } from "./cost-history";
 import { CostAnalysisView } from "./cost-analysis-view";
+import { SalesSection } from "./business/sales-section";
+import { ExpensesSection } from "./business/expenses-section";
+import { PurchasesSection } from "./business/purchases-section";
+import { ResultSection } from "./business/result-section";
+import { MonthCard } from "./business/month-card";
+import { DEMO_MONTH } from "@/lib/demo";
 import { appPath, viewFromPathname, viewFromSegments, type AppView } from "@/lib/app-routes";
 import { dashboardSummary, type CostComposition } from "@/lib/dashboard-summary";
 import { AnimatedIcon, type AnimatedIconName } from "./animated-icon";
@@ -36,12 +42,13 @@ type Dashboard = DomainState & {
 type View = AppView;
 type Draft = { materials: Record<string, number>; expenses: Record<string, number>; materialCurrencies: Record<string, Currency>; expenseCurrencies: Record<string, Currency>; source: string; effectiveDate: string };
 
-const nav: { id: View; label: string; icon: AnimatedIconName }[] = [
-  { id: "dashboard", label: "Dashboard", icon: "dashboard" },
-  { id: "planilla", label: "Costos de producción", icon: "costs" },
-  { id: "analisis", label: "Análisis de costos", icon: "chart" },
-  { id: "asistente", label: "Cozte AI", icon: "assistant" },
-  { id: "historial", label: "Historial", icon: "history" },
+type NavItem = { id: View; label: string; icon: AnimatedIconName };
+/** Grouped the way a business thinks about it: what it costs, what happens each day and how it went. */
+const navGroups: { label: string; items: NavItem[] }[] = [
+  { label: "Espacio de trabajo", items: [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "asistente", label: "Cozte AI", icon: "assistant" }] },
+  { label: "Costos", items: [{ id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "ventas", label: "Ventas y entregas", icon: "arrowUpRight" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
+  { label: "Día a día", items: [{ id: "compras", label: "Compras", icon: "receipt" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
+  { label: "Evolución", items: [{ id: "analisis", label: "Análisis de costos", icon: "chart" }, { id: "historial", label: "Historial", icon: "history" }] },
 ];
 
 const formatMoney = (value: number | null, currency: string) => value === null ? "Sin calcular" : new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: currency === "CLP" ? 0 : 3 }).format(value);
@@ -71,6 +78,8 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
   const [snapshots, setSnapshots] = React.useState<CostSnapshotRow[]>([]);
   const [profileSnapshots, setProfileSnapshots] = React.useState<ProfileSnapshotRow[]>([]);
   const [decision, setDecision] = React.useState("");
+  // One month for all business sections, so moving between them keeps the same period.
+  const [businessMonth, setBusinessMonth] = React.useState(demo ? DEMO_MONTH : new Date().toISOString().slice(0, 7));
   const currency = state.organization.currency;
   const product = state.products.find((item) => item.id === selected) ?? state.products[0];
   const currentCost = state.costs.find((item) => item.productId === product?.id);
@@ -251,9 +260,9 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
     <SidebarProvider className="cozte-workspace">
       <Sidebar collapsible="icon">
         <SidebarHeader><div className="min-h-15 px-2 py-3 group-data-[collapsible=icon]:hidden"><CozteLogo className="text-2xl" /><span className="mt-1 block text-xs text-sidebar-foreground/65">Costeo vivo</span></div></SidebarHeader>
-        <SidebarContent><SidebarGroup><SidebarGroupLabel>Espacio de trabajo</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>
-          {nav.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id} badge={item.id === "planilla" ? changeCount : 0} onNavigate={() => navigate(item.id)} />)}
-        </SidebarMenu></SidebarGroupContent></SidebarGroup></SidebarContent>
+        <SidebarContent>{navGroups.map((group) => <SidebarGroup key={group.label}><SidebarGroupLabel>{group.label}</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>
+          {group.items.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id} badge={item.id === "planilla" ? changeCount : 0} onNavigate={() => navigate(item.id)} />)}
+        </SidebarMenu></SidebarGroupContent></SidebarGroup>)}</SidebarContent>
         <SidebarFooter><div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">{demo ? <Badge variant="outline" className="border-white/25 bg-white/5 text-white">Demostración</Badge> : <><div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden"><OrganizationSwitcher hidePersonal appearance={{ elements: { organizationSwitcherTrigger: "cozte-org-trigger", organizationPreviewAvatarBox: "cozte-org-avatar", organizationSwitcherPopoverCard: "cozte-clerk-popover" } }} /></div><UserButton appearance={{ elements: { userButtonTrigger: "cozte-user-trigger", userButtonAvatarBox: "cozte-user-avatar", userButtonPopoverCard: "cozte-clerk-popover" } }} /></>}</div></SidebarFooter>
       </Sidebar>
       <SidebarInset>
@@ -273,6 +282,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
               <CardContent><ol className="flex flex-col gap-2">{summary.gaps.slice(0, 5).map((gap, index) => <li key={gap} className="flex items-start gap-3 rounded-lg border bg-muted/30 px-3 py-2 text-sm"><span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums text-muted-foreground">{index + 1}</span><span>{gap}</span></li>)}</ol>{summary.gaps.length > 5 ? <p className="mt-2 text-xs text-muted-foreground">Y {summary.gaps.length - 5} dato{summary.gaps.length - 5 === 1 ? "" : "s"} más.</p> : null}</CardContent>
               <CardFooter className="flex flex-wrap gap-2"><Button onClick={() => navigate("asistente")}><AnimatedIcon name="assistant" data-icon="inline-start" />Completar con Cozte</Button><Button variant="outline" onClick={() => navigate("planilla")}>Abrir costos de producción</Button></CardFooter></Card> : null}
             {state.alerts.length ? <Alert><AlertTitle>{state.alerts.length} precio{state.alerts.length === 1 ? "" : "s"} para revisar</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-3"><span>{state.alerts.slice(0, 3).map((item) => item.message).join(" · ")}</span><Button variant="link" onClick={() => navigate("planilla")}>Abrir planilla</Button></div></AlertDescription></Alert> : null}
+            {state.products.length ? <MonthCard state={state} demo={demo} month={businessMonth} onOpen={(section) => navigate(section)} /> : null}
             <Card><CardHeader><CardTitle>Fichas de productos</CardTitle><CardDescription>Lo que cuesta fabricar cada unidad, en qué se va ese costo y cuánto deja su precio de venta.</CardDescription>{summary.composition.length ? <CompositionLegend /> : null}</CardHeader><CardContent>{state.products.length ? <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Producto</TableHead><TableHead className="text-right">Costo/u</TableHead><TableHead className="min-w-40">En qué se va cada unidad</TableHead><TableHead className="text-right">Precio</TableHead><TableHead className="text-right">Margen</TableHead><TableHead className="w-12" /></TableRow></TableHeader><TableBody>{state.products.map((item) => { const cost = state.costs.find((entry) => entry.productId === item.id); return <TableRow key={item.id}><TableCell><button className="text-left font-medium hover:underline" onClick={() => { navigate("producto", item.id); }}>{item.name}</button><div className="text-xs text-muted-foreground">Lote de {item.lotUnits} unidades{item.batchesPerMonthMilli != null ? ` · ${item.batchesPerMonthMilli / 1000} lotes al mes` : ""}</div></TableCell><TableCell className="text-right tabular-nums">{formatMoney(cost?.unitMinor ?? null, currency)}{cost?.quality === "estimated" ? <div><Badge variant="outline" title={cost.assumptions.join(" · ")}>Estimado</Badge></div> : null}</TableCell><TableCell>{(() => { const parts = summary.composition.find((entry) => entry.productId === item.id); return parts ? <CompositionBar parts={parts} format={(value) => plainMoney(value, currency)} /> : <span className="text-xs text-muted-foreground">Se ve cuando el costo esté completo</span>; })()}</TableCell><TableCell className="text-right tabular-nums">{item.salePriceMinor > 0 ? formatMoney(item.salePriceMinor, currency) : "Sin definir"}</TableCell><TableCell className="text-right">{cost?.warnings.length ? <Badge variant="secondary">Incompleto</Badge> : formatPercent(cost?.estimatedMarginPercent ?? null)}</TableCell><TableCell><Button size="icon-sm" variant="ghost" aria-label={`Abrir ${item.name}`} onClick={() => { navigate("producto", item.id); }}><AnimatedIcon name="arrowRight" /></Button></TableCell></TableRow>; })}</TableBody></Table></div> : <Empty><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="boxes" size={24} /></EmptyMedia><EmptyTitle>Aún no hay fichas comerciales</EmptyTitle><EmptyDescription>Empieza describiendo cómo produces; Cozte irá armando el costo con la información disponible.</EmptyDescription></EmptyHeader><EmptyContent><Button onClick={() => navigate("asistente")}>Empezar con Cozte</Button></EmptyContent></Empty>}</CardContent></Card>
             {summary.lessons.length ? <Card><CardHeader><CardTitle>Para entender tu costo</CardTitle><CardDescription>Ideas de finanzas para tu producción, calculadas con tus propios números.</CardDescription></CardHeader>
               <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{summary.lessons.map((lesson) => <article key={lesson.id} className="flex flex-col gap-1.5 rounded-lg border-l-4 border-l-primary bg-muted/40 px-4 py-3"><h3 className="text-sm font-semibold">{lesson.title}</h3><p className="text-sm leading-relaxed text-muted-foreground">{lesson.text}</p></article>)}</CardContent>
@@ -312,6 +322,14 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
               onUsageChange={(productId, materialId, quantityMilli) => save({ action: "set-component", productId, materialId, quantityMilli }, true)}
               onReview={reviewChanges} onDiscard={() => { if (!demo) setDraftStatus("saving"); setDraft(emptyDraft()); setReview(null); }} />
           </> : null}
+
+          {view === "ventas" ? <SalesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenCozte={() => navigate("asistente")} /> : null}
+
+          {view === "gastos" ? <ExpensesSection state={state} demo={demo} month={businessMonth} onSave={save} onOpenProduction={() => navigate("planilla")} onOpenPurchases={() => navigate("compras")} /> : null}
+
+          {view === "compras" ? <PurchasesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenCozte={() => navigate("asistente")} onDataChanged={refresh} /> : null}
+
+          {view === "resultado" ? <ResultSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenSales={() => navigate("ventas")} onOpenCozte={() => navigate("asistente")} /> : null}
 
           {view === "analisis" ? <CostAnalysisView currency={currency} demo={demo} /> : null}
 
@@ -369,7 +387,7 @@ function ActiveOrganizationName({ fallback }: { fallback: string }) {
   return organization?.name ?? fallback;
 }
 
-function NavigationItem({ item, active, badge, onNavigate }: { item: (typeof nav)[number]; active: boolean; badge: number; onNavigate: () => void }) {
+function NavigationItem({ item, active, badge, onNavigate }: { item: NavItem; active: boolean; badge: number; onNavigate: () => void }) {
   const { setOpenMobile } = useSidebar();
   return <SidebarMenuItem><SidebarMenuButton isActive={active} tooltip={item.label} onClick={() => { onNavigate(); setOpenMobile(false); }}><AnimatedIcon name={item.icon} /><span>{item.label}</span>{badge > 0 ? <Badge variant="secondary">{badge}</Badge> : null}</SidebarMenuButton></SidebarMenuItem>;
 }

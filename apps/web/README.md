@@ -26,3 +26,14 @@ El chat acepta una imagen PNG/JPEG/WebP de hasta 2 MB o una planilla `.xlsx` de 
 Cada envío al asistente guarda el mensaje antes de abrir el stream y genera un ID de ejecución. En D1, `assistant_runs` y `assistant_run_events` registran configuración efectiva (con `null` para parámetros no fijados, como temperatura/topK), pasos, llamadas y resultados de herramientas, uso de tokens, texto de respuesta, errores y estado final. La traza excluye claves, imágenes en base64 y razonamiento privado del modelo; los archivos se registran como metadatos y las cargas grandes se truncan. `GET /api/assistant/runs` devuelve las últimas 30 ejecuciones del usuario autenticado, y `GET /api/assistant/runs?id=<uuid>` sus eventos; ambas consultas están restringidas a su usuario y empresa. Una ejecución aún en `running` tras 90 segundos aparece como `interrupted`, útil para detectar cortes abruptos de Vercel o del navegador. El ID también figura en `x-cozte-run-id` y en el error de stream. No debe publicarse este endpoint sin autenticación ni copiar sus datos empresariales a logs públicos.
 
 El proyecto `lightningteam/cozte` ya importa este repositorio con **Root Directory `apps/web`**. El propietario administra `cozte.com`. Consulta el README raíz para el estado de los servicios y los pasos pendientes.
+
+## Módulos del negocio
+
+Además del costo de producir, el espacio de trabajo cubre lo que cuesta vender y sostener la empresa:
+
+- **Ventas y entregas** (`/app/ventas`): canales de venta con comisión, cargo por venta, costo de entrega por pedido y ajuste de precio; cuánto queda por unidad en cada canal y las ventas del mes.
+- **Gastos de la empresa** (`/app/gastos`): gastos mensuales por área (entregas, ventas, administración). Solo los de producción se reparten en el costo de cada unidad; las inversiones se reparten en su vida útil.
+- **Compras** (`/app/compras`): compras del día a día clasificadas como insumo (actualiza su precio), gasto del mes, pago de un gasto fijo o inversión, con su comprobante.
+- **Resultado del mes** (`/app/resultado`): ventas, lo que dejó cada venta, gastos fijos, compras del mes, parte de las inversiones, resultado y punto de equilibrio.
+
+El motor está en `lib/business.ts` (puro) y la persistencia en `lib/server/business.ts`. Cozte registra canales, compras y ventas con sus herramientas; las imágenes y PDF enviados al chat se guardan en R2 como documentos para adjuntarlos al registro que respaldan, por lo que el despliegue necesita `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` y `R2_SECRET_ACCESS_KEY`. Sin R2 el chat funciona igual, pero los comprobantes no quedan adjuntos.

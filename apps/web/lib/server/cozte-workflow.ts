@@ -1,9 +1,9 @@
 import "server-only";
-import { hasToolCall, isStepCount, type ModelMessage, type UIMessage } from "ai";
+import { isStepCount, type ModelMessage, type UIMessage } from "ai";
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
-import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
+import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded, questionsShown } from "@/lib/cozte-tool-catalog";
 import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
 import { correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import { discardedDraftMetadata } from "@/lib/cozte-turn-activity";
@@ -249,7 +249,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     instructions: input.instructions,
     tools: createCozteTools(input.principal, input.runId),
     // Asking the person questions ends the turn: the answers arrive as their next message.
-    stopWhen: [isStepCount(settings.maxSteps), hasToolCall("askQuestions")],
+    stopWhen: [isStepCount(settings.maxSteps), questionsShown],
     maxOutputTokens: settings.maxOutputTokens,
     providerOptions: cozteProviderOptions(settings),
     repairToolCall: repairCozteToolCall,
@@ -280,7 +280,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
         const second = await agent.stream({
           messages: [...(first.messages as ModelMessage[]).filter((message) => message.role !== "system"), { role: "user", content: correctionMessage(verification) }],
           writable, preventClose: true, sendFinish: false,
-          stopWhen: [isStepCount(Math.max(4, Math.floor(settings.maxSteps / 2))), hasToolCall("askQuestions")],
+          stopWhen: [isStepCount(Math.max(4, Math.floor(settings.maxSteps / 2))), questionsShown],
         });
         steps.push(...second.steps);
         text = answerText(steps, retracted);

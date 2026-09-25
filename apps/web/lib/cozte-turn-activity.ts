@@ -20,6 +20,11 @@ const running: Record<string, string> = {
   saveCategory: "Guardando la categoría",
   removeItem: "Preparando la baja",
   saveNote: "Anotando el dato",
+  saveChannel: "Guardando el canal",
+  recordPurchase: "Registrando la compra",
+  recordSale: "Registrando la venta",
+  voidRecord: "Anulando el registro",
+  readBusiness: "Revisando el mes",
 };
 
 /** How each tool reads in a collapsed summary, singular and plural. */
@@ -34,6 +39,11 @@ const summaryVerb: Record<string, [string, string]> = {
   saveCategory: ["guardó 1 categoría", "guardó {n} categorías"],
   removeItem: ["pidió 1 baja", "pidió {n} bajas"],
   saveNote: ["anotó 1 dato", "anotó {n} datos"],
+  saveChannel: ["guardó 1 canal", "guardó {n} canales"],
+  recordPurchase: ["registró 1 compra", "registró {n} compras"],
+  recordSale: ["registró 1 venta", "registró {n} ventas"],
+  voidRecord: ["anuló 1 registro", "anuló {n} registros"],
+  readBusiness: ["revisó el mes", "revisó el mes"],
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -57,6 +67,10 @@ export function toolOutcomeLine(name: string, output: unknown, errorText?: strin
   if (name === "simulate" && Array.isArray(result.products)) {
     const changes = result.products.map(record).filter((item) => typeof item.unitCostAfter === "number").map((item) => `${String(item.product)} ${number(item.unitCostBefore)} → ${number(item.unitCostAfter)}`);
     return { text: `Sin guardar${changes.length ? `: ${changes.join(" · ")}` : ""}`, failed: false };
+  }
+  if (name === "readBusiness") {
+    const count = (key: string) => Array.isArray(result[key]) ? (result[key] as unknown[]).length : 0;
+    return { text: `${count("sales")} ventas y ${count("purchases")} compras en el mes`, failed: false };
   }
   if (name === "readCosts") {
     if (typeof result.product === "string") return { text: `Desglose de ${result.product}`, failed: false };

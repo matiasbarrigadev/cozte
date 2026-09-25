@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { allocateMinor, calculateCosts, convertToOrganizationCurrency, type DomainState } from "@/lib/domain";
+import { allocateMinor, calculateCosts, convertToOrganizationCurrency, productionExpenses, COST_AREAS, type DomainState } from "@/lib/domain";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, type SqlStatement } from "./db";
@@ -16,6 +16,7 @@ const id = z.string().min(1).max(120);
 const category = z.string().trim().min(2).max(40);
 const sourceAmount = z.number().nonnegative().max(1_000_000_000).refine((value) => Math.round(value * 1000) / 1000 === value, "Usa hasta tres decimales");
 const currency = z.enum(supportedCurrencies);
+const area = z.enum(["production", "delivery", "sales", "admin"]);
 const common = z.object({
   expectedRevision: z.number().int().min(0),
   idempotencyKey: z.uuid(),
@@ -77,10 +78,11 @@ export const mutationSchema = z.discriminatedUnion("action", [
   common.extend({
     action: z.literal("create-expense"), name, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
     amount: sourceAmount, currency, allocationBasis: z.enum(["hours", "units", "manual"]), shares: z.record(z.string(), z.number().int().min(0).max(10000)).default({}), category: category.optional(), source: name,
+    area: area.optional(),
   }),
   common.extend({
     action: z.literal("update-expense-meta"), id,
-    field: z.enum(["name", "category", "allocationBasis", "period"]),
+    field: z.enum(["name", "category", "allocationBasis", "period", "area"]),
     value: z.string().trim().max(120),
     acknowledgeImpact: z.boolean().optional(),
   }),
@@ -225,8 +227,9 @@ function projection(state: DomainState, input: Mutation): DomainState {
       next.activePeriod = input.period;
       const converted = convertToOrganizationCurrency(next, toNativeMilli(input.amount), input.currency);
       if (converted === null) throw new ApiError(503, "Falta cotización vigente para el nuevo gasto");
-      if (input.allocationBasis === "manual" && (Object.keys(input.shares).some((key) => !next.products.some((item) => item.id === key)) || next.products.reduce((sum, item) => sum + (input.shares[item.id] ?? 0), 0) !== 10000)) throw new ApiError(400, "Los porcentajes deben sumar 100 % entre los productos actuales");
-      next.expenses.push({ id: "new", name: input.name, period: input.period,
+      // Only the workshop's expenses are split into products; the rest of the company's are not allocated.
+      if ((input.area ?? "production") === "production" && input.allocationBasis === "manual" && (Object.keys(input.shares).some((key) => !next.products.some((item) => item.id === key)) || next.products.reduce((sum, item) => sum + (input.shares[item.id] ?? 0), 0) !== 10000)) throw new ApiError(400, "Los porcentajes deben sumar 100 % entre los productos actuales");
+      next.expenses.push({ id: "new", name: input.name, period: input.period, area: input.area ?? "production",
         amountMinor: converted, currency: input.currency, nativeAmountMilli: toNativeMilli(input.amount),
         allocationBasis: input.allocationBasis, allocationShares: input.allocationBasis === "manual" ? input.shares : {}, category: input.category ?? "Gastos generales", version: 1 });
       break;
@@ -235,6 +238,11 @@ function projection(state: DomainState, input: Mutation): DomainState {
       if (!expense) throw new ApiError(404, "Gasto no encontrado");
       if (expense.period !== next.activePeriod) throw new ApiError(400, "Solo puedes editar los gastos del período activo");
       if (input.field === "period" && !/^\d{4}-(0[1-9]|1[0-2])$/.test(input.value)) throw new ApiError(400, "Elige un período válido");
+      if (input.field === "area") {
+        if (!(COST_AREAS as string[]).includes(input.value)) throw new ApiError(400, "Área inválida");
+        expense.area = input.value as typeof COST_AREAS[number];
+        break;
+      }
       if (input.field !== "allocationBasis" && input.field !== "period" && (input.value.length < 2 || (input.field === "category" && input.value.length > 40))) throw new ApiError(400, "Revisa el nombre o categoría");
       if (input.field === "category" && !next.categories?.some((item) => item.name.toLocaleLowerCase() === input.value.toLocaleLowerCase())) next.categories = [...next.categories ?? [], { id: "new-category", name: input.value }];
       if (input.field === "allocationBasis") {
@@ -399,13 +407,13 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       break;
     case "create-expense":
       statements.push(
-        { sql: "INSERT INTO shared_expenses (id, organization_id, name, period, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.period, next.expenses.find((item) => item.id === "new")!.amountMinor, input.allocationBasis === "manual" ? "units" : input.allocationBasis, input.allocationBasis === "manual" ? "manual" : "automatic", JSON.stringify(input.allocationBasis === "manual" ? input.shares : {}), input.category ?? "Gastos generales", ...fxFields(input.currency, toNativeMilli(input.amount))] },
+        { sql: "INSERT INTO shared_expenses (id, organization_id, name, period, area, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.period, input.area ?? "production", next.expenses.find((item) => item.id === "new")!.amountMinor, input.allocationBasis === "manual" ? "units" : input.allocationBasis, input.allocationBasis === "manual" ? "manual" : "automatic", JSON.stringify(input.allocationBasis === "manual" ? input.shares : {}), input.category ?? "Gastos generales", ...fxFields(input.currency, toNativeMilli(input.amount))] },
         { sql: "INSERT INTO shared_expense_versions (id, organization_id, expense_id, version, amount_minor, source, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, entityId, next.expenses.find((item) => item.id === "new")!.amountMinor, input.source, actorId, ...fxFields(input.currency, toNativeMilli(input.amount))] },
       );
       next.expenses.find((item) => item.id === "new")!.id = entityId;
       break;
     case "update-expense-meta": {
-      const column = { name: "name", category: "category", allocationBasis: "allocation_basis", period: "period" }[input.field];
+      const column = { name: "name", category: "category", allocationBasis: "allocation_basis", period: "period", area: "area" }[input.field];
       statements.push({ sql: `UPDATE shared_expenses SET ${column}=? WHERE id=? AND organization_id=?`, params: [input.value, input.id, organizationId] });
       break;
     }
@@ -458,7 +466,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       product: next.products.find((item) => item.id === cost.productId),
       components: next.components.filter((item) => item.productId === cost.productId),
       materials: next.materials.filter((item) => next.components.some((component) => component.productId === cost.productId && component.materialId === item.id)),
-      expenses: next.expenses.filter((item) => item.period === next.activePeriod),
+      expenses: productionExpenses(next),
       allocationPeers: next.products.map((item) => ({ id: item.id, lotUnits: item.lotUnits, productionHoursMilli: item.productionHoursMilli, batchesPerMonthMilli: item.batchesPerMonthMilli ?? null })),
       activePeriod: next.activePeriod,
       baseCurrency: next.organization.currency,

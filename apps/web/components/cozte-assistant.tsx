@@ -38,8 +38,8 @@ const ACTIVE_WORKFLOW_STORAGE_KEY = "cozte-active-workflow-run";
 const CHAT_STALL_MS = 150_000;
 const suggestions = [
   "Mapear mi producción",
-  "Repartir gastos compartidos",
-  "Cambió mi proceso",
+  "Te paso el ticket de una compra",
+  "¿Cómo vengo este mes?",
 ];
 
 export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boolean; onDataChanged: () => Promise<void>; onOpenCosts: () => void }) {
@@ -377,7 +377,7 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
                   {draggingFiles ? <div className="pointer-events-none absolute inset-x-3 top-2 z-10 rounded-lg border border-dashed border-primary bg-background/95 px-3 py-2 text-center text-sm font-medium text-primary">Suelta los archivos para adjuntarlos</div> : null}
                   <PromptInputTextarea id="cozte-message" aria-label="Mensaje a Cozte" maxLength={2000} placeholder="Cuéntame qué producen o qué cambió…" onPaste={handleAttachmentPaste} />
                   <PromptInputActions className="justify-between">
-                    <span className="px-2 text-xs text-muted-foreground">Pega o arrastra imágenes, PDF o Excel · se conservan cifrados para reanudar · hasta {COZTE_MAX_ATTACHMENT_COUNT}</span>
+                    <span className="px-2 text-xs text-muted-foreground">Pega o arrastra tickets, remitos, PDF o Excel · Cozte los guarda como comprobantes · hasta {COZTE_MAX_ATTACHMENT_COUNT}</span>
                     <div className="flex items-center gap-2">
                       <Button type="button" size="icon-sm" variant="ghost" aria-label="Adjuntar imágenes, PDF o Excel" title="Adjuntar archivos" onClick={() => fileInput.current?.click()}><AnimatedIcon name="attach" /></Button>
                       {voiceState === "idle" ? <Button type="button" size="icon-sm" variant="ghost" aria-label="Dictar mensaje" title="Dictar mensaje" onClick={() => void startDictation()}><AnimatedIcon name="mic" /></Button> : <div className="flex items-center gap-2" role="status" aria-label={voiceState === "listening" ? "Escuchando el micrófono" : voiceState === "starting" ? "Activando micrófono" : "Pausando dictado"}>{voiceState === "listening" ? <AudioWaveform analyser={analyser} /> : null}<span className="hidden text-xs text-muted-foreground sm:inline">{voiceState === "starting" ? "Activando…" : voiceState === "pausing" ? "Pausando…" : "Escuchando"}</span><Button type="button" size="sm" variant="outline" disabled={voiceState === "pausing"} onClick={pauseDictation}><AnimatedIcon name="pause" data-icon="inline-start" />{voiceState === "starting" ? "Cancelar" : "Pausar"}</Button></div>}

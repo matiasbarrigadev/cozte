@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { formatCozteAnswers, parseCozteQuestions } from "./cozte-questions";
 import { verifyCozteResponse } from "./cozte-response-verifier";
 import { turnActivity } from "./cozte-turn-activity";
+import { questionsShown } from "./cozte-tool-catalog";
 
 const input = {
   intro: "Con esto reparto bien los gastos del mes.",
@@ -48,5 +49,12 @@ describe("Cozte questions", () => {
     // Announcing the next save is fine when the turn waits for the person's answers.
     expect(verifyCozteResponse("Con tus respuestas voy a guardar los gastos.", asked).ok).toBe(true);
     expect(turnActivity([{ type: "tool-askQuestions", state: "output-available", input, output: { ok: true } }])).toEqual([]);
+  });
+
+  it("ends the turn only when the questions were really shown", () => {
+    expect(questionsShown({ steps: [{ toolResults: [{ toolName: "askQuestions", output: { ok: true, asked: 2 } }] }] })).toBe(true);
+    // A call without questions fails validation; the model must get the chance to fix it.
+    expect(questionsShown({ steps: [{ toolResults: [{ toolName: "askQuestions", output: { ok: false, error: "Datos inválidos" } }] }] })).toBe(false);
+    expect(questionsShown({ steps: [{ toolResults: [] }] })).toBe(false);
   });
 });

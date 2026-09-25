@@ -1,4 +1,4 @@
-import { calculateCosts, type DomainState, type ProductCost } from "./domain";
+import { calculateCosts, productionExpenses, type DomainState, type ProductCost } from "./domain";
 
 /** Accent-, case- and punctuation-insensitive key used to match names people type. */
 export function normalizeName(value: string): string {
@@ -145,7 +145,7 @@ function withSharedBreakdown(state: DomainState, lotUnits: number, cost: Product
 export function costGaps(state: DomainState, costs: ProductCost[]): string[] {
   const gaps = new Set<string>();
   for (const cost of costs) for (const warning of cost.warnings) gaps.add(warning);
-  const activeExpenses = state.expenses.filter((item) => item.period === state.activePeriod && item.amountMinor > 0);
+  const activeExpenses = productionExpenses(state).filter((item) => item.amountMinor > 0);
   for (const product of state.products) {
     if (activeExpenses.length && product.batchesPerMonthMilli == null) gaps.add(`Lotes que se producen al mes de ${product.name}`);
     if (activeExpenses.some((item) => item.allocationBasis === "hours") && product.productionHoursMilli <= 0) gaps.add(`Horas de trabajo por lote de ${product.name}`);
@@ -195,10 +195,11 @@ export function buildCostOverview(state: DomainState, costs: ProductCost[] = cal
       source: item.source, effectiveDate: item.effectiveDate, supplier: item.supplier || null, category: item.category,
       usedBy: state.components.filter((component) => component.materialId === item.id).map((component) => productNames.get(component.productId)).filter(Boolean),
     })),
+    // Only the workshop's expenses (area production) enter each unit's cost; the rest are the company's structure.
     monthlyExpenses: state.expenses.filter((item) => item.period === state.activePeriod).map((item) => ({
-      id: item.id, name: item.name, monthlyAmount: item.amountMinor, category: item.category,
+      id: item.id, name: item.name, monthlyAmount: item.amountMinor, category: item.category, area: item.area ?? "production",
       originalAmount: item.currency && item.currency !== state.organization.currency && item.nativeAmountMilli != null ? { amount: item.nativeAmountMilli / 1000, currency: item.currency } : undefined,
-      splitBy: item.allocationBasis === "hours" ? "production hours" : item.allocationBasis === "units" ? "good units" : "agreed percentages",
+      splitBy: (item.area ?? "production") !== "production" ? "not split into products" : item.allocationBasis === "hours" ? "production hours" : item.allocationBasis === "units" ? "good units" : "agreed percentages",
       percentages: item.allocationBasis === "manual" ? Object.fromEntries(Object.entries(item.allocationShares ?? {}).map(([id, share]) => [productNames.get(id) ?? id, share / 100])) : undefined,
     })),
     categories: (state.categories ?? []).map((item) => item.name),

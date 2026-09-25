@@ -33,10 +33,16 @@ export type Component = {
   quantityMilli: number;
 };
 
+/** Where a monthly expense belongs. Only production expenses are spread into each product's cost. */
+export type CostArea = "production" | "delivery" | "sales" | "admin";
+export const COST_AREAS: CostArea[] = ["production", "delivery", "sales", "admin"];
+
 export type SharedExpense = {
   id: string;
   name: string;
   period: string;
+  /** Missing on older data, which was always production. */
+  area?: CostArea;
   amountMinor: number;
   allocationBasis: "hours" | "units" | "manual";
   allocationShares?: Record<string, number>;
@@ -110,6 +116,11 @@ export function convertToOrganizationCurrency(state: DomainState, nativeAmountMi
   return quote ? convertNativeMilli(nativeAmountMilli, quote) : null;
 }
 
+/** Monthly expenses of the workshop for the active period: the only ones that go into the cost of each unit. */
+export function productionExpenses(state: Pick<DomainState, "expenses" | "activePeriod">): SharedExpense[] {
+  return state.expenses.filter((item) => item.period === state.activePeriod && (item.area ?? "production") === "production");
+}
+
 function safeInteger(value: bigint): number {
   const number = Number(value);
   if (!Number.isSafeInteger(number)) throw new Error("Importe fuera del rango permitido");
@@ -177,7 +188,7 @@ export function calculateCosts(
   const monthlyShared: Record<string, number> = Object.fromEntries(state.products.map((product) => [product.id, 0]));
   const sharedByExpense: Record<string, Record<string, number>> = Object.fromEntries(state.products.map((product) => [product.id, {}]));
   const unallocatedExpenses: string[] = [];
-  const periodExpenses = state.expenses.filter((item) => item.period === state.activePeriod);
+  const periodExpenses = productionExpenses(state);
   const missingExpenseFx = periodExpenses.some((expense) => expense.fxMissing);
   let sharedExpensesActive = false;
   for (const expense of periodExpenses) {

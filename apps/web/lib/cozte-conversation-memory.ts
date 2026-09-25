@@ -20,8 +20,8 @@ function clip(value: unknown, max: number): unknown {
 export function compactToolOutputForHistory(toolName: string, output: unknown): unknown {
   if (!output || typeof output !== "object" || Array.isArray(output)) return { ok: false, note: "Sin resultado registrado" };
   const record = output as Record<string, unknown>;
-  if (toolName === "readCosts" || toolName === "simulate") {
-    return { ok: record.ok !== false, note: toolName === "readCosts" ? "Lectura del estado en ese momento; puede haber cambiado, vuelve a leer si lo necesitas." : "Simulación sin guardar.", ...(typeof record.error === "string" ? { error: record.error } : {}) };
+  if (toolName === "readCosts" || toolName === "simulate" || toolName === "readBusiness") {
+    return { ok: record.ok !== false, note: toolName === "simulate" ? "Simulación sin guardar." : "Lectura del estado en ese momento; puede haber cambiado, vuelve a leer si lo necesitas.", ...(typeof record.error === "string" ? { error: record.error } : {}) };
   }
   if (toolName === "calculate") return { ok: record.ok !== false, label: record.label, expression: record.expression, result: record.result, error: record.error };
   const kept: Record<string, unknown> = { ok: record.ok !== false };
