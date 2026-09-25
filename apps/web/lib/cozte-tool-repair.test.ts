@@ -7,8 +7,8 @@ describe("Cozte tool argument repair", () => {
   });
 
   it("parses lists that arrive as serialized strings", () => {
-    const repaired = repairCozteToolInput("saveRecipe", '{"product":"Tofu 300g","items":"[{\\"material\\":\\"Soja\\",\\"quantity\\":\\"0.21\\",\\"per\\":\\"unit\\"}]"}');
-    expect(JSON.parse(repaired!)).toEqual({ product: "Tofu 300g", items: [{ material: "Soja", quantity: 0.21, per: "unit" }] });
+    const repaired = repairCozteToolInput("saveRecipe", '{"product":"Tofu 300g","items":"[{\\"material\\":\\"Soja\\",\\"perUnit\\":\\"0.21\\"}]"}');
+    expect(JSON.parse(repaired!)).toEqual({ product: "Tofu 300g", items: [{ material: "Soja", perUnit: 0.21 }] });
   });
 
   it("unwraps fenced JSON and textual nulls in numeric fields", () => {

@@ -237,6 +237,8 @@ export function calculateCosts(
     const lotUnits = Math.max(product.lotUnits, 1);
     const materialLotMinor = lines.filter((line) => line.kind === "material").reduce((sum, line) => sum + line.amountMinor, 0);
     const knownLotMinor = lines.reduce((sum, line) => sum + line.amountMinor, 0);
+    // A zero production cost is never a real answer: it only means nothing is linked to the product yet.
+    if (knownLotMinor === 0 && !warnings.length) warnings.push(`Aún no hay insumos, trabajo ni gastos asociados a ${product.name}`);
     const monthly = {
       batchesMilli,
       units: roundRatio(BigInt(lotUnits) * BigInt(batchesMilli), 1000n),

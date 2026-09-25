@@ -119,7 +119,7 @@ function costSummary(cost: ProductCost | undefined) {
   return {
     status: cost.quality,
     unitCost: cost.unitMinor,
-    knownUnitCostSoFar: cost.unitMinor === null ? cost.partialUnitMinor : undefined,
+    knownUnitCostSoFar: cost.unitMinor === null && cost.partialUnitMinor > 0 ? cost.partialUnitMinor : undefined,
     perUnit: cost.perUnit ? { materials: cost.perUnit.materialMinor, directLabor: cost.perUnit.laborMinor, sharedExpenses: cost.perUnit.sharedMinor } : null,
     lotCost: cost.totalLotMinor,
     marginPercent: cost.estimatedMarginPercent,
@@ -173,6 +173,7 @@ export function buildCostOverview(state: DomainState, costs: ProductCost[] = cal
           materialId: item.materialId, material: materialNames.get(item.materialId) ?? "Insumo no encontrado",
           quantityPerLot: quantity, perUnit: Math.round(quantity / Math.max(product.lotUnits, 1) * 100000) / 100000, unit: material?.purchaseUnit ?? "",
           costPerLot: material?.priceMinor == null ? null : Math.round(material.priceMinor * quantity),
+          costPerUnit: material?.priceMinor == null ? null : Math.round(material.priceMinor * quantity / Math.max(product.lotUnits, 1) * 100) / 100,
         };
       }),
       cost: costSummary(costs.find((item) => item.productId === product.id)),

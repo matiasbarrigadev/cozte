@@ -32,8 +32,9 @@ describe("Cozte tool input schemas", () => {
 
   it("accepts the flat inputs a model sends for common requests", () => {
     expect(cozteToolInputSchemas.saveProduct.safeParse({ name: "Tofu 500g", goodUnitsPerLot: 112, lotsPerMonth: 23, salePrice: null }).success).toBe(true);
-    expect(cozteToolInputSchemas.saveRecipe.safeParse({ product: "Tofu 300g", items: [{ material: "Cloruro", quantity: 7, per: "unit", unit: "g" }] }).success).toBe(true);
+    expect(cozteToolInputSchemas.saveRecipe.safeParse({ product: "Tofu 300g", items: [{ material: "Cloruro", perUnit: 7, unit: "g" }] }).success).toBe(true);
     expect(cozteToolInputSchemas.saveExpense.safeParse({ name: "Luz", amount: 350000, splitBy: "hours" }).success).toBe(true);
-    expect(cozteToolInputSchemas.saveRecipe.safeParse({ product: "Tofu", items: [{ material: "Soja", quantity: 1, per: "batch" }] }).success).toBe(false);
+    expect(cozteToolInputSchemas.saveRecipe.safeParse({ product: "Tofu", items: [{ material: "Soja", perUnit: 1, perLot: 93 }] }).success).toBe(false);
+    expect(cozteToolInputSchemas.saveRecipe.safeParse({ product: "Tofu", items: [{ material: "Soja" }] }).success).toBe(false);
   });
 });

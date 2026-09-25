@@ -29,7 +29,7 @@ export async function ensureOrganization(principal: Principal): Promise<void> {
     { sql: "INSERT OR IGNORE INTO organizations (id) VALUES (?)", params: [principal.organizationId] },
     { sql: "INSERT INTO memberships (organization_id, user_id, role) VALUES (?, ?, ?) ON CONFLICT (organization_id, user_id) DO UPDATE SET role=excluded.role", params: [principal.organizationId, principal.userId, principal.role] },
     { sql: "INSERT OR IGNORE INTO cost_categories (id, organization_id, name) SELECT ?, ?, 'Materia prima' WHERE NOT EXISTS (SELECT 1 FROM cost_categories WHERE organization_id=?) UNION ALL SELECT ?, ?, 'Gastos generales' WHERE NOT EXISTS (SELECT 1 FROM cost_categories WHERE organization_id=?)", params: [crypto.randomUUID(), principal.organizationId, principal.organizationId, crypto.randomUUID(), principal.organizationId, principal.organizationId] },
-  ]);
+  ], { retrySafe: true }); // Idempotent upserts.
 }
 
 export async function loadState(principal: Principal): Promise<DomainState> {

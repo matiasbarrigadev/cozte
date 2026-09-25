@@ -68,11 +68,11 @@ export const cozteToolInputSchemas = {
     product: reference.describe("Nombre o ID del producto"),
     items: z.array(z.object({
       material: reference.describe("Nombre o ID del insumo (debe existir; créalo antes si hace falta)"),
-      quantity: z.number().nonnegative().max(1_000_000_000).describe("Cantidad consumida; 0 quita el insumo de la receta"),
-      per: z.enum(["lot", "unit"]).describe("lot = por lote completo; unit = por cada unidad terminada"),
-      unit: z.string().trim().min(1).max(60).optional().describe("Unidad de la cantidad si difiere de la unidad de compra (ej. g cuando se compra por kg)"),
+      perUnit: z.number().nonnegative().max(1_000_000_000).optional().describe("Cantidad que consume UNA unidad terminada (ej. 'cada tofu lleva 0.21 kg de soja' → 0.21). Usa perUnit o perLot, no ambos."),
+      perLot: z.number().nonnegative().max(1_000_000_000).optional().describe("Cantidad que consume el lote o tanda COMPLETA (ej. 'por tanda usamos 20 kg de soja' → 20). Usa perUnit o perLot, no ambos."),
+      unit: z.string().trim().min(1).max(60).optional().describe("Unidad de esa cantidad si difiere de la unidad de compra (ej. g cuando se compra por kg)"),
       usageUnitsPerPurchaseUnit: z.number().positive().max(1_000_000_000).optional().describe("Solo para unidades no estándar: cuántas unidades de uso trae una unidad de compra (ej. 1 caja = 100 etiquetas → 100)"),
-    })).min(1).max(40),
+    }).refine((item) => (item.perUnit === undefined) !== (item.perLot === undefined), "Indica perUnit o perLot (uno solo); 0 quita el insumo de la receta")).min(1).max(40),
     replaceAll: z.boolean().optional().describe("true quita de la receta los insumos que no estén en la lista"),
   }),
   saveExpense: z.object({
@@ -185,7 +185,7 @@ async function costReceipt(principal: Principal, productIds?: string[]) {
     const cost = costs.find((item) => item.productId === product.id);
     return {
       product: product.name, id: product.id, status: cost?.quality ?? "incomplete",
-      unitCost: cost?.unitMinor ?? null, knownUnitCostSoFar: cost?.unitMinor == null ? cost?.partialUnitMinor : undefined,
+      unitCost: cost?.unitMinor ?? null, knownUnitCostSoFar: cost?.unitMinor == null && (cost?.partialUnitMinor ?? 0) > 0 ? cost?.partialUnitMinor : undefined,
       missing: cost?.warnings ?? [], assumptions: cost?.assumptions ?? [],
     };
   });
@@ -294,28 +294,37 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       const product = resolveEntity(state.products, value.product);
       if (!product.item) return notFound("el producto", value.product, product.candidates);
       const productItem = product.item;
-      const converted: { materialId: string; quantityMilli: number; explanation: string }[] = [];
+      // Every saved line is echoed per unit and per lot, with its cost, so a unit/lot mix-up is visible in the receipt.
+      const converted: { materialId: string; quantityMilli: number; line: Record<string, unknown> }[] = [];
       const problems: string[] = [];
       for (const item of value.items) {
         const material = resolveEntity(state.materials, item.material);
         if (!material.item) { problems.push(`Insumo "${item.material}" no identificado (opciones: ${material.candidates.join(", ")})`); continue; }
-        const perLot = item.per === "unit" ? item.quantity * productItem.lotUnits : item.quantity;
+        const quantity = item.perUnit ?? item.perLot ?? 0;
+        const perLot = item.perUnit !== undefined ? quantity * productItem.lotUnits : quantity;
         const usageUnit = item.unit ?? material.item.purchaseUnit;
         const ratio = item.usageUnitsPerPurchaseUnit ? 1 / item.usageUnitsPerPurchaseUnit : standardUnitRatio(usageUnit, material.item.purchaseUnit);
         if (ratio === null) { problems.push(`Para ${material.item.name}: ¿cuántos ${usageUnit} trae un ${material.item.purchaseUnit}? (usa usageUnitsPerPurchaseUnit)`); continue; }
         const purchaseUnitsPerLot = perLot * ratio;
         const quantityMilli = Math.round(purchaseUnitsPerLot * 1000);
-        if (item.quantity > 0 && quantityMilli === 0) { problems.push(`La cantidad de ${material.item.name} por lote es menor a una milésima de ${material.item.purchaseUnit}; conviene registrar el insumo con una unidad de compra más chica`); continue; }
-        converted.push({ materialId: material.item.id, quantityMilli, explanation: `${material.item.name}: ${threeDecimals(purchaseUnitsPerLot)} ${material.item.purchaseUnit} por lote${item.per === "unit" ? ` (${item.quantity} ${usageUnit} × ${productItem.lotUnits} unidades)` : ""}` });
+        if (quantity > 0 && quantityMilli === 0) { problems.push(`La cantidad de ${material.item.name} por lote es menor a una milésima de ${material.item.purchaseUnit}; conviene registrar el insumo con una unidad de compra más chica`); continue; }
+        const unitsPerProduct = purchaseUnitsPerLot / Math.max(productItem.lotUnits, 1);
+        converted.push({ materialId: material.item.id, quantityMilli, line: {
+          material: material.item.name,
+          informed: `${quantity} ${usageUnit} por ${item.perUnit !== undefined ? "unidad" : "lote"}`,
+          perUnit: `${Math.round(unitsPerProduct * 100000) / 100000} ${material.item.purchaseUnit}`,
+          perLot: `${threeDecimals(purchaseUnitsPerLot)} ${material.item.purchaseUnit} (lote de ${productItem.lotUnits})`,
+          costPerUnit: material.item.priceMinor === null ? null : Math.round(material.item.priceMinor * unitsPerProduct * 100) / 100,
+        } });
       }
-      if (problems.length) return { ok: false, error: "No guardé la receta porque hay datos por aclarar.", needs: problems, ready: converted.map((item) => item.explanation) };
+      if (problems.length) return { ok: false, error: "No guardé la receta porque hay datos por aclarar.", needs: problems, ready: converted.map((item) => item.line) };
       const listed = new Set(converted.map((item) => item.materialId));
       const removals = value.replaceAll ? state.components.filter((item) => item.productId === productItem.id && !listed.has(item.materialId)).map((item) => ({ materialId: item.materialId, quantityMilli: 0 })) : [];
       const items = [...converted.map(({ materialId, quantityMilli }) => ({ materialId, quantityMilli })), ...removals];
       const before = await costReceipt(principal, [productItem.id]);
       const { done } = await commitPlans(input, [{ description: `Receta de ${productItem.name} guardada`, build: () => ({ action: "set-components", productId: productItem.id, items }) }]);
       const after = await costReceipt(principal, [productItem.id]);
-      return { ok: true, done, saved: converted.map((item) => item.explanation), removed: removals.length, costBefore: before[0]?.unitCost ?? null, costs: after };
+      return { ok: true, done, saved: converted.map((item) => item.line), removed: removals.length, costBefore: before[0]?.unitCost ?? null, costs: after, check: "Confirma que 'informed' coincide con lo que dijo la persona (por unidad o por lote)." };
     }
     case "saveExpense": {
       const value = args as z.infer<typeof cozteToolInputSchemas.saveExpense>;

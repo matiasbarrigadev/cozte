@@ -41,14 +41,14 @@ describe.skipIf(!bridgeUrl)("Cozte tools against D1", { timeout: 60_000 }, () =>
     expect(materials.map((item) => item.ok ? true : item)).toEqual([true, true, true, true, true]);
 
     const recipe = await run("saveRecipe", { product: "tofu 300 g", items: [
-      { material: "soja organica", quantity: 0.2097, per: "unit" },
-      { material: "cloruro", quantity: 7, per: "unit", unit: "g" },
-      { material: "tela", quantity: 0.0105, per: "unit" },
-      { material: "bolsa", quantity: 1, per: "unit" },
-      { material: "etiqueta", quantity: 1, per: "unit" },
+      { material: "soja organica", perUnit: 0.2097 },
+      { material: "cloruro", perUnit: 7, unit: "g" },
+      { material: "tela", perUnit: 0.0105 },
+      { material: "bolsa", perUnit: 1 },
+      { material: "etiqueta", perUnit: 1 },
     ] });
     expect(recipe.ok).toBe(true);
-    expect(recipe.saved).toContain("Cloruro de magnesio: 0.651 kg por lote (7 g × 93 unidades)");
+    expect(recipe.saved).toContainEqual({ material: "Cloruro de magnesio", informed: "7 g por unidad", perUnit: "0.007 kg", perLot: "0.651 kg (lote de 93)", costPerUnit: 14.7 });
 
     expect((await run("saveExpense", { name: "Mano de obra", amount: 1600000, splitBy: "hours" })).ok).toBe(true);
     expect((await run("saveExpense", { name: "Gas", amount: 110000, splitBy: "hours" })).ok).toBe(true);
@@ -64,9 +64,9 @@ describe.skipIf(!bridgeUrl)("Cozte tools against D1", { timeout: 60_000 }, () =>
   });
 
   it("asks instead of guessing and keeps removals for human review", async () => {
-    const ambiguous = await run("saveRecipe", { product: "tofu", items: [{ material: "bolsa", quantity: 1, per: "unit" }] });
+    const ambiguous = await run("saveRecipe", { product: "tofu", items: [{ material: "bolsa", perUnit: 1 }] });
     expect(ambiguous).toMatchObject({ ok: false, options: ["Tofu 300g", "Tofu 500g"] });
-    const unknownUnit = await run("saveRecipe", { product: "Tofu 500g", items: [{ material: "Etiqueta", quantity: 1, per: "unit", unit: "rollo" }] });
+    const unknownUnit = await run("saveRecipe", { product: "Tofu 500g", items: [{ material: "Etiqueta", perUnit: 1, unit: "rollo" }] });
     expect(unknownUnit.ok).toBe(false);
     const missing = await run("saveExpense", { name: "Alquiler", amount: 300000 });
     expect(missing).toMatchObject({ ok: false, needs: ["cómo repartirlo entre productos (horas, unidades o porcentajes)"] });

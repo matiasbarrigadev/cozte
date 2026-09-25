@@ -12,7 +12,10 @@ export type TurnToolRecord = {
   output: unknown;
 };
 
-export type VerificationIssue = { code: "unbacked-write-claim" | "announced-not-executed" | "unknown-identifier" | "internal-detail" | "empty-answer"; detail: string };
+export type VerificationIssue = { code: "unbacked-write-claim" | "announced-not-executed" | "unverified-figures" | "unknown-identifier" | "internal-detail" | "foreign-script" | "empty-answer"; detail: string };
+
+/** Text the answer may legitimately quote numbers from besides tool results: the turn's cost snapshot and the person's message. */
+export type VerificationContext = { sources?: string[] };
 
 export type Verification = { ok: boolean; issues: VerificationIssue[]; mustUseTools: boolean };
 
@@ -21,30 +24,82 @@ export type Verification = { ok: boolean; issues: VerificationIssue[]; mustUseTo
 /** First-person reports of an action taken now: only a successful write in this turn backs them. */
 const actionClaim = /(?<![\p{L}\p{N}])(?:guard[eé]|registr[eé]|cre[eé]|actualic[eé]|cargu[eé]|agregu[eé]|a[ñn]ad[ií]|modifiqu[eé]|apliqu[eé]|renombr[eé]|asign[eé]|vincul[eé]|conect[eé])(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])(?:guardad|cread|aplicad)[oa]s?\s+en\s+firme(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])reporte\s+literal(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])resultado:?\s*\*{0,2}`?(?:applied|aplicado|guardado)/giu;
 
-/** Statements about what is stored: a write or a fresh read in this turn backs them. */
-const stateClaim = /(?<![\p{L}\p{N}])(?:qued[oó]|quedaron|fue|fueron|ya\s+est[aá]n?|est[aá]n?)\s+(?:correctamente\s+|bien\s+|ya\s+)?(?:guardad|registrad|cread|actualizad|cargad|aplicad|agregad|a[ñn]adid|vinculad|asignad)[oa]s?(?![\p{L}\p{N}])/giu;
+/**
+ * Statements about what is stored: a write or a fresh read in this turn backs them.
+ * Covers "quedaron guardados", "Gas y luz cargados", "quedaron las dos recetas" and openers like "Listo,".
+ * Any affirmative storage participle counts: in a turn with no write and no read it has nothing behind it.
+ */
+const stateClaim = new RegExp([
+  /(?<![\p{L}\p{N}])(?:qued[oó]|quedaron|ya\s+est[aá]n?|est[aá]n?)\s+(?:correctamente\s+|bien\s+|ya\s+)?complet[oa]s?(?![\p{L}\p{N}])/u.source,
+  /(?<![\p{L}\p{N}])(?:qued[oó]|quedaron)\s+as[ií](?![\p{L}\p{N}])/u.source,
+  /(?<![\p{L}\p{N}])(?:guardad|registrad|cread|actualizad|cargad|aplicad|agregad|a[ñn]adid|anotad)[oa]s?(?![\p{L}\p{N}])/u.source,
+  /(?<![\p{L}\p{N}])(?:qued[oó]|quedaron|ya\s+qued[oó]|ya\s+quedaron|ya\s+tengo|ya\s+tenemos)\s+(?:(?:el|la|los|las|tu|tus|su|sus|dos|tres|cuatro|cinco|ambos|ambas|todos|todas|esos|esas|ese|esa)\s+){0,2}(?:recetas?|productos?|insumos?|gastos?|precios?|notas?|categor[ií]as?|sueldos?)(?![\p{L}\p{N}])/u.source,
+].join("|"), "giu");
+
+/** "Listo," / "Hecho." openers: only suspicious when the turn used no tool at all ("Listo, simulado sin guardar" is fine). */
+const openerClaim = /^\s*¡?\s*(?:listo|hecho|ya\s+est[aá])(?![\p{L}\p{N}])/giu;
+
+/** Model artifacts in another script (e.g. stray Chinese words) that the person should never see. */
+const foreignScript = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Cyrillic}\p{Script=Arabic}]+/u;
 
 /** Announcing an imminent action ("voy a guardar", "ahora ejecuto") and then ending the turn without doing it. */
 const announcedAction = /(?<![\p{L}\p{N}])(?:(?:voy a|vamos a|procedo a|paso a|ahora mismo|ahora)\s+(?:\p{L}+\s+){0,2}?(?:guardar|registrar|crear|cargar|actualizar|ejecutar|agregar|aplicar|llamar|invocar)|(?:pruebo|ejecuto|guardo|actualizo|aplico|agrego|invoco))(?![\p{L}\p{N}])/iu;
 const waitsForPerson = /\?\s*$|(?<![\p{L}\p{N}])(?:cuando|apenas|en cuanto|si me|si confirmas|si quieres|si quer[eé]s|cuando me)(?![\p{L}\p{N}])/iu;
 
-const negatedContext = /(?:(?<![\p{L}\p{N}])(?:no|aún no|todavía no|nunca|sin|antes de|para|puedo|podemos|podría|voy a|vamos a|quieres que|si|cuando)|¿)\s+(?:\S+\s+){0,2}$/iu;
+const negatedContext = /(?:(?<![\p{L}\p{N}])(?:no|nada|ni|aún no|todavía no|nunca|sin|antes de|para|puedo|podemos|podría|voy a|vamos a|quieres que|quer[eé]s que|si|cuando)\s+|¿\s*)(?:\S+\s+){0,2}$/iu;
+
+/** Money figures: a number next to "$" or a currency code, in either order. */
+const moneyFigure = /(?:\$|(?<!\p{L})(?:ARS|CLP|USD|EUR|BRL|MXN|COP|PEN|UYU|PYG|BOB|CRC|DOP|GTQ|HNL|NIO|PAB|BZD)(?!\p{L}))\s*(\d[\d.,]*)|(\d[\d.,]*)\s*(?:\$|(?<!\p{L})(?:ARS|CLP|USD|EUR|BRL|MXN|COP|PEN|UYU|PYG|BOB|CRC|DOP|GTQ|HNL|NIO|PAB|BZD)(?!\p{L}))/gu;
+
+/** Integer value of a figure written with Spanish or English separators ("1.070", "1,070", "1.070,50", "271.14"). */
+function figureValue(token: string): number | null {
+  const cleaned = token.replace(/[.,]+$/, "");
+  const integer = /,\d{1,2}$/.test(cleaned) ? cleaned.replace(/,\d{1,2}$/, "").replace(/[.,]/g, "")
+    : /\.\d{1,2}$/.test(cleaned) && !/\.\d{3}/.test(cleaned) ? cleaned.replace(/\.\d{1,2}$/, "").replace(/,/g, "")
+    : cleaned.replace(/[.,]/g, "");
+  const value = Number(integer);
+  return integer && Number.isFinite(value) ? value : null;
+}
+
+/** Every integer a source text could be quoting, under both separator conventions and JSON decimals. */
+function sourceFigures(texts: string[]): Set<number> {
+  const figures = new Set<number>();
+  for (const text of texts) for (const [token] of text.matchAll(/\d[\d.,]*/g)) {
+    const spanish = figureValue(token);
+    if (spanish !== null) figures.add(spanish);
+    const plain = /^\d+(?:\.\d+)?/.exec(token)?.[0];
+    if (plain) { figures.add(Math.floor(Number(plain))); figures.add(Math.round(Number(plain))); }
+  }
+  return figures;
+}
 
 const identifierPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
 
 const internalNames = /\b(?:readCosts|saveProduct|saveMaterial|saveRecipe|saveExpense|saveCategory|removeItem|saveNote|calculate|simulate|inspectCostBase|applyCostAction|updateMaterialPrice|updateExpenseAmount|updateProductionMap|upsertProductDraft|calculateCostRule|findMaterial|create-product|create-material|create-expense|set-component|bulk-prices|quantityMilli|\w+Minor|\w+Milli|toolCallId|null)\b/u;
 
-function claims(text: string, pattern: RegExp): string[] {
+/** Sentence markers for actions from earlier turns ("antes guardé…"), which a fresh read can confirm. */
+const earlierTurn = /(?<![\p{L}\p{N}])(?:antes|anteriormente|previamente|hace un rato|ayer|la vez pasada|en (?:esta|la) (?:charla|conversación)|en (?:el|los) mensajes? anteriores?|más temprano)(?![\p{L}\p{N}])/iu;
+
+const sentenceMarks = [".", "\n", "!", "?"];
+
+function sentenceAround(text: string, index: number): string {
+  const start = Math.max(...sentenceMarks.map((mark) => text.lastIndexOf(mark, index))) + 1;
+  const ends = sentenceMarks.map((mark) => text.indexOf(mark, index)).filter((position) => position >= 0);
+  return text.slice(start, ends.length ? Math.min(...ends) : text.length);
+}
+
+function claims(text: string, pattern: RegExp, allowEarlierTurns = false): string[] {
   const found: string[] = [];
   for (const match of text.matchAll(pattern)) {
-    const before = text.slice(Math.max(0, (match.index ?? 0) - 40), match.index ?? 0);
-    if (negatedContext.test(before)) continue;
+    const index = match.index ?? 0;
+    if (negatedContext.test(text.slice(Math.max(0, index - 40), index))) continue;
+    if (allowEarlierTurns && earlierTurn.test(sentenceAround(text, index))) continue;
     found.push(match[0]);
   }
   return found;
 }
 
-export function verifyCozteResponse(text: string, tools: TurnToolRecord[]): Verification {
+export function verifyCozteResponse(text: string, tools: TurnToolRecord[], context: VerificationContext = {}): Verification {
   const issues: VerificationIssue[] = [];
   const answer = text.trim();
   if (!answer) {
@@ -52,7 +107,7 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[]): Veri
   }
   const successfulWrites = tools.filter((tool) => tool.write && tool.ok);
   const freshRead = tools.some((tool) => tool.name === "readCosts" && tool.ok);
-  const unbacked = [...claims(answer, actionClaim), ...(freshRead ? [] : claims(answer, stateClaim))];
+  const unbacked = [...claims(answer, actionClaim, freshRead), ...(freshRead ? [] : claims(answer, stateClaim)), ...(tools.length ? [] : claims(answer, openerClaim))];
   if (unbacked.length && !successfulWrites.length) {
     const failedWrites = tools.filter((tool) => tool.write && !tool.ok).length;
     issues.push({
@@ -66,11 +121,20 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[]): Veri
     issues.push({ code: "announced-not-executed", detail: "La respuesta anuncia que va a guardar o ejecutar algo, pero el turno terminó sin hacerlo." });
   }
   const evidence = JSON.stringify(tools.map((tool) => tool.output)) ?? "";
+  // A turn that used no tool can only quote money figures already in its snapshot or the person's message.
+  if (!tools.length && context.sources) {
+    const known = sourceFigures([...context.sources, evidence]);
+    const figures = [...answer.matchAll(moneyFigure)].map((match) => figureValue(match[1] ?? match[2] ?? "")).filter((value): value is number => value !== null && value >= 100);
+    const unverified = [...new Set(figures.filter((value) => !known.has(value) && !known.has(value - 1) && !known.has(value + 1)))];
+    if (unverified.length) issues.push({ code: "unverified-figures", detail: `La respuesta muestra montos que no salen del motor ni de lo que dijo la persona (${unverified.slice(0, 4).join(", ")}). Obtén esas cifras con simulate, calculate o readCosts antes de mostrarlas.` });
+  }
   const unknownIds = [...new Set(answer.match(identifierPattern) ?? [])].filter((id) => !evidence.includes(id));
   if (unknownIds.length) issues.push({ code: "unknown-identifier", detail: `La respuesta muestra identificadores que no provienen de ningún resultado: ${unknownIds.slice(0, 3).join(", ")}.` });
   const leaked = answer.match(internalNames);
   if (leaked) issues.push({ code: "internal-detail", detail: `La respuesta expone detalles internos ("${leaked[0]}").` });
-  return { ok: issues.length === 0, issues, mustUseTools: issues.some((issue) => issue.code === "unbacked-write-claim" || issue.code === "announced-not-executed") };
+  const foreign = answer.match(foreignScript);
+  if (foreign) issues.push({ code: "foreign-script", detail: `La respuesta mezcla texto en otro idioma ("${foreign[0]}"); responde solo en español.` });
+  return { ok: issues.length === 0, issues, mustUseTools: issues.some((issue) => issue.code === "unbacked-write-claim" || issue.code === "announced-not-executed" || issue.code === "unverified-figures") };
 }
 
 /** Feedback sent back to the model when the answer does not match the turn's evidence. */
@@ -81,8 +145,44 @@ export function correctionMessage(verification: Verification): string {
     "Tu respuesta anterior no se mostró porque no coincide con lo que realmente pasó en este turno:",
     ...lines,
     verification.mustUseTools
-      ? "Si la persona pidió guardar algo y tienes los datos, ejecuta ahora la herramienta que corresponde y responde según su resultado. Si falta un dato, no afirmes que guardaste: pregunta solo lo indispensable."
+      ? "Si la persona pidió guardar algo y tienes los datos, ejecuta ahora la herramienta que corresponde y responde según su resultado. Si pregunta qué quedó guardado, lee primero el estado actual y responde con esa lectura. Si falta un dato, no afirmes que guardaste: pregunta solo lo indispensable."
       : "Vuelve a responder a la persona sin esos problemas.",
     "No menciones esta verificación ni nombres internos; responde directamente a la persona.",
   ].join("\n");
+}
+
+/** Deterministic fallback when the model cannot produce an answer consistent with its receipts. */
+export function receiptOnlyAnswer(records: TurnToolRecord[]): string {
+  const done = records.filter((item) => item.write && item.ok).flatMap((item) => {
+    const output = item.output as Record<string, unknown>;
+    return Array.isArray(output.done) ? output.done.map(String) : [];
+  });
+  const failed = records.filter((item) => item.write && !item.ok).map((item) => {
+    const output = item.output as Record<string, unknown> | null;
+    return typeof output?.error === "string" ? output.error : "Un cambio no se pudo guardar.";
+  });
+  const lines = [
+    done.length ? `Esto quedó guardado: ${done.join("; ")}.` : "En este turno no guardé cambios.",
+    failed.length ? `No se guardó: ${[...new Set(failed)].join(" ")}` : "",
+    storedSummary(records),
+    "Si quieres, dime qué dato registrar o revisar y sigo.",
+  ];
+  return lines.filter(Boolean).join(" ");
+}
+
+/** What the latest read in the turn shows, so a fallback still answers "what is saved?". */
+function storedSummary(records: TurnToolRecord[]): string {
+  const read = [...records].reverse().find((item) => item.name === "readCosts" && item.ok && Array.isArray((item.output as Record<string, unknown> | null)?.products));
+  if (!read) return "";
+  const overview = read.output as { currency?: string; products: { name: string; cost?: { unitCost?: number | null; status?: string } | null }[]; materials?: unknown[]; monthlyExpenses?: { name: string; monthlyAmount: number }[] };
+  const money = (value: number) => `${overview.currency ?? ""} ${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 0 }).format(value)}`.trim();
+  const status = { complete: "completo", estimated: "estimado", incomplete: "incompleto" } as Record<string, string>;
+  const products = overview.products.map((item) => item.cost?.unitCost != null ? `${item.name} (${money(item.cost.unitCost)} por unidad, ${status[item.cost.status ?? ""] ?? "sin estado"})` : `${item.name} (costo incompleto)`);
+  const expenses = (overview.monthlyExpenses ?? []).map((item) => `${item.name} (${money(item.monthlyAmount)} al mes)`);
+  return [
+    "Según la base, ahora mismo hay",
+    products.length ? `productos: ${products.join(", ")};` : "ningún producto;",
+    `${overview.materials?.length ?? 0} insumos;`,
+    expenses.length ? `y gastos mensuales: ${expenses.join(", ")}.` : "y ningún gasto mensual.",
+  ].join(" ");
 }

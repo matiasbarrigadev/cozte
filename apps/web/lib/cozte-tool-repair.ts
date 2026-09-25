@@ -1,6 +1,6 @@
 const numericKeys = new Set([
   "goodUnitsPerLot", "lotsPerMonth", "hoursPerLot", "directLaborPerLot", "salePrice", "salesVariablePerUnit",
-  "price", "amount", "monthlyAmount", "quantity", "quantityPerLot", "usageUnitsPerPurchaseUnit", "percent",
+  "price", "amount", "monthlyAmount", "perUnit", "perLot", "quantityPerLot", "usageUnitsPerPurchaseUnit", "percent",
 ]);
 const structuredKeys = new Set(["items", "percentages", "materialPrices", "expenseAmounts", "products", "recipe"]);
 

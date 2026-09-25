@@ -115,6 +115,14 @@ describe("motor de costos", () => {
     expect(first.economics?.contributionUnitMinor).toBe(5500 - 490 - first.perUnit!.materialMinor - first.perUnit!.laborMinor);
   });
 
+  it("no presenta un costo cero cuando el producto aún no tiene nada asociado", () => {
+    const empty: DomainState = { ...structuredClone(state), components: [], expenses: [], products: [{ ...state.products[0], laborLotMinor: 0 }] };
+    const [cost] = calculateCosts(empty);
+    expect(cost.unitMinor).toBeNull();
+    expect(cost.quality).toBe("incomplete");
+    expect(cost.warnings[0]).toMatch(/Aún no hay insumos/);
+  });
+
   it("ofrece el costo parcial conocido cuando falta un precio", () => {
     const missing = structuredClone(state);
     missing.materials[0].priceMinor = null;

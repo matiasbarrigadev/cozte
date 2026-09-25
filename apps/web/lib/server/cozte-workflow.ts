@@ -5,11 +5,13 @@ import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
 import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
 import { compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
-import { correctionMessage, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
+import { correctionMessage, receiptOnlyAnswer, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import type { Principal } from "./auth";
 import { saveConversation } from "./production-profile";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked } from "./assistant-trace";
 import { createCozteTools } from "./cozte-agent-tools";
+import { loadState } from "./state";
+import { buildCostOverview } from "@/lib/cozte-cost-view";
 
 export type CozteAgentSettings = {
   model: string;
@@ -64,6 +66,12 @@ async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   }
 }
 
+async function readCostOverview(principal: Principal): Promise<Record<string, unknown>> {
+  "use step";
+  const state = await loadState(principal);
+  return { ok: true, ...buildCostOverview(state) };
+}
+
 async function recordCozteEvent(runId: string, kind: string, payload: unknown): Promise<void> {
   "use step";
   await addAssistantEvent(runId, kind, payload);
@@ -106,6 +114,12 @@ async function checkCozteWorkflowLink(input: { principal: Principal; runId: stri
   return isAssistantWorkflowLinked(input.principal, input.runId, input.workflowRunId);
 }
 
+function lastUserText(messages: ModelMessage[]): string {
+  const last = [...messages].reverse().find((message) => message.role === "user");
+  if (!last) return "";
+  return typeof last.content === "string" ? last.content : last.content.map((part) => part.type === "text" ? part.text : "").join(" ");
+}
+
 function toolRecords(steps: StepLike[]): TurnToolRecord[] {
   return steps.flatMap((step) => step.toolResults.map((result) => ({
     name: result.toolName,
@@ -127,24 +141,6 @@ function assistantTurn(runId: string, steps: StepLike[], text: string): UIMessag
   }
   if (text.trim()) parts.push({ type: "text", text });
   return { id: `assistant-${runId}`, role: "assistant", parts };
-}
-
-/** Deterministic fallback when the model cannot produce an answer consistent with its receipts. */
-function receiptAnswer(records: TurnToolRecord[]): string {
-  const done = records.filter((item) => item.write && item.ok).flatMap((item) => {
-    const output = item.output as Record<string, unknown>;
-    return Array.isArray(output.done) ? output.done.map(String) : [];
-  });
-  const failed = records.filter((item) => item.write && !item.ok).map((item) => {
-    const output = item.output as Record<string, unknown> | null;
-    return typeof output?.error === "string" ? output.error : "Un cambio no se pudo guardar.";
-  });
-  const lines = [
-    done.length ? `Esto quedó guardado: ${done.join("; ")}.` : "En este turno no guardé cambios.",
-    failed.length ? `No se guardó: ${[...new Set(failed)].join(" ")}` : "",
-    "Si quieres, dime qué dato registrar y lo intento de nuevo.",
-  ];
-  return lines.filter(Boolean).join(" ");
 }
 
 export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise<void> {
@@ -179,23 +175,23 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     const first = await agent.stream({ messages: input.messages, writable, preventClose: true, sendFinish: false });
     const steps: StepLike[] = [...first.steps];
     let text = first.steps.at(-1)?.text ?? "";
-    let verification: Verification = verifyCozteResponse(text, toolRecords(steps));
+    const context = { sources: [input.instructions, lastUserText(input.messages)] };
+    let verification: Verification = verifyCozteResponse(text, toolRecords(steps), context);
     let modelError = "error" in first ? errorDetails(first.error) : undefined;
 
     if (!verification.ok && !modelError) {
       await recordCozteEvent(input.runId, "answer_rejected", { pass: 1, issues: verification.issues, response: text.slice(0, 4000) });
-      const mustUseTools = verification.mustUseTools;
       try {
         // The correction's first model step resets the rejected text on screen before streaming the new answer.
+        // Tool use is requested in the correction text, not forced: MiniMax ignores toolChoice "required" and the SDK then throws.
         const second = await agent.stream({
           messages: [...(first.messages as ModelMessage[]).filter((message) => message.role !== "system"), { role: "user", content: correctionMessage(verification) }],
           writable, preventClose: true, sendFinish: false,
           stopWhen: isStepCount(Math.max(4, Math.floor(settings.maxSteps / 2))),
-          prepareStep: ({ stepNumber }) => stepNumber === 0 && mustUseTools ? { toolChoice: "required" } : undefined,
         });
         steps.push(...second.steps);
         text = second.steps.at(-1)?.text ?? "";
-        verification = verifyCozteResponse(text, toolRecords(steps));
+        verification = verifyCozteResponse(text, toolRecords(steps), context);
         if ("error" in second) modelError = errorDetails(second.error);
       } catch (error) {
         modelError = errorDetails(error);
@@ -205,7 +201,10 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     const records = toolRecords(steps);
     if (!verification.ok || modelError) {
       await recordCozteEvent(input.runId, "answer_replaced", { issues: verification.issues, modelError, response: text.slice(0, 4000) });
-      text = receiptAnswer(records);
+      // Without a read in the turn, the fallback reads the stored state itself so it can still say what is saved.
+      const hasRead = records.some((item) => item.name === "readCosts" && item.ok);
+      const evidence = hasRead ? records : [...records, { name: "readCosts", ok: true, write: false, output: await readCostOverview(input.principal).catch(() => null) }];
+      text = receiptOnlyAnswer(evidence);
       await writeReceiptAnswer(writable, text, `receipt-${input.runId}`);
     }
     await closeCozteStream(writable);
