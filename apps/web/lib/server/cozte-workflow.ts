@@ -7,7 +7,7 @@ import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/c
 import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
 import { correctionMessage, receiptOnlyAnswer, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import type { Principal } from "./auth";
-import { saveConversation } from "./production-profile";
+import { loadConversation, saveConversation } from "./production-profile";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked, reopenAssistantRunAsFailed } from "./assistant-trace";
 import { createCozteTools } from "./cozte-agent-tools";
 import { loadState } from "./state";
@@ -55,11 +55,15 @@ type StepLike = { text: string; toolCalls: { toolCallId: string; toolName: strin
 
 async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   "use step";
-  // Claim the turn first: if it was already closed as stalled, a late wake-up must not overwrite
-  // a conversation the person may have continued in the meantime.
+  // Claim the turn first. If it was already closed as stalled, a late answer is still kept when the
+  // conversation has not moved on; otherwise it must not overwrite what the person wrote since.
   const claimed = await finishAssistantRun(input.runId, input.status, input.error);
   if (!claimed) {
-    await addAssistantEvent(input.runId, "late_finish_ignored", { outcome: input.status }).catch(() => {});
+    const turnMessageId = input.messages.findLast((message) => message.role === "user")?.id;
+    const stored = await loadConversation(input.principal);
+    const unchanged = input.status === "completed" && turnMessageId !== undefined && stored.at(-1)?.id === turnMessageId;
+    if (unchanged) await saveConversation(input.principal, input.messages);
+    await addAssistantEvent(input.runId, unchanged ? "late_finish_saved" : "late_finish_ignored", { outcome: input.status }).catch(() => {});
     return;
   }
   try {
