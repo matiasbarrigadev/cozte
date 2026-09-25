@@ -2,13 +2,14 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { analyzeCosts, groupComponents, type CostAnalysis, type Granularity, type Insight } from "@/lib/cost-analysis";
+import { analyzeCosts, costsAt, groupComponents, type CostAnalysis, type CostsAt, type Granularity, type Insight } from "@/lib/cost-analysis";
 import { demoHistory } from "@/lib/demo";
 import { TimeLineChart, type TimeSeries } from "@/components/charts/time-line-chart";
 import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TextShimmer } from "@/components/ui/text-shimmer";
@@ -57,8 +58,18 @@ export function CostAnalysisView({ currency, demo }: { currency: string; demo: b
   const analysis = demo ? demoAnalysis : loaded?.analysis ?? null;
   // Refetch keeps the previous render (dimmed) until the new slice arrives.
   const loading = !demo && loaded?.granularity !== granularity;
-  const [aiText, setAiText] = React.useState<{ text: string; verified: boolean } | null>(null);
+  const [insights, setInsights] = React.useState<SavedInsight[]>([]);
   const [aiLoading, setAiLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (demo) return;
+    let active = true;
+    fetch("/api/analysis/insights", { cache: "no-store" })
+      .then(async (response) => response.ok ? ((await response.json()).insights as SavedInsight[]) : [])
+      .then((items) => { if (active) setInsights(items); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [demo]);
 
   React.useEffect(() => {
     if (demo) return;
@@ -84,7 +95,7 @@ export function CostAnalysisView({ currency, demo }: { currency: string; demo: b
       const response = await fetch("/api/analysis/insights", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ granularity }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "No se pudieron generar las conclusiones");
-      setAiText(data);
+      setInsights((current) => [data.insight as SavedInsight, ...current]);
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudieron generar las conclusiones"); }
     finally { setAiLoading(false); }
   }
@@ -125,12 +136,18 @@ export function CostAnalysisView({ currency, demo }: { currency: string; demo: b
         <CardContent className="flex flex-col gap-3">
           {analysis.insights.length ? <ul className="flex flex-col gap-2">{analysis.insights.slice(0, 8).map((insight, index) => <InsightRow key={index} insight={insight} />)}</ul> : <p className="text-sm text-muted-foreground">No hay alertas por ahora.</p>}
           <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-medium">Análisis de Cozte</span><Button size="sm" variant={aiText ? "outline" : "default"} disabled={demo || aiLoading || analysis.snapshotCount === 0} onClick={() => void generate()}>{aiLoading ? "Analizando…" : aiText ? "Volver a analizar" : "Generar conclusiones"}</Button></div>
+            <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-medium">Análisis de Cozte</span><Button size="sm" variant={insights.length ? "outline" : "default"} disabled={demo || aiLoading || analysis.snapshotCount === 0} onClick={() => void generate()}>{aiLoading ? "Analizando…" : insights.length ? "Generar uno nuevo" : "Generar conclusiones"}</Button></div>
             {aiLoading ? <TextShimmer className="text-sm">Cozte está leyendo la evolución de tus costos…</TextShimmer> : null}
-            {aiText ? <div className="text-sm"><AssistantMarkdown text={aiText.text} />{!aiText.verified ? <p className="mt-2 text-xs text-muted-foreground">Algunas cifras no se pudieron verificar contra el análisis; tómalas como referencia.</p> : null}</div> : null}
+            {insights[0] ? <SavedInsightView insight={insights[0]} open /> : demo ? <p className="text-xs text-muted-foreground">En la demostración no se generan conclusiones; en tu espacio quedan guardadas para revisarlas cuando quieras.</p> : null}
+            {insights.length > 1 ? <details className="group/history rounded-md border bg-background/60">
+              <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm text-muted-foreground [&::-webkit-details-marker]:hidden"><span aria-hidden="true" className="text-xs transition-transform group-open/history:rotate-90">▸</span>Conclusiones anteriores ({insights.length - 1})</summary>
+              <div className="flex flex-col gap-2 border-t p-3">{insights.slice(1).map((insight) => <SavedInsightView key={insight.id} insight={insight} />)}</div>
+            </details> : null}
           </div>
         </CardContent>
       </Card>
+
+      <CostsAtCard currency={currency} demo={demo} money={money} />
 
       <Card><CardHeader><CardTitle>Costo por unidad de cada producto</CardTitle><CardDescription>Última foto de cada {granularity === "month" ? "mes" : "semana"}; si no hubo cambios se mantiene el costo anterior.</CardDescription></CardHeader>
         <CardContent>{display === "chart" ? <TimeLineChart periods={periods} periodLabel={periodLabel} series={unitSeries} formatValue={money} ariaLabel="Costo por unidad de cada producto en el tiempo" /> : <DataTable periods={periods} periodLabel={periodLabel} series={unitSeries} format={money} />}</CardContent></Card>
@@ -156,4 +173,93 @@ export function CostAnalysisView({ currency, demo }: { currency: string; demo: b
 function DataTable({ periods, periodLabel, series, format }: { periods: string[]; periodLabel: (period: string) => string; series: TimeSeries[]; format: (value: number) => string }) {
   return <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Serie</TableHead>{periods.map((period) => <TableHead key={period} className="text-right">{periodLabel(period)}</TableHead>)}</TableRow></TableHeader>
     <TableBody>{series.map((item) => <TableRow key={item.key}><TableCell className="font-medium">{item.label}</TableCell>{item.values.map((value, index) => <TableCell key={index} className="text-right tabular-nums">{value === null ? "—" : format(value)}</TableCell>)}</TableRow>)}</TableBody></Table></div>;
+}
+
+type SavedInsight = { id: string; createdAt: string; granularity: Granularity; text: string; verified: boolean; firstPeriod: string | null; lastPeriod: string | null };
+
+/** D1 timestamps come as "YYYY-MM-DD HH:MM:SS" in UTC. */
+const parseTimestamp = (value: string) => new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
+const dateTime = (value: string) => new Intl.DateTimeFormat("es-AR", { dateStyle: "medium", timeStyle: "short" }).format(parseTimestamp(value));
+const shortPeriod = (period: string, granularity: Granularity) => {
+  const date = new Date(`${period.length === 7 ? `${period}-01` : period}T12:00:00Z`);
+  return granularity === "month"
+    ? new Intl.DateTimeFormat("es-AR", { month: "short", year: "2-digit", timeZone: "UTC" }).format(date)
+    : `sem. ${new Intl.DateTimeFormat("es-AR", { day: "numeric", month: "short", timeZone: "UTC" }).format(date)}`;
+};
+
+function SavedInsightView({ insight, open = false }: { insight: SavedInsight; open?: boolean }) {
+  const { firstPeriod, lastPeriod, granularity } = insight;
+  const range = firstPeriod && lastPeriod ? firstPeriod === lastPeriod ? shortPeriod(firstPeriod, granularity) : `${shortPeriod(firstPeriod, granularity)} – ${shortPeriod(lastPeriod, granularity)}` : null;
+  return <details open={open} className="group/insight rounded-md border bg-background/70">
+    <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-2 text-xs text-muted-foreground [&::-webkit-details-marker]:hidden">
+      <span aria-hidden="true" className="transition-transform group-open/insight:rotate-90">▸</span>
+      <span className="font-medium text-foreground">{dateTime(insight.createdAt)}</span>
+      <span>por {granularity === "month" ? "meses" : "semanas"}{range ? ` · ${range}` : ""}</span>
+    </summary>
+    <div className="border-t px-3 py-2 text-sm"><AssistantMarkdown text={insight.text} />{!insight.verified ? <p className="mt-2 text-xs text-muted-foreground">Algunas cifras no se pudieron verificar contra el análisis; tómalas como referencia.</p> : null}</div>
+  </details>;
+}
+
+const LINE_TYPE_LABEL: Record<string, string> = { insumo: "Insumo", "mano de obra": "Mano de obra", "gasto compartido": "Gasto compartido" };
+const decimal = (value: number) => new Intl.NumberFormat("es-AR", { maximumFractionDigits: 3 }).format(value);
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Pick a day and see every product's cost as it stood then, line by line. */
+function CostsAtCard({ currency, demo, money }: { currency: string; demo: boolean; money: (value: number) => string }) {
+  const today = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const [date, setDate] = React.useState(today);
+  const [fetched, setFetched] = React.useState<CostsAt | null>(null);
+  const valid = ISO_DAY.test(date);
+  const demoData = React.useMemo(() => demo && valid ? costsAt(demoHistory(), date, { currency }) : null, [demo, valid, date, currency]);
+  const data = demo ? demoData : fetched;
+  const stale = !demo && fetched?.date !== date;
+
+  React.useEffect(() => {
+    if (demo || !valid) return;
+    let active = true;
+    fetch(`/api/analysis/at?date=${date}`, { cache: "no-store" })
+      .then(async (response) => { if (!response.ok) throw new Error((await response.json()).error ?? "No se pudo cargar esa fecha"); return response.json() as Promise<CostsAt>; })
+      .then((result) => { if (active) setFetched(result); })
+      .catch((error) => { if (active) toast.error(error instanceof Error ? error.message : "No se pudo cargar esa fecha"); });
+    return () => { active = false; };
+  }, [demo, valid, date]);
+
+  return <Card>
+    <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+      <div className="flex max-w-2xl flex-col gap-1.5"><CardTitle>Costos en una fecha</CardTitle><CardDescription>Cómo estaba el costo de cada producto al cierre del día elegido: cada insumo con su consumo y precio, la mano de obra y la parte de cada gasto compartido.</CardDescription></div>
+      <label className="flex items-center gap-2 text-sm text-muted-foreground">Fecha<Input type="date" value={date} max={today} onChange={(event) => setDate(event.target.value)} className="w-auto" /></label>
+    </CardHeader>
+    <CardContent className={cn("flex flex-col gap-3 transition-opacity", stale && "opacity-60")}>
+      {!data ? <TextShimmer className="text-sm">Buscando cómo estaban tus costos ese día…</TextShimmer>
+        : !data.products.length ? <p className="text-sm text-muted-foreground">No hay registros de costos hasta esa fecha. Se guarda uno cada vez que se confirma un cambio.</p>
+        : <>
+          {data.monthlyProductionCost !== null ? <p className="text-sm text-muted-foreground">Costo total de producción del mes a esa fecha: <span className="font-semibold tabular-nums text-foreground">{currency} {money(data.monthlyProductionCost)}</span></p> : null}
+          <div className="flex flex-col gap-2">
+            {data.products.map((product) => <details key={product.productId} className="group/product rounded-lg border bg-background/60">
+              <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-2.5 [&::-webkit-details-marker]:hidden">
+                <span className="flex items-center gap-2"><span aria-hidden="true" className="text-xs text-muted-foreground transition-transform group-open/product:rotate-90">▸</span><span className="font-medium">{product.name}</span>{product.incomplete ? <Badge variant="outline">Incompleto</Badge> : null}</span>
+                <span className="text-sm tabular-nums">{product.unitCost !== null ? <><span className="font-semibold">{currency} {money(product.unitCost)}</span><span className="text-muted-foreground"> por unidad</span></> : <span className="text-muted-foreground">Sin costo completo</span>}</span>
+              </summary>
+              <div className="flex flex-col gap-2 border-t px-3 py-3">
+                <p className="text-xs text-muted-foreground">
+                  Lote de {decimal(product.lotUnits)} unidades{product.lotsPerMonth !== null ? ` · ${decimal(product.lotsPerMonth)} lotes al mes` : ""}{product.lotCost !== null ? ` · costo del lote ${currency} ${money(product.lotCost)}` : ""}{product.monthlyCost !== null ? ` · ${currency} ${money(product.monthlyCost)} al mes` : ""} · registrado el {dateTime(product.snapshotAt)}
+                </p>
+                {product.warnings.length ? <ul className="flex flex-col gap-0.5 text-xs text-amber-700 dark:text-amber-400">{product.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul> : null}
+                <div className="overflow-x-auto"><Table>
+                  <TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead>Tipo</TableHead><TableHead>Consumo por lote</TableHead><TableHead className="text-right">Por lote</TableHead><TableHead className="text-right">Por unidad</TableHead></TableRow></TableHeader>
+                  <TableBody>{product.lines.map((line, index) => <TableRow key={`${line.label}-${index}`}>
+                    <TableCell className="font-medium">{line.label}<div className="text-xs font-normal text-muted-foreground">{line.category}</div></TableCell>
+                    <TableCell className="text-muted-foreground">{LINE_TYPE_LABEL[line.type] ?? line.type}</TableCell>
+                    <TableCell className="tabular-nums text-muted-foreground">{line.quantityPerLot !== undefined ? `${decimal(line.quantityPerLot)} ${line.unit ?? ""}${line.unitPrice != null ? ` × ${currency} ${money(line.unitPrice)}` : ""}` : "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(line.perLot)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(line.perUnit)}</TableCell>
+                  </TableRow>)}</TableBody>
+                </Table></div>
+              </div>
+            </details>)}
+          </div>
+          {data.expenses.length ? <p className="text-xs text-muted-foreground">Gastos mensuales vigentes: {data.expenses.map((expense) => `${expense.name} ${currency} ${money(expense.monthlyAmount)} (reparto por ${expense.splitBy})`).join(" · ")}</p> : null}
+        </>}
+    </CardContent>
+  </Card>;
 }

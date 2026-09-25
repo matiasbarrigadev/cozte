@@ -13,6 +13,7 @@ import type { ProposalSection } from "@/lib/proposal-presentation";
 import { assistantToolOutcome } from "@/lib/assistant-run-activity";
 import { COZTE_COST_WRITE_TOOLS, COZTE_TOOL_LABELS, COZTE_WRITE_TOOLS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
 import { activityHeadline, turnActivity, type ActivityItem, type ActivityPart } from "@/lib/cozte-turn-activity";
+import { answered, formatCozteAnswers, parseCozteQuestions, type CozteQuestionAnswer, type CozteQuestionSet } from "@/lib/cozte-questions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/
 import { ChatContainerContent, ChatContainerRoot, ChatContainerScrollAnchor } from "@/components/ui/chat-container";
 import { PromptInput, PromptInputActions, PromptInputTextarea } from "@/components/ui/prompt-input";
 import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { AssistantMarkdown } from "@/components/assistant-markdown";
@@ -233,6 +235,11 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
     finally { setPreparing(false); }
   }
 
+  // Only the latest reply can be answered, and only while Cozte is idle.
+  const answerQuestions = React.useMemo(() => demo || status !== "ready" || loading ? undefined : (text: string) => {
+    void sendMessage({ text }).catch(() => toast.error("No se pudieron enviar tus respuestas. Intenta otra vez."));
+  }, [demo, status, loading, sendMessage]);
+
   async function decideProposal(proposal: AssistantProposal, decision: "approve" | "reject") {
     if (demo || status !== "ready" || busyProposalIds.current.has(proposal.id)) return;
     busyProposalIds.current.add(proposal.id);
@@ -341,7 +348,7 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
             <CardContent className="flex min-h-0 flex-1 flex-col px-4 py-5 md:px-8"><ChatContainerRoot className="min-h-0 flex-1" aria-live="polite"><ChatContainerContent className="mx-auto min-h-full w-full max-w-4xl gap-4">
               {!messages.length ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>Empecemos por tu producción</EmptyTitle><EmptyDescription>¿Qué productos terminados y empacados fabrican, dónde y cómo?</EmptyDescription></EmptyHeader></Empty> : null}
               {messages.map((message) => <React.Fragment key={message.id}>
-                <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} />
+                <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} onAnswer={message.id === messages.at(-1)?.id ? answerQuestions : undefined} />
                 {(proposalsAfterMessage.get(message.id) ?? []).map((proposal) => <ProposalTurnCard key={proposal.id} proposal={proposal} onOpen={() => setSelectedProposalId(proposal.id)} />)}
               </React.Fragment>)}
               {status === "submitted" ? <TextShimmer className="text-sm">Cozte está analizando…</TextShimmer> : null}
@@ -458,7 +465,7 @@ function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; o
 const noExecutions: PersistedToolExecution[] = [];
 
 /** One chat message. Memoized so only the reply that is streaming re-renders on each update. */
-const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean }) {
+const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void }) {
   return <div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
     <span className="text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}</span>
     {message.role === "assistant" ? (() => {
@@ -471,12 +478,53 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
       if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
       if (part.type === "file" && part.mediaType === "application/pdf") return <Badge key={index} variant="outline">PDF · {part.filename ?? "Documento adjunto"}</Badge>;
       if (part.type === "file" && part.mediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return <Badge key={index} variant="outline">Excel · {part.filename ?? "Planilla adjunta"}</Badge>;
+      if (part.type === "tool-askQuestions" && (part.state === "input-available" || part.state === "output-available")) {
+        const set = parseCozteQuestions(part.input);
+        return set ? <CozteQuestionForm key={part.toolCallId} set={set} onAnswer={onAnswer} /> : null;
+      }
       return null;
     })}
   </div>;
 });
 
-function CozteTurnActivity({ parts, persisted, streaming }: { parts: UIMessage["parts"]; persisted: PersistedToolExecution[]; streaming: boolean }) {
+/** Cozte's questions as a small form: pick options or write freely; the answers go back as one message. */
+function CozteQuestionForm({ set, onAnswer }: { set: CozteQuestionSet; onAnswer?: (text: string) => void }) {
+  const [answers, setAnswers] = React.useState<CozteQuestionAnswer[]>(() => set.questions.map(() => ({ choices: [], other: "" })));
+  const [sent, setSent] = React.useState(false);
+  const enabled = onAnswer !== undefined && !sent;
+  const count = answers.filter(answered).length;
+  const update = (index: number, change: (answer: CozteQuestionAnswer) => CozteQuestionAnswer) => setAnswers((current) => current.map((answer, position) => position === index ? change(answer) : answer));
+  const toggle = (index: number, option: string, multiple: boolean) => update(index, (answer) => ({
+    ...answer,
+    choices: multiple ? answer.choices.includes(option) ? answer.choices.filter((choice) => choice !== option) : [...answer.choices, option] : answer.choices[0] === option ? [] : [option],
+  }));
+  return <form aria-label="Preguntas de Cozte" className={cn("flex flex-col gap-3 rounded-lg border bg-background p-3", !enabled && "opacity-75")} onSubmit={(event) => {
+    event.preventDefault();
+    if (!enabled || !count) return;
+    setSent(true);
+    onAnswer(formatCozteAnswers(set, answers));
+  }}>
+    {set.intro ? <p className="text-sm">{set.intro}</p> : null}
+    {set.questions.map((question, index) => <fieldset key={index} disabled={!enabled} className="flex min-w-0 flex-col gap-2">
+      <legend className="mb-1 text-sm font-medium">{question.question}{question.multiple ? <span className="ml-1 text-xs font-normal text-muted-foreground">(puedes elegir varias)</span> : null}</legend>
+      {question.options.length ? <div role={question.multiple ? "group" : "radiogroup"} aria-label={question.question} className="flex flex-wrap gap-1.5">
+        {question.options.map((option) => {
+          const selected = answers[index].choices.includes(option);
+          return <button key={option} type="button" role={question.multiple ? "checkbox" : "radio"} aria-checked={selected} onClick={() => toggle(index, option, question.multiple)}
+            className={cn("rounded-full border px-3 py-1 text-left text-xs transition-colors disabled:cursor-not-allowed", selected ? "border-primary bg-primary text-primary-foreground" : "bg-background hover:bg-muted")}>{option}</button>;
+        })}
+      </div> : null}
+      <Input value={answers[index].other} maxLength={300} onChange={(event) => update(index, (answer) => ({ ...answer, other: event.target.value }))}
+        placeholder={question.options.length ? "Otra respuesta o un detalle…" : "Tu respuesta…"} aria-label={`Respuesta libre: ${question.question}`} className="h-8 text-sm" />
+    </fieldset>)}
+    {enabled ? <div className="flex flex-wrap items-center justify-between gap-2">
+      <span className="text-xs text-muted-foreground">{count} de {set.questions.length} respondidas · también puedes contestar en el chat</span>
+      <Button type="submit" size="sm" disabled={!count}><AnimatedIcon name="send" data-icon="inline-start" />Enviar respuestas</Button>
+    </div> : sent ? <p className="text-xs text-muted-foreground">Respuestas enviadas.</p> : null}
+  </form>;
+}
+
+function CozteTurnActivity({ parts, persisted, streaming }:{ parts: UIMessage["parts"]; persisted: PersistedToolExecution[]; streaming: boolean }) {
   const items = turnActivity(parts as ActivityPart[], streaming);
   if (!items.length && !persisted.length) return null;
   const live = streaming && items.some((item) => item.kind === "tool" ? item.running : item.streaming);

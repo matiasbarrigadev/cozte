@@ -100,6 +100,14 @@ export const cozteToolInputSchemas = {
     replacesNoteId: z.string().max(80).optional().describe("ID de una nota vigente que este texto reemplaza"),
     removeNoteId: z.string().max(80).optional().describe("ID de una nota que ya no es válida"),
   }),
+  askQuestions: z.object({
+    intro: z.string().trim().max(300).optional().describe("Una frase que explica para qué necesitas estas respuestas"),
+    questions: z.array(z.object({
+      question: z.string().trim().min(3).max(240),
+      options: z.array(z.string().trim().min(1).max(120)).min(2).max(5).describe("Respuestas probables y concretas, en el lenguaje de la persona. Siempre puede escribir otra respuesta, así que no agregues 'Otro'."),
+      multiple: z.boolean().optional().describe("true si puede elegir varias opciones a la vez"),
+    })).min(1).max(4),
+  }),
 } satisfies Record<CozteToolName, z.ZodType>;
 
 const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
@@ -113,6 +121,7 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   saveCategory: "Crea o renombra una categoría de costos.",
   removeItem: "Pide dar de baja un producto o insumo. No se aplica sola: queda pendiente para que la persona la confirme en pantalla.",
   saveNote: "Guarda, reemplaza o quita un hecho o decisión de la empresa para recordarlo en próximas conversaciones (ej. 'los sueldos se reparten por horas', 'el fundador no cobra sueldo fijo').",
+  askQuestions: "Muestra a la persona de 1 a 4 preguntas con opciones para elegir; siempre puede responder con texto libre. Úsala cuando necesites datos o decisiones que solo ella conoce. Termina tu turno: las respuestas llegan en su próximo mensaje, así que no escribas nada después de llamarla.",
 };
 
 function stableKey(...parts: (string | number)[]): string {
@@ -407,6 +416,10 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       const saved = await saveCozteNote(principal, value.text, value.replacesNoteId ?? value.removeNoteId);
       return { ok: true, done: [saved.replaced ? "Nota actualizada" : "Nota guardada"], ids: { note: saved.id } };
     }
+    case "askQuestions": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.askQuestions>;
+      return { ok: true, asked: value.questions.length, waitingForAnswers: true };
+    }
   }
 }
 
@@ -447,5 +460,6 @@ export function createCozteTools(principal: Principal, runId: string) {
     saveCategory: tool({ description: describe.saveCategory, inputSchema: schemas.saveCategory, execute: execute("saveCategory") }),
     removeItem: tool({ description: describe.removeItem, inputSchema: schemas.removeItem, execute: execute("removeItem") }),
     saveNote: tool({ description: describe.saveNote, inputSchema: schemas.saveNote, execute: execute("saveNote") }),
+    askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),
   };
 }

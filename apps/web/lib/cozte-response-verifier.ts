@@ -85,7 +85,7 @@ function sourceFigures(texts: string[]): Set<number> {
 
 const identifierPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
 
-const internalNames = /\b(?:readCosts|saveProduct|saveMaterial|saveRecipe|saveExpense|saveCategory|removeItem|saveNote|calculate|simulate|inspectCostBase|applyCostAction|updateMaterialPrice|updateExpenseAmount|updateProductionMap|upsertProductDraft|calculateCostRule|findMaterial|create-product|create-material|create-expense|set-component|bulk-prices|quantityMilli|\w+Minor|\w+Milli|toolCallId|null)\b/u;
+const internalNames = /\b(?:readCosts|saveProduct|saveMaterial|saveRecipe|saveExpense|saveCategory|removeItem|saveNote|askQuestions|calculate|simulate|inspectCostBase|applyCostAction|updateMaterialPrice|updateExpenseAmount|updateProductionMap|upsertProductDraft|calculateCostRule|findMaterial|create-product|create-material|create-expense|set-component|bulk-prices|quantityMilli|\w+Minor|\w+Milli|toolCallId|null)\b/u;
 
 /** Sentence markers for actions from earlier turns ("antes guardé…"), which a fresh read can confirm. */
 const earlierTurn = /(?<![\p{L}\p{N}])(?:antes|anteriormente|previamente|hace un rato|ayer|la vez pasada|en (?:esta|la) (?:charla|conversación)|en (?:el|los) mensajes? anteriores?|más temprano)(?![\p{L}\p{N}])/iu;
@@ -112,8 +112,10 @@ function claims(text: string, pattern: RegExp, allowEarlierTurns = false): strin
 export function verifyCozteResponse(text: string, tools: TurnToolRecord[], context: VerificationContext = {}): Verification {
   const issues: VerificationIssue[] = [];
   const answer = text.trim();
+  // Questions shown on screen are a complete turn: the person answers them next.
+  const askedPerson = tools.some((tool) => tool.name === "askQuestions" && tool.ok);
   if (!answer) {
-    return { ok: false, mustUseTools: false, issues: [{ code: "empty-answer", detail: "No hubo respuesta final para la persona." }] };
+    return askedPerson ? { ok: true, mustUseTools: false, issues: [] } : { ok: false, mustUseTools: false, issues: [{ code: "empty-answer", detail: "No hubo respuesta final para la persona." }] };
   }
   const successfulWrites = tools.filter((tool) => tool.write && tool.ok);
   const freshRead = tools.some((tool) => tool.name === "readCosts" && tool.ok);
@@ -127,7 +129,7 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
         : `La respuesta afirma cambios guardados ("${unbacked.slice(0, 2).join('", "')}"), pero en este turno no se ejecutó ninguna escritura.`,
     });
   }
-  if (!unbacked.length && !successfulWrites.length && announcedAction.test(answer) && !waitsForPerson.test(answer)) {
+  if (!unbacked.length && !successfulWrites.length && !askedPerson && announcedAction.test(answer) && !waitsForPerson.test(answer)) {
     issues.push({ code: "announced-not-executed", detail: "La respuesta anuncia que va a guardar o ejecutar algo, pero el turno terminó sin hacerlo." });
   }
   const evidence = JSON.stringify(tools.map((tool) => tool.output)) ?? "";

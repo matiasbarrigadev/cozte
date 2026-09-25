@@ -77,6 +77,8 @@ export function turnActivity(parts: ActivityPart[], streaming = false): Activity
     }
     if (!part.type.startsWith("tool-")) return;
     const name = part.type.slice("tool-".length);
+    // Questions are shown as their own form below the answer, not as a step of the trace.
+    if (name === "askQuestions") return;
     const label = (COZTE_TOOL_LABELS as Record<string, string>)[name] ?? "Herramienta";
     const done = part.state === "output-available" || part.state === "output-error";
     const outcome = done ? toolOutcomeLine(name, part.output, part.state === "output-error" ? part.errorText ?? "No se completó" : undefined) : { text: `${running[name] ?? "Trabajando"}…`, failed: false };

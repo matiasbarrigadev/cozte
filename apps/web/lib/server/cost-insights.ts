@@ -1,23 +1,27 @@
 import "server-only";
 import { generateText } from "ai";
-import { analyzeCosts, groupComponents, type CostAnalysis, type Granularity, type SnapshotRow } from "@/lib/cost-analysis";
+import { analyzeCosts, costsAt, groupComponents, type CostAnalysis, type CostsAt, type Granularity, type SnapshotRow } from "@/lib/cost-analysis";
 import { verifyCozteResponse } from "@/lib/cozte-response-verifier";
 import type { Principal } from "./auth";
-import { dbQuery } from "./db";
+import { dbBatch, dbQuery } from "./db";
 import { loadState } from "./state";
 import { cozteAgentSettings, cozteProviderOptions } from "./cozte-workflow";
 
 const HISTORY_DAYS = 400;
 const MAX_SNAPSHOTS = 4000;
 
-export async function loadCostAnalysis(principal: Principal, granularity: Granularity): Promise<CostAnalysis> {
-  const [state, rows] = await Promise.all([
+async function loadSnapshots(principal: Principal, until?: string) {
+  return Promise.all([
     loadState(principal),
     dbQuery<SnapshotRow>(
-      "SELECT product_id, total_lot_minor, unit_minor, lines_json, warnings_json, context_json, created_at FROM cost_snapshots WHERE organization_id=? AND created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
-      [principal.organizationId, `-${HISTORY_DAYS} days`, MAX_SNAPSHOTS],
+      `SELECT product_id, total_lot_minor, unit_minor, lines_json, warnings_json, context_json, created_at FROM cost_snapshots WHERE organization_id=? AND created_at >= datetime('now', ?)${until ? " AND created_at <= ?" : ""} ORDER BY created_at DESC LIMIT ?`,
+      [principal.organizationId, `-${HISTORY_DAYS} days`, ...(until ? [`${until} 23:59:59`] : []), MAX_SNAPSHOTS],
     ),
   ]);
+}
+
+export async function loadCostAnalysis(principal: Principal, granularity: Granularity): Promise<CostAnalysis> {
+  const [state, rows] = await loadSnapshots(principal);
   // Only products that still exist are analyzed; archived ones keep their history elsewhere.
   const current = new Set(state.products.map((product) => product.id));
   return analyzeCosts(rows.filter((row) => current.has(row.product_id)), {
@@ -75,4 +79,33 @@ export async function generateCostInsights(analysis: CostAnalysis): Promise<{ te
     problems = check(result.text);
   }
   return { text: result.text.trim(), verified: problems.length === 0 };
+}
+
+/** Detailed costs of every current product as they stood at the end of a day. */
+export async function loadCostsAt(principal: Principal, date: string): Promise<CostsAt> {
+  const [state, rows] = await loadSnapshots(principal, date);
+  const current = new Set(state.products.map((product) => product.id));
+  return costsAt(rows.filter((row) => current.has(row.product_id)), date, {
+    currency: state.organization.currency,
+    productNames: Object.fromEntries(state.products.map((product) => [product.id, product.name])),
+  });
+}
+
+export type SavedInsight = { id: string; createdAt: string; granularity: Granularity; text: string; verified: boolean; firstPeriod: string | null; lastPeriod: string | null };
+
+export async function saveCostInsight(principal: Principal, analysis: CostAnalysis, result: { text: string; verified: boolean }): Promise<SavedInsight> {
+  const id = crypto.randomUUID();
+  const [rows] = await dbBatch<{ created_at: string }>([{
+    sql: "INSERT INTO cost_insights (id, organization_id, created_by, granularity, text, verified, source_json, first_period, last_period) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING created_at",
+    params: [id, principal.organizationId, principal.userId, analysis.granularity, result.text, result.verified ? 1 : 0, JSON.stringify(insightSource(analysis)), analysis.periods[0] ?? null, analysis.periods.at(-1) ?? null],
+  }]);
+  return { id, createdAt: rows[0]?.created_at ?? new Date().toISOString(), granularity: analysis.granularity, text: result.text, verified: result.verified, firstPeriod: analysis.periods[0] ?? null, lastPeriod: analysis.periods.at(-1) ?? null };
+}
+
+export async function listCostInsights(principal: Principal): Promise<SavedInsight[]> {
+  const rows = await dbQuery<{ id: string; created_at: string; granularity: Granularity; text: string; verified: number; first_period: string | null; last_period: string | null }>(
+    "SELECT id, created_at, granularity, text, verified, first_period, last_period FROM cost_insights WHERE organization_id=? ORDER BY created_at DESC LIMIT 50",
+    [principal.organizationId],
+  );
+  return rows.map((row) => ({ id: row.id, createdAt: row.created_at, granularity: row.granularity, text: row.text, verified: row.verified === 1, firstPeriod: row.first_period, lastPeriod: row.last_period }));
 }

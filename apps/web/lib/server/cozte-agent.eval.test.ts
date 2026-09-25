@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateText, isStepCount, type ModelMessage } from "ai";
+import { generateText, hasToolCall, isStepCount, type ModelMessage } from "ai";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 // Reads AI_GATEWAY_API_KEY and COZTE_* from apps/web/.env.local, the same file `next dev` uses.
@@ -34,6 +34,7 @@ import { loadCozteNotes } from "./cozte-notes";
 import { loadState } from "./state";
 import { calculateCosts } from "@/lib/domain";
 import { dbBatch } from "./db";
+import { formatCozteAnswers, parseCozteQuestions } from "@/lib/cozte-questions";
 
 type EngineCost = { name: string; unitCost: number | null };
 type Turn = { user: string; expectTools?: string[]; check?: (answer: string, records: TurnToolRecord[], costs: EngineCost[]) => string | null };
@@ -90,7 +91,7 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       history.push({ role: "user", content: turn.user });
       // Mirrors the workflow: the correction asks for tool use in text; toolChoice "required" is not forced.
       const pass = async (messages: ModelMessage[]) => generateText({
-        model, system: instructions, messages, tools, stopWhen: isStepCount(settings.maxSteps), maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings),
+        model, system: instructions, messages, tools, stopWhen: [isStepCount(settings.maxSteps), hasToolCall("askQuestions")], maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings),
       });
       let result = await pass(history);
       // Plain copies: StepResult exposes its fields as getters, which a spread would lose.
@@ -142,5 +143,38 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     results.push({ model, failures: failures.length, failureDetails: failures, rejectedAnswers: rejected, toolCalls, ...checks, transcript });
     if (failures.length) console.log(`\n[${model}] fallas:\n- ${failures.join("\n- ")}`);
     expect(failures).toEqual([]);
+  });
+
+  it.each(models)("asks with options when the business is still unknown, then saves the answers, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    const settings = { ...cozteAgentSettings(), model };
+    const history: ModelMessage[] = [];
+    const turn = async (text: string) => {
+      history.push({ role: "user", content: text });
+      const state = await loadState(principal);
+      const result = await generateText({
+        model, system: buildCozteInstructions({ state, notes: await loadCozteNotes(principal), legacyProfile: null }), messages: history,
+        tools: createCozteTools(principal, crypto.randomUUID()), stopWhen: [isStepCount(settings.maxSteps), hasToolCall("askQuestions")],
+        maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings),
+      });
+      history.push(...result.response.messages);
+      const calls = result.steps.flatMap((step) => step.toolCalls.map((call) => ({ name: call.toolName, input: call.input })));
+      console.log(`\n[${model}] tools=${calls.map((call) => call.name).join(",")}\n${result.steps.map((step) => step.text).join("\n").slice(0, 700)}`);
+      return calls;
+    };
+    const first = await turn("Hola, hago velas de soja en casa y quiero saber cuánto me cuesta hacer cada una. ¿Por dónde empezamos?");
+    const asked = first.find((call) => call.name === "askQuestions");
+    const set = parseCozteQuestions(asked?.input);
+    console.log(JSON.stringify(asked?.input, null, 2));
+    expect(set?.questions.length).toBeGreaterThan(0);
+    expect(set!.questions.every((question) => question.options.length >= 2)).toBe(true);
+    // The person answers with the free-text field, which always carries the facts.
+    const second = await turn(formatCozteAnswers(set!, set!.questions.map((_, index) => ({ choices: [], other: index === 0 ? "Una sola: Vela de soja 200 g. Salen 24 velas por tanda y hago 8 tandas al mes." : "" }))));
+    expect(second.some((call) => call.name === "saveProduct")).toBe(true);
+    const final = await loadState(principal);
+    expect(final.products.map((product) => product.lotUnits)).toContain(24);
   });
 });

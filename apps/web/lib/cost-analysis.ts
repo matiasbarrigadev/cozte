@@ -34,7 +34,7 @@ export type CostAnalysis = {
 
 type SnapshotContext = {
   product?: Partial<Product>;
-  materials?: { id: string; name: string; category?: string; priceMinor?: number | null }[];
+  materials?: { id: string; name: string; category?: string; purchaseUnit?: string; priceMinor?: number | null }[];
   expenses?: SharedExpense[];
   allocationPeers?: { id: string; lotUnits: number; productionHoursMilli: number; batchesPerMonthMilli?: number | null }[];
   activePeriod?: string;
@@ -230,4 +230,53 @@ export function groupComponents(point: ProductPoint, meta: ComponentMeta[], by: 
     grouped[label] = round2((grouped[label] ?? 0) + value);
   }
   return grouped;
+}
+
+export type CostDetailLine = { label: string; type: ComponentType; category: string; perUnit: number; perLot: number; quantityPerLot?: number; unit?: string; unitPrice?: number | null };
+export type ProductCostAt = {
+  productId: string; name: string; snapshotAt: string; unitCost: number | null; lotCost: number | null; monthlyCost: number | null;
+  lotUnits: number; lotsPerMonth: number | null; incomplete: boolean; warnings: string[]; lines: CostDetailLine[];
+};
+export type CostsAt = {
+  date: string; currency: string; products: ProductCostAt[]; monthlyProductionCost: number | null;
+  expenses: { name: string; category: string; monthlyAmount: number; splitBy: string }[];
+};
+
+/** Every product's detailed cost as it stood at the end of a given day (the latest snapshot on or before it). */
+export function costsAt(rows: SnapshotRow[], date: string, options: { currency: string; productNames?: Record<string, string> }): CostsAt {
+  const limit = `${date} 23:59:59`;
+  const latest = new Map<string, SnapshotRow>();
+  for (const row of [...rows].sort((a, b) => a.created_at.localeCompare(b.created_at))) {
+    if (row.created_at.replace("T", " ").slice(0, 19) <= limit) latest.set(row.product_id, row);
+  }
+  let expenses: CostsAt["expenses"] = [];
+  const products = [...latest.values()].map((row) => {
+    const context = parse<SnapshotContext>(row.context_json, {});
+    const lines = parse<CostLine[]>(row.lines_json, []);
+    const decomposed = decompose(row, options.productNames?.[row.product_id] ?? "Producto");
+    const lotUnits = Math.max(context.product?.lotUnits ?? 1, 1);
+    const materials = new Map((context.materials ?? []).map((item) => [item.id, item]));
+    if (!expenses.length && context.expenses?.length) expenses = context.expenses.map((item) => ({
+      name: item.name, category: item.category, monthlyAmount: item.amountMinor,
+      splitBy: item.allocationBasis === "hours" ? "horas de producción" : item.allocationBasis === "units" ? "unidades" : "porcentajes",
+    }));
+    const detail: CostDetailLine[] = decomposed.meta.map((meta) => {
+      const perUnit = decomposed.point.components[meta.key] ?? 0;
+      const line = meta.type === "insumo" ? lines.find((item) => item.kind === "material" && `m:${item.materialId ?? item.label}` === meta.key) : undefined;
+      const material = line?.materialId ? materials.get(line.materialId) : undefined;
+      return {
+        label: meta.label, type: meta.type, category: meta.category, perUnit, perLot: round2(perUnit * lotUnits),
+        ...(line?.quantityMilli !== undefined ? { quantityPerLot: line.quantityMilli / 1000, unit: material?.purchaseUnit, unitPrice: material?.priceMinor ?? null } : {}),
+      };
+    }).sort((a, b) => b.perUnit - a.perUnit);
+    return {
+      productId: row.product_id, name: options.productNames?.[row.product_id] ?? decomposed.name, snapshotAt: row.created_at,
+      unitCost: row.unit_minor, lotCost: row.total_lot_minor, monthlyCost: decomposed.point.monthlyCost,
+      lotUnits, lotsPerMonth: context.product?.batchesPerMonthMilli ? context.product.batchesPerMonthMilli / 1000 : null,
+      incomplete: decomposed.point.incomplete, warnings: parse<string[]>(row.warnings_json, []), lines: detail,
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name, "es"));
+  const withCost = products.filter((product) => product.lotCost !== null && !product.incomplete);
+  const monthlyProductionCost = withCost.length && withCost.every((product) => product.monthlyCost !== null) ? round2(withCost.reduce((sum, product) => sum + (product.monthlyCost ?? 0), 0)) : null;
+  return { date, currency: options.currency, products, monthlyProductionCost, expenses };
 }

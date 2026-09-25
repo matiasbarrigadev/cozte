@@ -78,3 +78,19 @@ describe("cost analysis", () => {
     expect(analyzeCosts([], { granularity: "month", currency: "ARS" }).insights[0].title).toBe("Todavía no hay historial");
   });
 });
+
+describe("costs at a date", () => {
+  it("shows each product as it stood at the end of that day, with its detailed lines", async () => {
+    const { costsAt } = await import("./cost-analysis");
+    const before = costsAt(rows, "2026-09-10", { currency: "ARS" });
+    const after = costsAt(rows, "2026-09-20", { currency: "ARS" });
+    const soyBefore = before.products.find((product) => product.name === "Tofu 500g")!.lines.find((line) => line.label === "Soja")!;
+    const soyAfter = after.products.find((product) => product.name === "Tofu 500g")!.lines.find((line) => line.label === "Soja")!;
+    expect(soyBefore).toMatchObject({ type: "insumo", category: "Materia prima", quantityPerLot: 39.2, unit: "kg", unitPrice: 1293 });
+    expect(soyAfter.unitPrice).toBe(1800);
+    const t500 = after.products.find((product) => product.name === "Tofu 500g")!;
+    expect(Math.abs(t500.lines.reduce((sum, line) => sum + line.perLot, 0) - t500.lotCost!)).toBeLessThan(2);
+    expect(after.expenses.map((expense) => expense.name)).toEqual(["Mano de obra", "Luz"]);
+    expect(costsAt(rows, "2026-08-01", { currency: "ARS" }).products).toEqual([]);
+  });
+});

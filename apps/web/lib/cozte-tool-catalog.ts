@@ -10,6 +10,7 @@ export const COZTE_TOOL_LABELS = {
   saveCategory: "Guardar categoría",
   removeItem: "Pedir baja",
   saveNote: "Recordar dato",
+  askQuestions: "Preguntarte",
 } as const;
 
 export type CozteToolName = keyof typeof COZTE_TOOL_LABELS;

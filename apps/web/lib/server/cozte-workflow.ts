@@ -1,5 +1,5 @@
 import "server-only";
-import { isStepCount, type ModelMessage, type UIMessage } from "ai";
+import { hasToolCall, isStepCount, type ModelMessage, type UIMessage } from "ai";
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
@@ -200,7 +200,8 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     model: settings.model,
     instructions: input.instructions,
     tools: createCozteTools(input.principal, input.runId),
-    stopWhen: isStepCount(settings.maxSteps),
+    // Asking the person questions ends the turn: the answers arrive as their next message.
+    stopWhen: [isStepCount(settings.maxSteps), hasToolCall("askQuestions")],
     maxOutputTokens: settings.maxOutputTokens,
     providerOptions: cozteProviderOptions(settings),
     repairToolCall: repairCozteToolCall,
@@ -227,7 +228,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
         const second = await agent.stream({
           messages: [...(first.messages as ModelMessage[]).filter((message) => message.role !== "system"), { role: "user", content: correctionMessage(verification) }],
           writable, preventClose: true, sendFinish: false,
-          stopWhen: isStepCount(Math.max(4, Math.floor(settings.maxSteps / 2))),
+          stopWhen: [isStepCount(Math.max(4, Math.floor(settings.maxSteps / 2))), hasToolCall("askQuestions")],
         });
         steps.push(...second.steps);
         text = visibleText(steps, retracted);
