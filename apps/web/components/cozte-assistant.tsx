@@ -32,6 +32,8 @@ import { cn } from "cn";
 
 type PersistedToolExecution = { messageId: string; runId: string; toolCallId: string; toolName: string; status: "running" | "completed" | "failed" };
 const ACTIVE_WORKFLOW_STORAGE_KEY = "cozte-active-workflow-run";
+/** Longest silence tolerated while Cozte is working before the chat stops waiting (server marks turns stalled at 4 min). */
+const CHAT_STALL_MS = 150_000;
 const suggestions = [
   "Mapear mi producción",
   "Repartir gastos compartidos",
@@ -147,6 +149,24 @@ export function CozteAssistant({ demo, onDataChanged, onOpenCosts }: { demo: boo
       if (!silent) toast.error(cause instanceof Error ? cause.message : "No se pudieron cargar las propuestas");
     } finally { setProposalsLoading(false); }
   }
+
+  // Watchdog: if a turn stops producing anything (e.g. the workflow queue is throttled), stop waiting
+  // instead of showing "analizando" forever. The message is already saved and can be sent again.
+  const lastChatActivity = React.useRef(0);
+  React.useEffect(() => { lastChatActivity.current = Date.now(); }, [messages]);
+  React.useEffect(() => {
+    if (status !== "submitted" && status !== "streaming") return;
+    lastChatActivity.current = Date.now();
+    const timer = window.setInterval(() => {
+      if (Date.now() - lastChatActivity.current < CHAT_STALL_MS) return;
+      window.clearInterval(timer);
+      void stop();
+      window.localStorage.removeItem(ACTIVE_WORKFLOW_STORAGE_KEY);
+      setResumeExistingWorkflow(false);
+      toast.error("Cozte no respondió a tiempo. Tu mensaje quedó guardado; puedes enviarlo de nuevo.");
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [status, stop]);
 
   React.useEffect(() => {
     if (demo) return;

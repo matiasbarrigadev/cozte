@@ -101,12 +101,24 @@ export async function isAssistantWorkflowLinked(principal: Principal, runId: str
   return rows.length > 0;
 }
 
+/** A turn with no recorded activity for this long is treated as stalled (e.g. the workflow queue was throttled). */
+export const ASSISTANT_STALL_SECONDS = 240;
+
 export async function getActiveAssistantWorkflow(principal: Principal): Promise<{ workflowRunId: string; messageId: string } | null> {
-  const rows = await dbQuery<{ workflow_run_id: string; message_id: string }>(
-    "SELECT workflow_run_id, message_id FROM assistant_runs WHERE organization_id=? AND user_id=? AND status='running' AND workflow_run_id IS NOT NULL ORDER BY started_at DESC LIMIT 1",
-    [principal.organizationId, principal.userId],
+  const rows = await dbQuery<{ id: string; workflow_run_id: string; message_id: string; stalled: number }>(
+    `SELECT r.id, r.workflow_run_id, r.message_id,
+       COALESCE((SELECT max(e.created_at) FROM assistant_run_events e WHERE e.run_id=r.id), r.started_at) < datetime('now', ?) AS stalled
+     FROM assistant_runs r WHERE r.organization_id=? AND r.user_id=? AND r.status='running' AND r.workflow_run_id IS NOT NULL ORDER BY r.started_at DESC LIMIT 1`,
+    [`-${ASSISTANT_STALL_SECONDS} seconds`, principal.organizationId, principal.userId],
   );
-  return rows[0] ? { workflowRunId: rows[0].workflow_run_id, messageId: rows[0].message_id } : null;
+  const run = rows[0];
+  if (!run) return null;
+  if (run.stalled) {
+    // Without this the chat would reattach to an empty stream forever; a late wake-up is ignored by finalize.
+    await finishAssistantRun(run.id, "failed", "stalled: sin actividad del workflow");
+    return null;
+  }
+  return { workflowRunId: run.workflow_run_id, messageId: run.message_id };
 }
 
 export async function getAssistantWorkflowRun(principal: Principal, workflowRunId: string): Promise<{ id: string } | null> {
@@ -157,8 +169,15 @@ export async function getAssistantToolExecution(principal: Principal, runId: str
   return details;
 }
 
-export async function finishAssistantRun(runId: string, status: "completed" | "failed" | "aborted", error?: unknown): Promise<void> {
-  await dbBatch([{ sql: "UPDATE assistant_runs SET status=?, error_text=?, finished_at=CURRENT_TIMESTAMP WHERE id=? AND status='running'", params: [status, error === undefined ? null : errorDetails(error), runId] }]);
+/** Closes a running turn; returns false when it was already closed (for example, marked stalled). */
+export async function finishAssistantRun(runId: string, status: "completed" | "failed" | "aborted", error?: unknown): Promise<boolean> {
+  const [rows] = await dbBatch([{ sql: "UPDATE assistant_runs SET status=?, error_text=?, finished_at=CURRENT_TIMESTAMP WHERE id=? AND status='running' RETURNING id", params: [status, error === undefined ? null : errorDetails(error), runId] }]);
+  return rows.length > 0;
+}
+
+/** Marks a turn failed after it was claimed as finished but its conversation could not be saved. */
+export async function reopenAssistantRunAsFailed(runId: string, error: unknown): Promise<void> {
+  await dbBatch([{ sql: "UPDATE assistant_runs SET status='failed', error_text=?, finished_at=CURRENT_TIMESTAMP WHERE id=?", params: [errorDetails(error), runId] }]);
 }
 
 export async function listAssistantRuns(principal: Principal) {

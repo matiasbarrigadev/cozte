@@ -125,3 +125,31 @@ describe("trazas de Cozte", () => {
     expect(JSON.stringify(sources)).not.toContain("bytesApprox");
   });
 });
+
+describe("turnos trabados", () => {
+  const principal: Principal = { userId: "user-1", organizationId: "org-1", role: "owner" };
+
+  it("marca como fallido un turno sin actividad y deja de retomarlo", async () => {
+    const { getActiveAssistantWorkflow } = await import("./assistant-trace");
+    dbQueryMock.mockReset().mockResolvedValueOnce([{ id: "run-1", workflow_run_id: "wrun-1", message_id: "m-1", stalled: 1 }]);
+    dbBatchMock.mockReset().mockResolvedValueOnce([[{ id: "run-1" }]]);
+    await expect(getActiveAssistantWorkflow(principal)).resolves.toBeNull();
+    expect(dbBatchMock.mock.calls[0][0][0]).toMatchObject({ params: ["failed", "stalled: sin actividad del workflow", "run-1"] });
+  });
+
+  it("retoma un turno que sigue trabajando", async () => {
+    const { getActiveAssistantWorkflow } = await import("./assistant-trace");
+    dbQueryMock.mockReset().mockResolvedValueOnce([{ id: "run-2", workflow_run_id: "wrun-2", message_id: "m-2", stalled: 0 }]);
+    dbBatchMock.mockReset();
+    await expect(getActiveAssistantWorkflow(principal)).resolves.toEqual({ workflowRunId: "wrun-2", messageId: "m-2" });
+    expect(dbBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("informa si el cierre llegó tarde a un turno ya cerrado", async () => {
+    const { finishAssistantRun } = await import("./assistant-trace");
+    dbBatchMock.mockReset().mockResolvedValueOnce([[]]);
+    await expect(finishAssistantRun("run-3", "completed")).resolves.toBe(false);
+    dbBatchMock.mockResolvedValueOnce([[{ id: "run-4" }]]);
+    await expect(finishAssistantRun("run-4", "completed")).resolves.toBe(true);
+  });
+});

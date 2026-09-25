@@ -8,7 +8,7 @@ import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputF
 import { correctionMessage, receiptOnlyAnswer, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import type { Principal } from "./auth";
 import { saveConversation } from "./production-profile";
-import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked } from "./assistant-trace";
+import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked, reopenAssistantRunAsFailed } from "./assistant-trace";
 import { createCozteTools } from "./cozte-agent-tools";
 import { loadState } from "./state";
 import { buildCostOverview } from "@/lib/cozte-cost-view";
@@ -55,13 +55,19 @@ type StepLike = { text: string; toolCalls: { toolCallId: string; toolName: strin
 
 async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   "use step";
+  // Claim the turn first: if it was already closed as stalled, a late wake-up must not overwrite
+  // a conversation the person may have continued in the meantime.
+  const claimed = await finishAssistantRun(input.runId, input.status, input.error);
+  if (!claimed) {
+    await addAssistantEvent(input.runId, "late_finish_ignored", { outcome: input.status }).catch(() => {});
+    return;
+  }
   try {
     if (input.status === "completed") await saveConversation(input.principal, input.messages);
     await addAssistantEvent(input.runId, "stream_finished", { outcome: input.status, response: input.responseText?.slice(0, 8_000) ?? "", emptyResponse: !input.responseText?.trim() });
-    await finishAssistantRun(input.runId, input.status, input.error);
   } catch (error) {
     console.error("Cozte workflow completion save failed", input.runId, errorDetails(error));
-    await finishAssistantRun(input.runId, "failed", error).catch(() => {});
+    await reopenAssistantRunAsFailed(input.runId, error).catch(() => {});
     throw error;
   }
 }
