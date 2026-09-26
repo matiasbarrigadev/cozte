@@ -3,6 +3,8 @@
 import { useEffect, useRef, type ComponentProps, type ForwardRefExoticComponent, type RefAttributes } from "react";
 import {
   ArrowLeftIcon,
+  ArrowDownIcon,
+  ArrowUpIcon,
   ArrowDownRightIcon,
   ArrowRightIcon,
   ArrowUpRightIcon,
@@ -18,6 +20,7 @@ import {
   HistoryIcon,
   LayoutGridIcon,
   LayersIcon,
+  MaximizeIcon,
   ListIcon,
   MessageCircleMoreIcon,
   MicIcon,
@@ -37,6 +40,8 @@ import {
 
 const icons = {
   arrowLeft: ArrowLeftIcon,
+  arrowUp: ArrowUpIcon,
+  arrowDown: ArrowDownIcon,
   arrowDownRight: ArrowDownRightIcon,
   arrowRight: ArrowRightIcon,
   arrowUpRight: ArrowUpRightIcon,
@@ -52,6 +57,7 @@ const icons = {
   history: HistoryIcon,
   dashboard: LayoutGridIcon,
   layers: LayersIcon,
+  expand: MaximizeIcon,
   costs: ListIcon,
   message: MessageCircleMoreIcon,
   mic: MicIcon,

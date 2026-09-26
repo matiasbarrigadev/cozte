@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseBoard, pinWidget } from "./cozte-widgets";
+import { cozteToolWrote } from "./cozte-tool-catalog";
+import { WIDGET_KINDS, computeWidget, moveWidget, parseBoard, pinWidget, widgetFigures, widgetTitle } from "./cozte-widgets";
+import { buildBusinessView } from "./business";
+import { calculateCosts } from "./domain";
+import { DEMO_MONTH, demoBusinessRecords, demoState } from "./demo";
 import { cleanLegacyWording } from "./cozte-response-verifier";
 import { actionableFlags, qualityChecks, qualityFeedback, qualityMode, summarizeQuality } from "./cozte-quality";
 import { activityHeadline, discardedDraftMetadata, qualityNoteMetadata, turnActivity } from "./cozte-turn-activity";
@@ -14,9 +18,41 @@ describe("board", () => {
     expect(pinWidget(board, { kind: "cost-breakdown", productId: "otro", addedBy: "user" })).toHaveLength(3);
   });
 
+  it("keeps month, figures and title, and treats each combination as its own widget", () => {
+    let board = pinWidget([], { kind: "kpis", metrics: ["revenue", "result"], addedBy: "cozte", title: "Cómo va la feria" });
+    board = pinWidget(board, { kind: "kpis", metrics: ["revenue"], addedBy: "user" });
+    board = pinWidget(board, { kind: "sales-by-channel", month: "2026-08", addedBy: "user" });
+    expect(board).toHaveLength(3);
+    board = pinWidget(board, { kind: "kpis", metrics: ["revenue", "result"], addedBy: "user" });
+    expect(board[0]).toMatchObject({ kind: "kpis", title: "Cómo va la feria" });
+    expect(moveWidget(board, board[0].id, 2).map((item) => item.title ?? item.kind)).toEqual(["sales-by-channel", "kpis", "Cómo va la feria"]);
+    expect(widgetTitle({ kind: "sales-by-channel", month: "2026-08", addedBy: "user" })).toBe("Ventas por canal · Agosto de 2026");
+    expect(widgetTitle({ kind: "cost-breakdown", productId: "t", addedBy: "user" }, "Tofu")).toBe("Costo de Tofu");
+  });
+
+  it("computes every widget live from the engine", () => {
+    const sources = { state: demoState, costs: calculateCosts(demoState), analysis: null, now: "", views: { [DEMO_MONTH]: buildBusinessView(demoState, demoBusinessRecords(), DEMO_MONTH) } };
+    for (const kind of WIDGET_KINDS) {
+      const content = computeWidget({ kind, addedBy: "user" }, sources, DEMO_MONTH);
+      expect(content.chart || content.kpis).toBeTruthy();
+    }
+    const month = computeWidget({ kind: "month", addedBy: "user" }, sources, DEMO_MONTH);
+    expect(widgetFigures(month, "CLP").join(" ")).toMatch(/Ventas del mes/);
+  });
+
+  it("counts a widget as saved only when it was pinned", () => {
+    expect(cozteToolWrote("showVisual", { ok: true, pinned: true })).toBe(true);
+    expect(cozteToolWrote("showVisual", { ok: true, pinned: false })).toBe(false);
+    expect(cozteToolWrote("manageBoard", { ok: true })).toBe(true);
+  });
+
   it("reads a stored board defensively", () => {
     expect(parseBoard('[{"id":"a","kind":"month","addedBy":"user"},{"id":"b","kind":"nope"}, 3]')).toEqual([{ id: "a", kind: "month", productId: null, addedBy: "user" }]);
     expect(parseBoard("no json")).toEqual([]);
+    expect(parseBoard([{ id: "old", kind: "sales", addedBy: "user" }, { id: "k", kind: "kpis", metrics: ["nope"], month: "2026-13", addedBy: "cozte" }])).toEqual([
+      { id: "old", kind: "sales-by-channel", productId: null, addedBy: "user" },
+      { id: "k", kind: "kpis", productId: null, metrics: ["revenue", "result", "sales-count", "break-even"], addedBy: "cozte" },
+    ]);
   });
 });
 

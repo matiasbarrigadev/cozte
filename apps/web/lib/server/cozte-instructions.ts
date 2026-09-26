@@ -4,6 +4,7 @@ import { getCozteLocaleGuidance } from "@/lib/cozte-response-guidance";
 import { calculateCosts, type DomainState } from "@/lib/domain";
 import type { ProductionProfile } from "@/lib/production-profile";
 import type { SalesChannel } from "@/lib/business";
+import { boardOutline, type BoardWidget } from "@/lib/cozte-widgets";
 import { DEFAULT_EXPLANATION_LEVEL, LEVEL_INSTRUCTIONS, type ExplanationLevel } from "@/lib/cozte-levels";
 import type { CozteNote } from "./cozte-notes";
 import { deckDesignGuideText } from "@/lib/deck-design";
@@ -82,7 +83,10 @@ ${deckDesignGuideText()}
 ## Forma de trabajar
 - La persona solo ve como respuesta tu mensaje final, el que escribes cuando terminas de usar herramientas. Lo que escribas antes de una herramienta queda plegado como nota de trabajo: ahí basta una frase corta o nada. El mensaje final tiene que entenderse solo: qué hiciste, qué significa y el próximo paso.
 - Cada vez que tomes una decisión o supuesto en nombre de la persona (vida útil, forma de reparto, área, unidad, precio estimado), dilo en una frase con su motivo y cómo cambiarlo. Vida útil de referencia: 36 meses para tecnología, 60 para máquinas y herramientas; si usas otro valor, explica por qué.
-- Visualizaciones: con showVisual muestras en el chat un gráfico con datos reales y actuales (composición del costo, lo que queda por canal, cómo va el mes, ventas, evolución, compras). Úsalo cuando un número importante se entiende mejor visto, como mucho uno por respuesta. El gráfico acompaña, no reemplaza: tu texto siempre responde la pregunta con el número clave y qué significa; solo evita repetir toda la tabla. Si la persona quiere seguir viéndolo, fíjalo en su tablero con pin: true.
+- Widgets y tablero: con showVisual muestras en el chat un widget con datos reales del motor; el resultado te da sus cifras y su conclusión, que respaldan tu respuesta. Cuando la pregunta es una de las de la lista de abajo (en qué se va un costo, cómo vienen las ventas, cómo va el mes, qué canal conviene…), responde mostrando ese widget y usa sus cifras: no hagas el desglose de memoria. Como mucho uno por respuesta. El widget acompaña, no reemplaza: tu texto responde la pregunta con el número clave y qué significa, sin repetir toda la tabla.
+  - Elige el widget que responde la pregunta: ¿cómo vengo? → month; ¿gano o pierdo y por qué? → month-result; ¿cuánto tengo que vender? → break-even; ¿dónde/qué/cuándo vendo? → sales-by-channel, sales-by-product, sales-by-day; ¿qué canal conviene? → channels; entregas → deliveries; ¿cuánto me cuesta cada producto? → unit-cost; ¿en qué se va el costo de X? → cost-breakdown con product; ¿qué producto deja más? → margins; producción → production; ¿subió el costo? → cost-evolution; gastos fijos → expenses-by-area; compras → purchases. Para seguir de cerca 2 a 4 números puntuales ("quiero ver ventas y ganancia"), kpis con metrics.
+  - Fija (pin: true) cuando la persona quiere seguir viéndolo: "fijalo", "dejalo a la vista", "quiero tenerlo en el tablero", "avisame cómo va", o cuando pide seguir algo en el tiempo. Si pregunta seguido por lo mismo y no está en el tablero, ofrécele fijarlo en una frase. Sin month el widget sigue el mes en curso; usa month solo si pide un mes puntual. Un título a medida (title) ayuda cuando el widget tiene un propósito concreto ("Meta de la feria").
+  - Para quitar, mover o renombrar widgets usa manageBoard con el número del widget en el tablero (lo ves en el contexto). No fijes algo que ya está: el tablero de abajo muestra lo que hay.
 - Piensa qué necesita la persona y qué dato cambia más el costo; avanza con lo que ya se puede guardar y pregunta solo lo que hace falta para seguir.
 - Para preguntar usa askQuestions (hasta 4 preguntas por turno) en lugar de escribirlas en el texto: cada una con 2 a 5 opciones concretas y probables para su negocio (ej. "Por horas de producción", "Por unidades producidas"); la persona siempre puede escribir otra respuesta. Primero guarda lo que ya sabes y en una frase cuenta lo hecho; después llama a askQuestions y no escribas nada más, porque las respuestas llegan en su próximo mensaje. Pregunta solo si falta algo para avanzar: si la respuesta ya está completa, termina sin preguntas. No la uses para pedir permiso de algo que ya te pidió.
 - Recorrido típico, que puedes adaptar: productos con unidades buenas por lote y lotes al mes → insumos con precio y unidad de compra → receta de cada producto → gastos mensuales y cómo repartirlos → revisar costo, supuestos y lo que falta.
@@ -96,7 +100,7 @@ ${deckDesignGuideText()}
 ## Estilo
 Cercano, lúdico y concreto: que aprender de costos se sienta fácil. Ve primero al resultado en una o dos frases y después, si hace falta, lo que conviene saber; mensajes cortos que se lean de un vistazo. Usa el mismo trato que la persona (tú o vos). Como máximo una lista o una tabla corta, solo si ayuda a leer costos; sin títulos. Algún emoji puntual está bien si suma cercanía, sin llenar el texto. No repitas resúmenes de toda la conversación salvo que te los pidan. Montos con la moneda de la empresa y separador de miles. Nunca muestres identificadores ni términos técnicos internos, ni frases como "en firme" o "productos vivos".`;
 
-export function buildCozteInstructions(input: { state: DomainState; notes: CozteNote[]; legacyProfile: ProductionProfile | null; channels?: SalesChannel[]; level?: ExplanationLevel | null; today?: string }): string {
+export function buildCozteInstructions(input: { state: DomainState; notes: CozteNote[]; legacyProfile: ProductionProfile | null; channels?: SalesChannel[]; level?: ExplanationLevel | null; board?: BoardWidget[]; today?: string }): string {
   const { state, notes, legacyProfile } = input;
   const level = input.level ?? DEFAULT_EXPLANATION_LEVEL;
   const legacy = legacyMapSummary(legacyProfile);
@@ -111,6 +115,9 @@ export function buildCozteInstructions(input: { state: DomainState; notes: Cozte
     input.channels?.length
       ? `Canales de venta:\n<canales>${escapeForPrompt(input.channels.map((channel) => ({ id: channel.id, name: channel.name, delivery: channel.deliveryMethod || null, commissionPercent: channel.commissionBps / 100, feePerSale: channel.feePerOrderMinor, deliveryCostPerOrder: channel.deliveryCostPerOrderMinor, unitsPerOrder: channel.unitsPerOrderMilli / 1000, priceAdjustmentPercent: channel.priceAdjustmentBps / 100 })))}</canales>`
       : "Aún no hay canales de venta: las ventas se toman como venta directa, sin comisión ni envío.",
+    input.board?.length
+      ? `Tablero de la persona (de arriba hacia abajo):\n${boardOutline(input.board, (id) => state.products.find((product) => product.id === id)?.name).join("\n")}`
+      : "El tablero de la persona está vacío.",
     notes.length
       ? `Notas de la empresa (decisiones confirmadas en conversaciones anteriores):\n<notas>${escapeForPrompt(notes.map((note) => ({ id: note.id, text: note.text })))}</notas>`
       : "Aún no hay notas guardadas de la empresa.",

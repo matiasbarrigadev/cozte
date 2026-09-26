@@ -125,7 +125,7 @@ export async function POST(request: Request) {
     const tools = createCozteTools(principal, candidateRunId);
     const incoming: UIMessage = { id: message.id, role: "user", parts: message.parts };
     const validated = await validateUIMessages({ messages: [...previous, incoming], tools });
-    const instructions = buildCozteInstructions({ state, notes, channels, level: cozteSettings.level, legacyProfile: profileState.draft ?? profileState.confirmed });
+    const instructions = buildCozteInstructions({ state, notes, channels, level: cozteSettings.level, board: cozteSettings.board, legacyProfile: profileState.draft ?? profileState.confirmed });
     // Receipts and delivery notes sent in the chat are kept so Cozte can attach them to what they back.
     const files = message.parts.filter((part) => part.type === "file");
     const attachments = files.length ? await storeChatAttachments(principal, candidateRunId, files) : [];

@@ -17,11 +17,12 @@ import { archiveCozteNote, loadCozteNotes, saveCozteNote } from "./cozte-notes";
 import { AREA_LABELS, PURCHASE_KIND_LABELS, channelEconomics } from "@/lib/business";
 import { archiveRecord, loadBusinessView, loadChannels, recordPurchase, recordSale, saveChannel } from "./business";
 import { resolveDocument } from "./documents";
-import { WIDGETS, WIDGET_KINDS, type WidgetKind } from "@/lib/cozte-widgets";
-import { addToBoard, saveExplanationLevel } from "./cozte-settings";
+import { WIDGETS, WIDGET_KINDS, boardOutline, computeWidget, moveWidget, widgetFigures, widgetTitle, type WidgetKind, type WidgetSpec } from "@/lib/cozte-widgets";
+import { METRIC_KEYS, type MetricKey } from "@/lib/decks";
+import { addToBoard, loadCozteSettings, saveBoard, saveExplanationLevel } from "./cozte-settings";
 import { DECK_TEMPLATES, DeckError, deckOutline, monthLabel, templateOutline, type Presentation } from "@/lib/decks";
 import { createDeckSchema, deckOperationSchema } from "@/lib/deck-schemas";
-import { createPresentation, listPresentations, resolvePresentation, setPresentationSharing, undoPresentation, updatePresentation } from "./presentations";
+import { createPresentation, listPresentations, loadDeckSources, resolvePresentation, setPresentationSharing, undoPresentation, updatePresentation } from "./presentations";
 
 type ToolStepInput = { principal: Principal; runId: string; toolCallId: string; toolName: CozteToolName; input: unknown };
 type ToolResult = Record<string, unknown>;
@@ -164,9 +165,18 @@ export const cozteToolInputSchemas = {
     month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional().describe("Mes AAAA-MM; por defecto el actual"),
   }),
   showVisual: z.object({
-    visual: z.enum(WIDGET_KINDS as [WidgetKind, ...WidgetKind[]]).describe("unit-cost: costo por unidad de cada producto; cost-breakdown: desglose de un producto; channels: lo que queda por unidad en cada canal; month: resultado del mes y punto de equilibrio; sales: ventas del mes; cost-evolution: evolución del costo en el tiempo; purchases: últimas compras e inversiones"),
-    product: reference.optional().describe("Para cost-breakdown (obligatorio si hay más de un producto) o para filtrar channels"),
+    visual: z.enum(WIDGET_KINDS as [WidgetKind, ...WidgetKind[]]).describe(`Qué widget mostrar. ${WIDGET_KINDS.map((kind) => `${kind}: ${WIDGETS[kind].hint}`).join("; ")}`),
+    product: reference.optional().describe("Producto (nombre o ID): obligatorio en cost-breakdown si hay varios; opcional en channels y en kpis con cifras por producto"),
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional().describe("Mes fijo AAAA-MM. Omítelo para que muestre siempre el mes en curso (se actualiza solo)"),
+    metrics: z.array(z.enum(METRIC_KEYS as [MetricKey, ...MetricKey[]])).min(1).max(4).optional().describe("Solo para kpis: las cifras a mostrar"),
+    title: z.string().trim().min(2).max(60).optional().describe("Título corto a medida si ayuda (ej. 'Cómo va la feria'); si no, se usa el nombre del widget"),
     pin: z.boolean().optional().describe("true además lo fija en el tablero junto al chat, cuando la persona quiere seguir viéndolo"),
+  }),
+  manageBoard: z.object({
+    action: z.enum(["list", "remove", "move", "rename", "clear"]).describe("list: ver el tablero; remove: quitar un widget; move: cambiarlo de lugar; rename: cambiarle el título; clear: vaciar el tablero"),
+    widget: z.number().int().min(1).max(12).optional().describe("Número del widget en el tablero (1 = arriba), para remove, move y rename"),
+    to: z.number().int().min(1).max(12).optional().describe("Para move: el lugar nuevo (1 = arriba)"),
+    title: z.string().trim().min(2).max(60).optional().describe("Para rename: el título nuevo"),
   }),
   setExplanationLevel: z.object({
     level: z.enum(["simple", "medium", "advanced"]).describe("simple: nueva en esto; medium: quiere mejorar; advanced: nivel técnico"),
@@ -213,7 +223,8 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   setInvestmentCost: "Guarda la decisión de la persona sobre una inversión del taller: si su parte mensual se suma al costo de cada producto o queda solo en el resultado del mes. Devuelve el costo antes y después.",
   voidRecord: "Anula una compra o venta mal registrada (queda en el historial). Después puedes registrarla bien.",
   readBusiness: "Lee cómo va un mes: canales y lo que queda por unidad en cada uno, gastos fijos por área e inversiones, compras, ventas, resultado del mes y punto de equilibrio.",
-  showVisual: "Muestra en el chat un gráfico o tarjeta con datos reales y actuales del motor (costos, canales, mes, ventas, evolución, compras). Opcionalmente lo fija en el tablero de la persona.",
+  showVisual: "Muestra en el chat un widget con datos reales del motor (costos, márgenes, producción, ventas por canal/producto/día, entregas, canales, resultado del mes, punto de equilibrio, gastos por área, evolución, compras o cifras clave a elección). Devuelve sus cifras y su conclusión. Con pin: true lo fija en el tablero de la persona, donde se actualiza solo.",
+  manageBoard: "Ordena el tablero de la persona: lo lista, quita, mueve o renombra un widget, o lo vacía. Para agregar usa showVisual con pin: true.",
   setExplanationLevel: "Guarda cómo prefiere la persona que le expliques: simple, medio o avanzado.",
   createPresentation: `Crea una presentación de diapositivas con los datos reales del negocio y la guarda. Parte de una plantilla o de diapositivas a medida. Cada plantilla ya trae: ${(Object.keys(DECK_TEMPLATES) as (keyof typeof DECK_TEMPLATES)[]).map((key) => `${key} = ${templateOutline(key)}`).join("; ")}. Con plantilla, slides agrega diapositivas NUEVAS antes del cierre: no repitas las que ya trae; para cambiar sus títulos o textos usa después editPresentation con update. Los gráficos y cifras los calcula el motor: tú eliges cuáles y escribes títulos, conclusiones y puntos. La persona la ve en el chat y puede presentarla, editarla o compartirla.`,
   editPresentation: "Modifica una presentación guardada: agrega, cambia, quita, mueve o duplica diapositivas; cambia título, estilo o mes; recalcula los datos; o deshace el último cambio. Todos los números de diapositiva de una llamada se refieren a la presentación como estaba ANTES de la llamada (como la ves en el último resultado): puedes quitar 2 y 7 y agregar antes de la 9 en una sola llamada. Cada cambio queda en el historial y se puede deshacer.",
@@ -647,11 +658,44 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         if (state.products.length !== 1) return { ok: false, error: "Falta indicar de qué producto mostrar el desglose.", options: state.products.map((item) => item.name) };
         productId = state.products[0].id;
       }
-      const pinned = value.pin ? await addToBoard(principal, { kind: value.visual, productId, addedBy: "cozte" }).then(() => true) : false;
+      const widget: WidgetSpec = { kind: value.visual, productId, addedBy: "cozte", ...(value.month ? { month: value.month } : {}), ...(value.visual === "kpis" ? { metrics: value.metrics ?? ["revenue", "result", "sales-count", "break-even"] } : {}), ...(value.title ? { title: value.title } : {}) };
+      const currentMonth = today().slice(0, 7);
+      const sources = await loadDeckSources(principal, { months: [value.month ?? currentMonth], history: Boolean(WIDGETS[value.visual].usesHistory) });
+      const content = computeWidget(widget, sources, currentMonth);
+      const pinned = value.pin ? await addToBoard(principal, widget).then(() => true) : false;
+      const title = widgetTitle(widget, state.products.find((item) => item.id === productId)?.name);
       return {
-        ok: true, visual: value.visual, productId, product: state.products.find((item) => item.id === productId)?.name ?? null, pinned,
-        note: `La persona ve "${WIDGETS[value.visual].label}" con datos actuales${pinned ? " y quedó fijo en su tablero" : ""}. En el texto comenta solo lo importante; no repitas toda la tabla.`,
+        ok: true, visual: value.visual, productId, product: state.products.find((item) => item.id === productId)?.name ?? null,
+        month: value.month ?? null, metrics: widget.metrics ?? null, title: value.title ?? null, pinned,
+        shows: title, figures: widgetFigures(content, state.organization.currency), conclusion: content.insight,
+        ...(pinned ? { done: [`«${title}» fijado en el tablero`] } : {}),
+        note: `La persona ve «${title}» con datos ${value.month ? "de ese mes" : "actuales"}${pinned ? " y quedó fijo en su tablero, donde se actualiza solo" : ""}. En el texto responde con el número clave y qué significa; no repitas toda la tabla.`,
       };
+    }
+    case "manageBoard": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.manageBoard>;
+      const [{ board }, state] = await Promise.all([loadCozteSettings(principal), loadState(principal)]);
+      const name = (id: string) => state.products.find((item) => item.id === id)?.name;
+      const outline = (list: typeof board) => boardOutline(list, name);
+      if (value.action === "list") return { ok: true, board: outline(board), note: board.length ? "Widgets de arriba hacia abajo." : "El tablero está vacío." };
+      if (value.action === "clear") { await saveBoard(principal, []); return { ok: true, done: [board.length ? `Tablero vacío (se quitaron ${board.length} widgets)` : "El tablero ya estaba vacío"], board: [] }; }
+      const index = (value.widget ?? 0) - 1;
+      const target = board[index];
+      if (!target) return { ok: false, error: value.widget ? `No hay un widget ${value.widget}; el tablero tiene ${board.length}.` : "Indica el número del widget (widget).", board: outline(board) };
+      const title = widgetTitle(target, target.productId ? name(target.productId) : null);
+      let next = board;
+      let done = "";
+      if (value.action === "remove") { next = board.filter((item) => item.id !== target.id); done = `«${title}» quitado del tablero`; }
+      if (value.action === "move") {
+        if (!value.to) return { ok: false, error: "Indica el lugar nuevo (to)." };
+        next = moveWidget(board, target.id, value.to - 1); done = `«${title}» movido al lugar ${Math.min(value.to, board.length)}`;
+      }
+      if (value.action === "rename") {
+        if (!value.title) return { ok: false, error: "Indica el título nuevo (title)." };
+        next = board.map((item) => item.id === target.id ? { ...item, title: value.title } : item); done = `«${title}» ahora se llama «${value.title}»`;
+      }
+      const saved = await saveBoard(principal, next);
+      return { ok: true, done: [done], board: outline(saved) };
     }
     case "setExplanationLevel": {
       const value = args as z.infer<typeof cozteToolInputSchemas.setExplanationLevel>;
@@ -747,6 +791,7 @@ export function createCozteTools(principal: Principal, runId: string) {
     voidRecord: tool({ description: describe.voidRecord, inputSchema: schemas.voidRecord, execute: execute("voidRecord") }),
     readBusiness: tool({ description: describe.readBusiness, inputSchema: schemas.readBusiness, execute: execute("readBusiness") }),
     showVisual: tool({ description: describe.showVisual, inputSchema: schemas.showVisual, execute: execute("showVisual") }),
+    manageBoard: tool({ description: describe.manageBoard, inputSchema: schemas.manageBoard, execute: execute("manageBoard") }),
     setExplanationLevel: tool({ description: describe.setExplanationLevel, inputSchema: schemas.setExplanationLevel, execute: execute("setExplanationLevel") }),
     createPresentation: tool({ description: describe.createPresentation, inputSchema: schemas.createPresentation, execute: execute("createPresentation") }),
     editPresentation: tool({ description: describe.editPresentation, inputSchema: schemas.editPresentation, execute: execute("editPresentation") }),

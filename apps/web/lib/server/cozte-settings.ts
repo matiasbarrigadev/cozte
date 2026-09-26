@@ -1,6 +1,6 @@
 import "server-only";
 import { isExplanationLevel, type ExplanationLevel } from "@/lib/cozte-levels";
-import { parseBoard, pinWidget, type BoardWidget } from "@/lib/cozte-widgets";
+import { parseBoard, pinWidget, type BoardWidget, type WidgetSpec } from "@/lib/cozte-widgets";
 import type { Principal } from "./auth";
 import { ApiError } from "./auth";
 import { dbBatch, dbQuery } from "./db";
@@ -25,7 +25,7 @@ export async function saveBoard(principal: Principal, board: BoardWidget[]): Pro
   return clean;
 }
 
-export async function addToBoard(principal: Principal, widget: Omit<BoardWidget, "id">): Promise<BoardWidget[]> {
+export async function addToBoard(principal: Principal, widget: WidgetSpec): Promise<BoardWidget[]> {
   const { board } = await loadCozteSettings(principal);
   return saveBoard(principal, pinWidget(board, widget));
 }

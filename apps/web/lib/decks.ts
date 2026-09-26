@@ -793,7 +793,7 @@ export function newDeck(input: { subtitle?: string; month: string; slides: Slide
   return fillClosing(deck, sources, template === "resultado");
 }
 
-function chartRows(data: ChartData, currency: string): { rows?: string[] } {
+export function chartRows(data: ChartData, currency: string): { rows?: string[] } {
   if (data.type === "bars") return { rows: data.rows.slice(0, 6).map((row) => `${row.label}: ${formatValue(row.value, data.unit, currency)}`) };
   if (data.type === "stacked") return { rows: data.rows.slice(0, 6).map((row) => `${row.label}: ${formatMoney(row.total, currency)}`) };
   if (data.type === "waterfall") return { rows: data.steps.map((step) => `${step.label}: ${formatMoney(step.value, currency)}`) };

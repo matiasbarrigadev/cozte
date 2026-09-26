@@ -3,7 +3,7 @@ import { experimental_evaluate as evaluate, isStepCount, type ModelMessage, type
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
-import { COZTE_TOOL_NAMES, COZTE_WRITE_TOOLS, cozteToolSucceeded, questionsShown } from "@/lib/cozte-tool-catalog";
+import { COZTE_TOOL_NAMES, cozteToolSucceeded, cozteToolWrote, questionsShown } from "@/lib/cozte-tool-catalog";
 import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
 import { cleanLegacyWording, correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import { QUALITY_QUESTIONS, actionableFlags, qualityFeedback, qualityLine, qualityMode, qualityState, summarizeQuality, type QualityAnswers, type QualityMode, type QualitySummary } from "@/lib/cozte-quality";
@@ -225,7 +225,7 @@ function toolRecords(steps: StepLike[]): TurnToolRecord[] {
   return steps.flatMap((step) => step.toolResults.map((result) => ({
     name: result.toolName,
     ok: cozteToolSucceeded(result.output),
-    write: COZTE_WRITE_TOOLS.has(result.toolName),
+    write: cozteToolWrote(result.toolName, result.output),
     output: result.output,
   })));
 }

@@ -26,12 +26,13 @@ vi.mock("server-only", () => ({}));
 vi.mock("./assistant-trace", async (original) => ({ ...(await original<typeof import("./assistant-trace")>()), addAssistantToolEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOString(), rates: { USD: 1 }, source: "FXRatesAPI" }), quotesFor: () => ({}) }));
 
-import { COZTE_WRITE_TOOLS, cozteToolSucceeded, questionsShown } from "@/lib/cozte-tool-catalog";
+import { cozteToolSucceeded, cozteToolWrote, questionsShown } from "@/lib/cozte-tool-catalog";
 import { correctionMessage, finalAnswerStep, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
 import { createCozteTools } from "./cozte-agent-tools";
 import { buildCozteInstructions } from "./cozte-instructions";
 import { cozteAgentSettings, cozteProviderOptions } from "./cozte-workflow";
 import { loadCozteNotes } from "./cozte-notes";
+import { loadCozteSettings } from "./cozte-settings";
 import { loadState } from "./state";
 import { calculateCosts } from "@/lib/domain";
 import { dbBatch, dbQuery } from "./db";
@@ -71,14 +72,14 @@ type Principal = { userId: string; organizationId: string; role: "owner" };
 async function productionTurn(input: { model: string; principal: Principal; history: ModelMessage[]; text: string; level?: "simple" | "medium" | "advanced" }) {
   const settings = { ...cozteAgentSettings(), model: input.model };
   const state = await loadState(input.principal);
-  const instructions = buildCozteInstructions({ state, notes: await loadCozteNotes(input.principal), legacyProfile: null, level: input.level ?? "simple" });
+  const instructions = buildCozteInstructions({ state, notes: await loadCozteNotes(input.principal), legacyProfile: null, level: input.level ?? "simple", board: (await loadCozteSettings(input.principal)).board });
   const tools = createCozteTools(input.principal, crypto.randomUUID());
   input.history.push({ role: "user", content: input.text });
   const pass = (messages: ModelMessage[]) => generateText({ model: input.model, system: instructions, messages, tools, stopWhen: [isStepCount(settings.maxSteps), questionsShown], maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings) });
   let result = await pass(input.history);
   const collect = (list: typeof result.steps) => list.map((step) => ({ text: step.text, toolCalls: step.toolCalls.map((call) => ({ toolName: call.toolName, input: call.input })), toolResults: step.toolResults.map((item) => ({ toolName: item.toolName, output: item.output })) }));
   let steps = collect(result.steps);
-  const records = () => steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), write: COZTE_WRITE_TOOLS.has(item.toolName), output: item.output, input: step.toolCalls.find((call) => call.toolName === item.toolName)?.input })));
+  const records = () => steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), write: cozteToolWrote(item.toolName, item.output), output: item.output, input: step.toolCalls.find((call) => call.toolName === item.toolName)?.input })));
   const answerOf = () => { const at = finalAnswerStep(steps); return at >= 0 ? steps[at].text.trim() : ""; };
   let verification = verifyCozteResponse(answerOf(), records(), { sources: [instructions, input.text] });
   const rejected = verification.ok ? null : { text: answerOf(), issues: verification.issues.map((issue) => issue.code) };
@@ -149,7 +150,7 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       type StepView = { text: string; toolCalls: { toolName: string }[]; toolResults: { toolName: string; output: unknown }[] };
       const view = (list: typeof result.steps): StepView[] => list.map((step) => ({ text: step.text, toolCalls: step.toolCalls.map((call) => ({ toolName: call.toolName })), toolResults: step.toolResults.map((item) => ({ toolName: item.toolName, output: item.output })) }));
       let steps = view(result.steps);
-      const records = () => steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), write: COZTE_WRITE_TOOLS.has(item.toolName), output: item.output })));
+      const records = () => steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), write: cozteToolWrote(item.toolName, item.output), output: item.output })));
       const context = { sources: [instructions, turn.user] };
       // Like the workflow: the answer is the closing step's text; notes written before tools stay in the trace.
       const visible = (list: StepView[]) => { const at = finalAnswerStep(list); return at >= 0 ? list[at].text.trim() : ""; };
@@ -262,7 +263,9 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     if (decidedAlone.length) failures.push("sumó la balanza al costo por unidad sin que la persona lo decidiera");
     await turn("La balanza sí, sumala al costo de cada tofu.", []);
     await turn("Ayer vendí 12 tofus de 300g por Instagram al precio de lista.", ["recordSale"]);
-    const month = await turn("¿Cómo vengo este mes? ¿Estoy ganando?", ["readBusiness"]);
+    // Reading the month (readBusiness) or showing it as a widget both answer from the engine.
+    const month = await turn("¿Cómo vengo este mes? ¿Estoy ganando?", []);
+    if (!month.records.some((item) => item.ok && (item.name === "readBusiness" || (item.name === "showVisual" && ["month", "month-result", "break-even", "kpis"].includes(String((item.input as { visual?: string } | undefined)?.visual)))))) failures.push("no leyó el mes (readBusiness o el widget del mes)");
     if (!/pérdida|perd|gananc|resultado/i.test(month.answer)) failures.push("no explicó el resultado del mes");
 
     const [channels, purchases, sales] = await Promise.all([
@@ -376,6 +379,59 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     for (const [name, passed] of Object.entries(checks)) if (!passed) failures.push(`estado final: ${name}`);
     console.log(`\n[${model}] decks ${JSON.stringify(checks)}\n${deck?.slides.map((slide, index) => `${index + 1}. [${slide.layout}${slide.chart ? `:${slide.chart.kind}` : ""}] ${slide.title}`).join("\n")}`);
     results.push({ model, scenario: "presentations", failures: failures.length, failureDetails: failures, ...checks, slides: deck?.slides.map((slide) => ({ layout: slide.layout, title: slide.title, chart: slide.chart?.kind })), transcript });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("picks, pins and arranges board widgets from what the person asks, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET currency='ARS' WHERE id=?", params: [principal.organizationId] }]);
+    const seed = createCozteTools(principal, crypto.randomUUID());
+    let seedCall = 0;
+    const setup = async (name: keyof typeof seed, input: Record<string, unknown>) => await (seed[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<unknown>)(input, { toolCallId: `seed-${++seedCall}` });
+    await setup("saveProduct", { name: "Tofu 300g", goodUnitsPerLot: 100, lotsPerMonth: 20, hoursPerLot: 5, salePrice: 2000 });
+    await setup("saveProduct", { name: "Tofu ahumado", goodUnitsPerLot: 50, lotsPerMonth: 8, hoursPerLot: 6, salePrice: 3200 });
+    await setup("saveMaterial", { name: "Soja orgánica", purchaseUnit: "kg", price: 1000 });
+    await setup("saveMaterial", { name: "Leña de humo", purchaseUnit: "bolsa", price: 4000 });
+    await setup("saveRecipe", { product: "Tofu 300g", items: [{ material: "Soja orgánica", perLot: 30 }] });
+    await setup("saveRecipe", { product: "Tofu ahumado", items: [{ material: "Soja orgánica", perLot: 18 }, { material: "Leña de humo", perLot: 2 }] });
+    await setup("saveExpense", { name: "Luz", amount: 200000, splitBy: "hours" });
+    await setup("saveChannel", { name: "Feria", commissionPercent: 0 });
+    await setup("recordSale", { channel: "Feria", items: [{ product: "Tofu 300g", quantity: 60 }, { product: "Tofu ahumado", quantity: 15 }] });
+
+    const history: ModelMessage[] = [];
+    const failures: string[] = [];
+    const transcript: Record<string, unknown>[] = [];
+    const turn = async (text: string, expected: string[]) => {
+      const { answer, records, rejected, verified } = await productionTurn({ model, principal, history, text, level: "simple" });
+      for (const name of expected) if (!records.some((item) => item.name === name && item.ok)) failures.push(`"${text.slice(0, 40)}…": no ejecutó ${name}`);
+      if (!verified) failures.push(`"${text.slice(0, 40)}…": respuesta sin respaldo tras la corrección`);
+      const calls = records.filter((item) => item.name === "showVisual" || item.name === "manageBoard").map((item) => ({ tool: item.name, ok: item.ok, input: item.input, error: (item.output as { error?: string } | null)?.error }));
+      transcript.push({ user: text, tools: records.map((item) => item.name + (item.ok ? "" : " (falló)")), calls, rejected, answer, board: (await loadCozteSettings(principal)).board.map((widget) => ({ kind: widget.kind, metrics: widget.metrics, title: widget.title, product: widget.productId })) });
+      return { records, answer };
+    };
+    await turn("¿Cómo vengo este mes? Dejámelo fijo en el tablero así lo voy mirando.", ["showVisual"]);
+    await turn("También quiero tener siempre a la vista cuánto vendí y cuánto gané, nada más que eso.", ["showVisual"]);
+    const breakdown = await turn("¿En qué se me va la plata de cada tofu ahumado?", ["showVisual"]);
+    await turn("Sacá del tablero el de cómo vengo en el mes y poné las cifras de ventas y ganancia arriba de todo.", ["manageBoard"]);
+
+    const board = (await loadCozteSettings(principal)).board;
+    const state = await loadState(principal);
+    const smoked = state.products.find((item) => item.name === "Tofu ahumado")?.id;
+    const breakdownShown = breakdown.records.some((item) => item.name === "showVisual" && item.ok && (item.input as { visual?: string } | undefined)?.visual === "cost-breakdown");
+    const checks = {
+      kpisPinned: board.some((widget) => widget.kind === "kpis" && widget.metrics?.includes("revenue") && widget.metrics?.includes("result")),
+      kpisFocused: board.filter((widget) => widget.kind === "kpis").every((widget) => (widget.metrics?.length ?? 0) <= 3),
+      monthRemoved: !board.some((widget) => widget.kind === "month"),
+      kpisOnTop: board[0]?.kind === "kpis",
+      breakdownOfSmoked: breakdownShown && breakdown.records.some((item) => item.name === "showVisual" && (item.output as { productId?: string } | null)?.productId === smoked),
+      noDuplicates: new Set(board.map((widget) => `${widget.kind}|${widget.productId ?? ""}|${(widget.metrics ?? []).join("+")}`)).size === board.length,
+    };
+    for (const [name, passed] of Object.entries(checks)) if (!passed) failures.push(`estado final: ${name}`);
+    console.log(`\n[${model}] board ${JSON.stringify(checks)} ${JSON.stringify(board.map((widget) => widget.title ?? widget.kind))}`);
+    results.push({ model, scenario: "board", failures: failures.length, failureDetails: failures, ...checks, transcript });
     expect(failures).toEqual([]);
   });
 });

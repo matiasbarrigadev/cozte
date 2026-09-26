@@ -18,7 +18,7 @@ import { answered, formatCozteAnswers, parseCozteQuestions, type CozteQuestionAn
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader } from "@/components/ui/card";
+import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { ChatContainerContent, ChatContainerRoot, ChatContainerScrollAnchor } from "@/components/ui/chat-container";
@@ -32,9 +32,10 @@ import { AudioWaveform, useVoiceDictation } from "@/components/use-voice-dictati
 import { AnimatedIcon } from "@/components/animated-icon";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { PresentationCard } from "@/components/decks/presentation-card";
-import { CozteVisual, CozteVisualProvider, useAvailableVisuals } from "@/components/cozte/cozte-visuals";
+import { CozteVisual, CozteVisualProvider } from "@/components/cozte/cozte-visuals";
+import { BoardPanel } from "@/components/cozte/board-panel";
 import { DEFAULT_EXPLANATION_LEVEL, EXPLANATION_LEVELS, type ExplanationLevel } from "@/lib/cozte-levels";
-import { WIDGETS, isWidgetKind, parseBoard, pinWidget, type BoardWidget, type WidgetKind } from "@/lib/cozte-widgets";
+import { cleanWidget, parseBoard, pinWidget, widgetKey, type BoardWidget, type WidgetSpec } from "@/lib/cozte-widgets";
 import type { DomainState, ProductCost } from "@/lib/domain";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, getCozteAttachmentKind, getCozteAttachmentMaxBytes, getCozteAttachmentMediaType } from "@/lib/cozte-assistant-attachments";
 import { cn } from "cn";
@@ -63,7 +64,7 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
   const [mobilePanel, setMobilePanel] = React.useState<"chat" | "board">("chat");
   // How Cozte explains (null until the person chooses) and the board of pinned visuals next to the chat.
   const [level, setLevel] = React.useState<ExplanationLevel | null>(demo ? DEFAULT_EXPLANATION_LEVEL : null);
-  const [board, setBoard] = React.useState<BoardWidget[]>(() => demo ? [{ id: "demo-cost", kind: "unit-cost", addedBy: "user" }, { id: "demo-month", kind: "month", addedBy: "user" }] : []);
+  const [board, setBoard] = React.useState<BoardWidget[]>(() => demo ? [{ id: "demo-month", kind: "month", addedBy: "user" }, { id: "demo-sales", kind: "sales-by-channel", addedBy: "user" }, { id: "demo-cost", kind: "unit-cost", addedBy: "user" }] : []);
   const [refreshKey, setRefreshKey] = React.useState(0);
   const [confirmReset, setConfirmReset] = React.useState(false);
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
@@ -95,7 +96,7 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
     onFinish: ({ message, isError, isAbort }) => {
       void loadProposals(true);
       if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && COZTE_COST_WRITE_TOOLS.has(part.type.slice("tool-".length)) && cozteToolSucceeded(part.output))) { void onDataChanged(); setRefreshKey((current) => current + 1); }
-      if (message.parts.some((part) => (part.type === "tool-setExplanationLevel" || part.type === "tool-showVisual") && "state" in part && part.state === "output-available")) void loadSettings();
+      if (message.parts.some((part) => (part.type === "tool-setExplanationLevel" || part.type === "tool-showVisual" || part.type === "tool-manageBoard") && "state" in part && part.state === "output-available")) void loadSettings();
       if (!isAbort && (isError || !message.parts.some((part) => part.type === "text" && part.text.trim()))) toast.error("Cozte no pudo completar esta respuesta. Tu mensaje quedó guardado; puedes reintentarlo.");
     },
     onError: () => toast.error("No se pudo conectar con Cozte. Revisa tu conexión y vuelve a intentar."),
@@ -175,12 +176,15 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
   // Stable so memoized messages do not re-render when the board changes.
   const boardRef = React.useRef(board);
   React.useEffect(() => { boardRef.current = board; }, [board]);
-  const pinVisual = React.useCallback((kind: WidgetKind, productId: string | null) => {
-    const next = pinWidget(boardRef.current, { kind, productId, addedBy: "user" });
+  const pinVisual = React.useCallback((widget: WidgetSpec) => {
+    const next = pinWidget(boardRef.current, { ...widget, addedBy: "user" });
     void saveSettings({ board: next });
     toast.success("Quedó fijo en tu tablero");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [demo]);
+
+  // Which visuals are already on the board, so a chat card says so instead of offering to pin it again.
+  const pinnedKeys = React.useMemo(() => board.map(widgetKey).join("\n"), [board]);
 
   async function startNewConversation() {
     setConfirmReset(false);
@@ -421,7 +425,7 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
                 {level === null && !demo ? <div className="flex w-full max-w-xl flex-col gap-2"><p className="text-sm font-medium">¿Cómo prefieres que te explique?</p><div className="grid gap-2 sm:grid-cols-3">{EXPLANATION_LEVELS.map((item) => <button key={item.id} type="button" onClick={() => void saveSettings({ level: item.id })} className="flex flex-col gap-1 rounded-lg border bg-background p-3 text-left text-sm transition-colors hover:bg-muted"><span className="font-medium">{item.label}</span><span className="text-xs text-muted-foreground">{item.hint}</span></button>)}</div><p className="text-xs text-muted-foreground">Puedes cambiarlo cuando quieras arriba.</p></div> : null}
               </Empty> : null}
               {messages.map((message) => <React.Fragment key={message.id}>
-                <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} onAnswer={message.id === messages.at(-1)?.id ? answerQuestions : undefined} onPinVisual={pinVisual} onOpenPresentation={onOpenPresentation} />
+                <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} onAnswer={message.id === messages.at(-1)?.id ? answerQuestions : undefined} onPinVisual={pinVisual} pinnedKeys={pinnedKeys} onOpenPresentation={onOpenPresentation} />
                 {(proposalsAfterMessage.get(message.id) ?? []).map((proposal) => <ProposalTurnCard key={proposal.id} proposal={proposal} onOpen={() => setSelectedProposalId(proposal.id)} />)}
               </React.Fragment>)}
               {status === "submitted" ? <TextShimmer className="text-sm">Cozte está analizando…</TextShimmer> : null}
@@ -465,7 +469,7 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
         </section>
 
         <aside id="cozte-board-panel" role="tabpanel" aria-labelledby="cozte-board-tab" aria-label="Tu tablero" className={cn("min-w-0", mobilePanel === "board" ? "flex" : "hidden lg:flex")}>
-          <BoardPanel board={board} onChange={(next) => void saveSettings({ board: next })} />
+          <BoardPanel board={board} onChange={(next) => void saveSettings({ board: next })} onAsk={demo ? undefined : (text) => { setMobilePanel("chat"); void send(text); }} />
         </aside>
       </div>
     </div>
@@ -531,7 +535,7 @@ function presentationCards(parts: UIMessage["parts"]): Map<number, { id: string;
 }
 
 /** One chat message. Memoized so only the reply that is streaming re-renders on each update. */
-const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer, onPinVisual, onOpenPresentation }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void; onPinVisual?: (kind: WidgetKind, productId: string | null) => void; onOpenPresentation?: (id: string) => void }) {
+const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer, onPinVisual, pinnedKeys = "", onOpenPresentation }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void; onPinVisual?: (widget: WidgetSpec) => void; pinnedKeys?: string; onOpenPresentation?: (id: string) => void }) {
   const answer = message.role === "assistant" ? answerTextIndexes(message.parts as ActivityPart[], streaming) : null;
   // One card per presentation, at the last tool call that touched it, so a deck edited several times shows once.
   const deckCards = message.role === "assistant" ? presentationCards(message.parts) : null;
@@ -550,10 +554,11 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
       if (part.type === "file" && part.mediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return <Badge key={index} variant="outline">Excel · {part.filename ?? "Planilla adjunta"}</Badge>;
       // Visuals render live engine data, not numbers from the model.
       if (part.type === "tool-showVisual" && part.state === "output-available" && cozteToolSucceeded(part.output)) {
-        const output = part.output as { visual?: unknown; productId?: string | null; pinned?: boolean };
-        if (!isWidgetKind(output.visual)) return null;
-        const kind = output.visual;
-        return <CozteVisual key={part.toolCallId} kind={kind} productId={output.productId ?? null} onPin={output.pinned || !onPinVisual ? undefined : () => onPinVisual(kind, output.productId ?? null)} />;
+        const output = part.output as { visual?: unknown; productId?: string | null; month?: string | null; metrics?: unknown; title?: string };
+        const widget = cleanWidget({ kind: output.visual, productId: output.productId, month: output.month, metrics: output.metrics, title: output.title, addedBy: "cozte" });
+        if (!widget) return null;
+        const pinned = pinnedKeys.split("\n").includes(widgetKey(widget));
+        return <CozteVisual key={part.toolCallId} widget={widget} pinned={pinned} onPin={pinned || !onPinVisual ? undefined : () => onPinVisual(widget)} />;
       }
       if (deckCards?.has(index)) {
         const deck = deckCards.get(index)!;
@@ -568,33 +573,6 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
   </div>;
 });
 
-/** The board next to the chat: visuals pinned by the person or by Cozte, plus quick access to the predefined ones. */
-function BoardPanel({ board, onChange }: { board: BoardWidget[]; onChange: (next: BoardWidget[]) => void }) {
-  const available = useAvailableVisuals();
-  const choices = available.filter((item) => !board.some((widget) => widget.kind === item.kind && (widget.productId ?? null) === (item.productId ?? null)));
-  const add = (value: string) => {
-    const choice = available[Number(value)];
-    if (choice) onChange(pinWidget(board, { kind: choice.kind, productId: choice.productId ?? null, addedBy: "user" }));
-  };
-  return <Card className="flex h-[calc(100dvh-13rem)] min-h-[30rem] w-full min-w-0 flex-col gap-0 overflow-hidden py-0 lg:h-[calc(100dvh-11rem)]">
-    <CardHeader className="shrink-0 gap-2 border-b px-4 py-4">
-      <div className="flex items-center justify-between gap-2"><h2 className="text-base font-semibold">Tu tablero</h2>{board.length ? <Badge variant="outline">{board.length}</Badge> : null}</div>
-      <CardDescription>Lo que quieres tener a la vista, siempre con datos actuales. Pídele a Cozte que fije algo o agrégalo tú.</CardDescription>
-      {choices.length ? <NativeSelect aria-label="Agregar al tablero" value="" onChange={(event) => add(event.target.value)}>
-        <NativeSelectOption value="">Agregar al tablero…</NativeSelectOption>
-        {available.map((item, index) => choices.includes(item) ? <NativeSelectOption key={`${item.kind}-${item.productId ?? ""}`} value={String(index)}>{item.label}</NativeSelectOption> : null)}
-      </NativeSelect> : null}
-    </CardHeader>
-    <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-4">
-      {board.length ? board.map((widget) => <CozteVisual key={widget.id} kind={widget.kind} productId={widget.productId} compact onRemove={() => onChange(board.filter((item) => item.id !== widget.id))} />)
-        : <div className="flex flex-col gap-2 rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
-          <p>Tu tablero está vacío. Por ejemplo:</p>
-          <div className="flex flex-wrap gap-1.5">{available.filter((item) => item.kind !== "cost-breakdown").slice(0, 4).map((item) => <Button key={item.kind} type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => onChange(pinWidget(board, { kind: item.kind, productId: item.productId ?? null, addedBy: "user" }))}>{WIDGETS[item.kind].label}</Button>)}</div>
-          {!available.length ? <p className="text-xs">Cuando tengas productos cargados vas a poder fijar sus costos acá.</p> : null}
-        </div>}
-    </CardContent>
-  </Card>;
-}
 
 /** Cozte's questions as a small form: pick options or write freely; the answers go back as one message. */
 function CozteQuestionForm({ set, onAnswer }: { set: CozteQuestionSet; onAnswer?: (text: string) => void }) {
