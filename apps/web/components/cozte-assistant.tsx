@@ -31,6 +31,7 @@ import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { AudioWaveform, useVoiceDictation } from "@/components/use-voice-dictation";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { PresentationCard } from "@/components/decks/presentation-card";
 import { CozteVisual, CozteVisualProvider, useAvailableVisuals } from "@/components/cozte/cozte-visuals";
 import { DEFAULT_EXPLANATION_LEVEL, EXPLANATION_LEVELS, type ExplanationLevel } from "@/lib/cozte-levels";
 import { WIDGETS, isWidgetKind, parseBoard, pinWidget, type BoardWidget, type WidgetKind } from "@/lib/cozte-widgets";
@@ -48,7 +49,7 @@ const suggestions = [
   "¿Cómo vengo este mes?",
 ];
 
-export function CozteAssistant({ demo, state, onDataChanged }: { demo: boolean; state: DomainState & { costs: ProductCost[] }; onDataChanged: () => Promise<void>; onOpenCosts?: () => void }) {
+export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPromptSent, onOpenPresentation }: { demo: boolean; state: DomainState & { costs: ProductCost[] }; onDataChanged: () => Promise<void>; onOpenCosts?: () => void; pendingPrompt?: string | null; onPromptSent?: () => void; onOpenPresentation?: (id: string) => void }) {
   const [input, setInput] = React.useState("");
   const [attachments, setAttachments] = React.useState<File[]>([]);
   const [preparing, setPreparing] = React.useState(false);
@@ -292,6 +293,15 @@ export function CozteAssistant({ demo, state, onDataChanged }: { demo: boolean; 
     finally { setPreparing(false); }
   }
 
+  // A request written in another section (e.g. the presentation editor) goes out once the chat is ready.
+  const sendPending = React.useEffectEvent((text: string) => {
+    onPromptSent?.();
+    void sendMessage({ text }).catch(() => toast.error("No se pudo enviar tu pedido a Cozte. Intenta otra vez."));
+  });
+  React.useEffect(() => {
+    if (pendingPrompt && !demo && !loading && status === "ready") sendPending(pendingPrompt);
+  }, [pendingPrompt, demo, loading, status]);
+
   // Only the latest reply can be answered, and only while Cozte is idle.
   const answerQuestions = React.useMemo(() => demo || status !== "ready" || loading ? undefined : (text: string) => {
     void sendMessage({ text }).catch(() => toast.error("No se pudieron enviar tus respuestas. Intenta otra vez."));
@@ -411,7 +421,7 @@ export function CozteAssistant({ demo, state, onDataChanged }: { demo: boolean; 
                 {level === null && !demo ? <div className="flex w-full max-w-xl flex-col gap-2"><p className="text-sm font-medium">¿Cómo prefieres que te explique?</p><div className="grid gap-2 sm:grid-cols-3">{EXPLANATION_LEVELS.map((item) => <button key={item.id} type="button" onClick={() => void saveSettings({ level: item.id })} className="flex flex-col gap-1 rounded-lg border bg-background p-3 text-left text-sm transition-colors hover:bg-muted"><span className="font-medium">{item.label}</span><span className="text-xs text-muted-foreground">{item.hint}</span></button>)}</div><p className="text-xs text-muted-foreground">Puedes cambiarlo cuando quieras arriba.</p></div> : null}
               </Empty> : null}
               {messages.map((message) => <React.Fragment key={message.id}>
-                <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} onAnswer={message.id === messages.at(-1)?.id ? answerQuestions : undefined} onPinVisual={pinVisual} />
+                <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} onAnswer={message.id === messages.at(-1)?.id ? answerQuestions : undefined} onPinVisual={pinVisual} onOpenPresentation={onOpenPresentation} />
                 {(proposalsAfterMessage.get(message.id) ?? []).map((proposal) => <ProposalTurnCard key={proposal.id} proposal={proposal} onOpen={() => setSelectedProposalId(proposal.id)} />)}
               </React.Fragment>)}
               {status === "submitted" ? <TextShimmer className="text-sm">Cozte está analizando…</TextShimmer> : null}
@@ -508,9 +518,23 @@ function ProposalTurnCard({ proposal, onOpen }: { proposal: AssistantProposal; o
 
 const noExecutions: PersistedToolExecution[] = [];
 
+const DECK_TOOLS = new Set(["tool-createPresentation", "tool-editPresentation", "tool-sharePresentation"]);
+
+function presentationCards(parts: UIMessage["parts"]): Map<number, { id: string; revision: number }> {
+  const last = new Map<string, { index: number; revision: number }>();
+  parts.forEach((part, index) => {
+    if (!DECK_TOOLS.has(part.type) || !("state" in part) || part.state !== "output-available" || !cozteToolSucceeded(part.output)) return;
+    const output = part.output as { presentationId?: unknown; revision?: unknown };
+    if (typeof output.presentationId === "string") last.set(output.presentationId, { index, revision: typeof output.revision === "number" ? output.revision : 0 });
+  });
+  return new Map([...last].map(([id, value]) => [value.index, { id, revision: value.revision }]));
+}
+
 /** One chat message. Memoized so only the reply that is streaming re-renders on each update. */
-const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer, onPinVisual }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void; onPinVisual?: (kind: WidgetKind, productId: string | null) => void }) {
+const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer, onPinVisual, onOpenPresentation }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void; onPinVisual?: (kind: WidgetKind, productId: string | null) => void; onOpenPresentation?: (id: string) => void }) {
   const answer = message.role === "assistant" ? answerTextIndexes(message.parts as ActivityPart[], streaming) : null;
+  // One card per presentation, at the last tool call that touched it, so a deck edited several times shows once.
+  const deckCards = message.role === "assistant" ? presentationCards(message.parts) : null;
   return<div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
     <span className="text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}</span>
     {message.role === "assistant" ? (() => {
@@ -530,6 +554,10 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
         if (!isWidgetKind(output.visual)) return null;
         const kind = output.visual;
         return <CozteVisual key={part.toolCallId} kind={kind} productId={output.productId ?? null} onPin={output.pinned || !onPinVisual ? undefined : () => onPinVisual(kind, output.productId ?? null)} />;
+      }
+      if (deckCards?.has(index)) {
+        const deck = deckCards.get(index)!;
+        return <PresentationCard key={`deck-${deck.id}`} id={deck.id} revision={deck.revision} onOpen={onOpenPresentation} />;
       }
       if (part.type === "tool-askQuestions" && (part.state === "input-available" || part.state === "output-available")) {
         const set = parseCozteQuestions(part.input);

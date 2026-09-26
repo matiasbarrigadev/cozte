@@ -44,3 +44,13 @@ El motor está en `lib/business.ts` (puro) y la persistencia en `lib/server/busi
 - El tablero junto al chat guarda visualizaciones con datos en vivo del motor (costo por unidad, desglose, canales, mes, ventas, evolución, compras). Cozte las muestra con `showVisual` y puede fijarlas; la persona también agrega las predeterminadas.
 - "Nueva conversación" archiva el chat anterior; costos, registros y notas siguen.
 - Cada turno terminado se puntúa con TypeSafe Jev vía AI Gateway (evento `quality_scored`): responde lo pedido, explica supuestos, enseña, nivel adecuado y claridad. Si encuentra una falla clara (no responde, decidió sin explicar en un turno que guardó algo, nivel inadecuado, poco clara), Cozte reescribe el mensaje final una vez; la versión nueva debe pasar el verificador o vuelve la original. `COZTE_QUALITY=observe` solo puntúa y `off` lo desactiva. El verificador determinista sigue controlando la verdad (guardados, cifras, identificadores).
+
+## Presentaciones
+
+- Sección `/app/presentaciones`: informes en diapositivas con los datos del negocio. Se crean al instante desde una plantilla (ventas, costos, producción, entregas, resultado) o se le piden a Cozte, que las arma y las itera con `createPresentation`, `editPresentation` (agregar, cambiar, quitar, mover, duplicar, estilo, mes, recalcular, deshacer), `readPresentation` y `sharePresentation`.
+- Los gráficos y cifras los calcula el motor (`lib/decks.ts`) y quedan congelados en la presentación; "Actualizar datos" los recalcula. Cozte escribe títulos, conclusiones y notas; si un texto trae montos que el motor no respalda, el resultado de la herramienta lo avisa para que los corrija.
+- En una misma edición, los números de diapositiva se refieren a la presentación como estaba antes del cambio.
+- Cada cambio guarda la versión anterior (`presentation_versions`, últimas 30) y se puede deshacer.
+- Link público `/p/<token>`: sin cuenta, sin notas del presentador, fuera de buscadores; desactivarlo invalida el link. El origen del link sale de `NEXT_PUBLIC_SITE_URL`, o del dominio de producción de Vercel.
+- Sistema de diseño en `lib/deck-design.ts`: estructura, cuándo usar cada diseño, qué gráfico responde cada pregunta, estilos, colores con significado y cómo escribir. Lo lee Cozte en sus instrucciones y la persona en "Guía de diseño" del editor. Estilos: Cozte, Noche, Claro y Terracota (`app/deck.css`).
+- Presentar a pantalla completa (flechas, deslizar, F) y descargar en PDF (una diapositiva por página).

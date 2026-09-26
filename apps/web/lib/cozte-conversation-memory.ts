@@ -26,7 +26,7 @@ export function compactToolOutputForHistory(toolName: string, output: unknown): 
   }
   if (toolName === "calculate") return { ok: record.ok !== false, label: record.label, expression: record.expression, result: record.result, error: record.error };
   const kept: Record<string, unknown> = { ok: record.ok !== false };
-  for (const key of ["done", "error", "needs", "options", "pendingReview", "unchanged", "saved"] as const) if (record[key] !== undefined) kept[key] = clip(record[key], 1200);
+  for (const key of ["done", "error", "needs", "options", "pendingReview", "unchanged", "saved", "presentationId", "title", "publicUrl"] as const) if (record[key] !== undefined) kept[key] = clip(record[key], 1200);
   const costs = Array.isArray(record.costs) ? record.costs : Array.isArray(record.impact) ? record.impact : null;
   if (costs) kept.costsAfter = costs.slice(0, 12).map((item) => {
     const cost = item as Record<string, unknown>;

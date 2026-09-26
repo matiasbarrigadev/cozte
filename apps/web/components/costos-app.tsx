@@ -28,6 +28,7 @@ import { ExpensesSection } from "./business/expenses-section";
 import { PurchasesSection } from "./business/purchases-section";
 import { ResultSection } from "./business/result-section";
 import { MonthCard } from "./business/month-card";
+import { PresentationsSection } from "./decks/presentations-section";
 import { DEMO_MONTH } from "@/lib/demo";
 import { appPath, viewFromPathname, viewFromSegments, type AppView } from "@/lib/app-routes";
 import { dashboardSummary } from "@/lib/dashboard-summary";
@@ -49,7 +50,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   { label: "Espacio de trabajo", items: [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "asistente", label: "Cozte AI", icon: "assistant" }] },
   { label: "Costos", items: [{ id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "ventas", label: "Ventas y entregas", icon: "arrowUpRight" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
   { label: "Día a día", items: [{ id: "compras", label: "Compras", icon: "receipt" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
-  { label: "Evolución", items: [{ id: "analisis", label: "Análisis de costos", icon: "chart" }, { id: "historial", label: "Historial", icon: "history" }] },
+  { label: "Evolución", items: [{ id: "analisis", label: "Análisis de costos", icon: "chart" }, { id: "presentaciones", label: "Presentaciones", icon: "presentation" }, { id: "historial", label: "Historial", icon: "history" }] },
 ];
 
 const formatMoney = (value: number | null, currency: string) => value === null ? "Sin calcular" : new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: currency === "CLP" ? 0 : 3 }).format(value);
@@ -62,7 +63,10 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
   const [state, setState] = React.useState<Dashboard>(initial);
   const initialRoute = viewFromSegments(initialSection) ?? { view: "dashboard" as View };
   const [view, setView] = React.useState<View>(initialRoute.view);
-  const [selected, setSelected] = React.useState<string | null>(initialRoute.productId ?? initial.products[0]?.id ?? null);
+  const [selected, setSelected] = React.useState<string | null>((initialRoute.view === "producto" ? initialRoute.productId : null) ?? initial.products[0]?.id ?? null);
+  const [selectedDeck, setSelectedDeck] = React.useState<string | null>(initialRoute.view === "presentacion" ? initialRoute.productId ?? null : null);
+  // A message for Cozte written elsewhere (e.g. "change this slide"), sent as soon as the chat opens.
+  const [pendingPrompt, setPendingPrompt] = React.useState<string | null>(null);
   const [reviewOpen, setReviewOpen] = React.useState(false);
   const [draft, setDraft] = React.useState<Draft>(() => { const value = emptyDraft(); if (demo) value.materials.papel = 10000; return value; });
   const [draftReady, setDraftReady] = React.useState(demo);
@@ -229,11 +233,12 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
 
   // Each section has its own URL; pushState keeps navigation instant (no server round trip) and back/forward work.
   function navigate(next: View, productId?: string) {
-    if (productId) setSelected(productId);
+    if (productId && next === "producto") setSelected(productId);
+    if (next === "presentacion") setSelectedDeck(productId ?? null);
     setView(next);
     if (next === "historial") loadHistory();
     if (!demo) {
-      const path = appPath(next, productId ?? (next === "producto" ? selected : null));
+      const path = appPath(next, productId ?? (next === "producto" ? selected : next === "presentacion" ? selectedDeck : null));
       if (window.location.pathname !== path) window.history.pushState(null, "", path);
     }
   }
@@ -241,7 +246,8 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
   const openRoute = React.useEffectEvent((pathname: string) => {
     const route = viewFromPathname(pathname);
     if (!route) return;
-    if (route.productId) setSelected(route.productId);
+    if (route.productId && route.view === "producto") setSelected(route.productId);
+    if (route.view === "presentacion") setSelectedDeck(route.productId ?? null);
     setView(route.view);
     if (route.view === "historial") loadHistory();
   });
@@ -262,7 +268,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
       <Sidebar collapsible="icon">
         <SidebarHeader><div className="min-h-15 px-2 py-3 group-data-[collapsible=icon]:hidden"><CozteLogo className="text-2xl" /><span className="mt-1 block text-xs text-sidebar-foreground/65">Costeo vivo</span></div></SidebarHeader>
         <SidebarContent>{navGroups.map((group) => <SidebarGroup key={group.label}><SidebarGroupLabel>{group.label}</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>
-          {group.items.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id} badge={item.id === "planilla" ? changeCount : 0} onNavigate={() => navigate(item.id)} />)}
+          {group.items.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id || (item.id === "presentaciones" && view === "presentacion")} badge={item.id === "planilla" ? changeCount : 0} onNavigate={() => navigate(item.id)} />)}
         </SidebarMenu></SidebarGroupContent></SidebarGroup>)}</SidebarContent>
         <SidebarFooter><div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">{demo ? <Badge variant="outline" className="border-white/25 bg-white/5 text-white">Demostración</Badge> : <><div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden"><OrganizationSwitcher hidePersonal appearance={{ elements: { organizationSwitcherTrigger: "cozte-org-trigger", organizationPreviewAvatarBox: "cozte-org-avatar", organizationSwitcherPopoverCard: "cozte-clerk-popover" } }} /></div><UserButton appearance={{ elements: { userButtonTrigger: "cozte-user-trigger", userButtonAvatarBox: "cozte-user-avatar", userButtonPopoverCard: "cozte-clerk-popover" } }} /></>}</div></SidebarFooter>
       </Sidebar>
@@ -334,7 +340,12 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
 
           {view === "analisis" ? <CostAnalysisView currency={currency} demo={demo} /> : null}
 
-          {view === "asistente" ? <CozteAssistant demo={demo} state={state} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")} /> : null}
+          {view === "presentaciones" || view === "presentacion" ? <PresentationsSection state={state} demo={demo} presentationId={view === "presentacion" ? selectedDeck : null}
+            onOpen={(id) => id ? navigate("presentacion", id) : navigate("presentaciones")}
+            onAskCozte={(text) => { setPendingPrompt(text); navigate("asistente"); }} /> : null}
+
+          {view === "asistente" ? <CozteAssistant demo={demo} state={state} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")}
+            pendingPrompt={pendingPrompt} onPromptSent={() => setPendingPrompt(null)} onOpenPresentation={(id) => navigate("presentacion", id)} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
         </main>

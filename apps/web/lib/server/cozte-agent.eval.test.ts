@@ -324,4 +324,58 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     results.push({ model, scenario: "levels", failures: failures.length, failureDetails: failures, transcript });
     expect(failures).toEqual([]);
   });
+
+  it.each(models)("builds, iterates and shares a presentation with the business's data, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET currency='ARS', name='Tofu Sur' WHERE id=?", params: [principal.organizationId] }]);
+    const seed = createCozteTools(principal, crypto.randomUUID());
+    let seedCall = 0;
+    const setup = async (name: keyof typeof seed, input: Record<string, unknown>) => await (seed[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<unknown>)(input, { toolCallId: `seed-${++seedCall}` });
+    await setup("saveProduct", { name: "Tofu 300g", goodUnitsPerLot: 100, lotsPerMonth: 20, hoursPerLot: 5, salePrice: 2000 });
+    await setup("saveProduct", { name: "Tofu ahumado", goodUnitsPerLot: 50, lotsPerMonth: 8, hoursPerLot: 6, salePrice: 3200 });
+    await setup("saveMaterial", { name: "Soja orgánica", purchaseUnit: "kg", price: 1000 });
+    await setup("saveRecipe", { product: "Tofu 300g", items: [{ material: "Soja orgánica", perLot: 30 }] });
+    await setup("saveRecipe", { product: "Tofu ahumado", items: [{ material: "Soja orgánica", perLot: 18 }] });
+    await setup("saveExpense", { name: "Luz", amount: 200000, splitBy: "hours" });
+    await setup("saveChannel", { name: "Feria", commissionPercent: 0 });
+    await setup("saveChannel", { name: "Instagram", commissionPercent: 10, deliveryCostPerOrder: 1500, unitsPerOrder: 3 });
+    await setup("recordSale", { channel: "Feria", items: [{ product: "Tofu 300g", quantity: 60 }, { product: "Tofu ahumado", quantity: 15 }] });
+    await setup("recordSale", { channel: "Instagram", items: [{ product: "Tofu 300g", quantity: 24 }] });
+
+    const history: ModelMessage[] = [];
+    const failures: string[] = [];
+    const transcript: Record<string, unknown>[] = [];
+    const turn = async (text: string, expected: string[]) => {
+      const { answer, records, rejected, verified } = await productionTurn({ model, principal, history, text, level: "simple" });
+      for (const name of expected) if (!records.some((item) => item.name === name && item.ok)) failures.push(`"${text.slice(0, 40)}…": no ejecutó ${name}`);
+      if (!verified) failures.push(`"${text.slice(0, 40)}…": respuesta sin respaldo tras la corrección`);
+      const calls = records.filter((item) => item.name.endsWith("Presentation")).map((item) => ({ tool: item.name, ok: item.ok, input: item.input, error: (item.output as { error?: string } | null)?.error }));
+      transcript.push({ user: text, tools: records.map((item) => item.name + (item.ok ? "" : " (falló)")), calls, rejected, answer });
+      return { records, answer };
+    };
+    await turn("Armame una presentación de cómo nos fue en ventas este mes, para mostrársela a mi socio.", ["createPresentation"]);
+    await turn("Ponela en estilo oscuro para proyectarla y agregá una diapositiva con el punto de equilibrio antes del cierre.", ["editPresentation"]);
+    await turn("Pasame un link para mandársela a mi socio.", ["sharePresentation"]);
+
+    const decks = await dbQuery<{ theme: string; deck_json: string; share_token: string | null }>("SELECT theme, deck_json, share_token FROM presentations WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]);
+    const deck = decks[0] ? JSON.parse(decks[0].deck_json) as { slides: { layout: string; title: string; chart?: { kind: string; data: { type: string } } }[] } : null;
+    const lastAnswer = String(transcript.at(-1)?.answer ?? "");
+    const checks = {
+      oneDeck: decks.length === 1,
+      salesCharts: Boolean(deck?.slides.some((slide) => slide.chart?.kind.startsWith("sales-"))),
+      noEmptyCharts: Boolean(deck && !deck.slides.some((slide) => slide.chart?.data.type === "empty")),
+      dark: decks[0]?.theme === "noche",
+      breakEven: Boolean(deck?.slides.some((slide) => slide.chart?.kind === "break-even")),
+      breakEvenBeforeClosing: Boolean(deck && deck.slides.findIndex((slide) => slide.chart?.kind === "break-even") < deck.slides.findIndex((slide) => slide.layout === "closing")),
+      shared: Boolean(decks[0]?.share_token),
+      linkInAnswer: Boolean(decks[0]?.share_token && lastAnswer.includes(decks[0].share_token)),
+    };
+    for (const [name, passed] of Object.entries(checks)) if (!passed) failures.push(`estado final: ${name}`);
+    console.log(`\n[${model}] decks ${JSON.stringify(checks)}\n${deck?.slides.map((slide, index) => `${index + 1}. [${slide.layout}${slide.chart ? `:${slide.chart.kind}` : ""}] ${slide.title}`).join("\n")}`);
+    results.push({ model, scenario: "presentations", failures: failures.length, failureDetails: failures, ...checks, slides: deck?.slides.map((slide) => ({ layout: slide.layout, title: slide.title, chart: slide.chart?.kind })), transcript });
+    expect(failures).toEqual([]);
+  });
 });

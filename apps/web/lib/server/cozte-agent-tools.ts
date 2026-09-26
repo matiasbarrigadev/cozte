@@ -19,6 +19,9 @@ import { archiveRecord, loadBusinessView, loadChannels, recordPurchase, recordSa
 import { resolveDocument } from "./documents";
 import { WIDGETS, WIDGET_KINDS, type WidgetKind } from "@/lib/cozte-widgets";
 import { addToBoard, saveExplanationLevel } from "./cozte-settings";
+import { DECK_TEMPLATES, DeckError, deckOutline, monthLabel, templateOutline, type Presentation } from "@/lib/decks";
+import { createDeckSchema, deckOperationSchema } from "@/lib/deck-schemas";
+import { createPresentation, listPresentations, resolvePresentation, setPresentationSharing, undoPresentation, updatePresentation } from "./presentations";
 
 type ToolStepInput = { principal: Principal; runId: string; toolCallId: string; toolName: CozteToolName; input: unknown };
 type ToolResult = Record<string, unknown>;
@@ -168,6 +171,21 @@ export const cozteToolInputSchemas = {
   setExplanationLevel: z.object({
     level: z.enum(["simple", "medium", "advanced"]).describe("simple: nueva en esto; medium: quiere mejorar; advanced: nivel técnico"),
   }),
+  createPresentation: createDeckSchema.extend({
+    title: z.string().trim().min(1).max(140).describe("Título de la presentación (también va en la portada)"),
+  }),
+  editPresentation: z.object({
+    presentation: reference.optional().describe("Título o ID de la presentación; por defecto la última editada"),
+    changes: z.array(deckOperationSchema).max(20).optional().describe("Cambios en orden. Los números de diapositiva son los de readPresentation o del último resultado, y se renumeran después de agregar, quitar o mover"),
+    undo: z.boolean().optional().describe("true vuelve a la versión anterior al último cambio (no lo combines con changes)"),
+  }),
+  readPresentation: z.object({
+    presentation: reference.optional().describe("Título o ID para ver sus diapositivas; omítelo para listar las presentaciones"),
+  }),
+  sharePresentation: z.object({
+    presentation: reference.optional().describe("Título o ID; por defecto la última editada"),
+    public: z.boolean().describe("true crea el link público (o devuelve el que ya existe); false lo desactiva y deja de funcionar"),
+  }),
   askQuestions: z.object({
     intro: z.string().trim().max(300).optional().describe("Una frase que explica para qué necesitas estas respuestas"),
     questions: z.array(z.object({
@@ -197,6 +215,10 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   readBusiness: "Lee cómo va un mes: canales y lo que queda por unidad en cada uno, gastos fijos por área e inversiones, compras, ventas, resultado del mes y punto de equilibrio.",
   showVisual: "Muestra en el chat un gráfico o tarjeta con datos reales y actuales del motor (costos, canales, mes, ventas, evolución, compras). Opcionalmente lo fija en el tablero de la persona.",
   setExplanationLevel: "Guarda cómo prefiere la persona que le expliques: simple, medio o avanzado.",
+  createPresentation: `Crea una presentación de diapositivas con los datos reales del negocio y la guarda. Parte de una plantilla o de diapositivas a medida. Cada plantilla ya trae: ${(Object.keys(DECK_TEMPLATES) as (keyof typeof DECK_TEMPLATES)[]).map((key) => `${key} = ${templateOutline(key)}`).join("; ")}. Con plantilla, slides agrega diapositivas NUEVAS antes del cierre: no repitas las que ya trae; para cambiar sus títulos o textos usa después editPresentation con update. Los gráficos y cifras los calcula el motor: tú eliges cuáles y escribes títulos, conclusiones y puntos. La persona la ve en el chat y puede presentarla, editarla o compartirla.`,
+  editPresentation: "Modifica una presentación guardada: agrega, cambia, quita, mueve o duplica diapositivas; cambia título, estilo o mes; recalcula los datos; o deshace el último cambio. Todos los números de diapositiva de una llamada se refieren a la presentación como estaba ANTES de la llamada (como la ves en el último resultado): puedes quitar 2 y 7 y agregar antes de la 9 en una sola llamada. Cada cambio queda en el historial y se puede deshacer.",
+  readPresentation: "Lista las presentaciones guardadas o muestra las diapositivas de una (número, diseño, título, textos, gráfico con su conclusión y cifras).",
+  sharePresentation: "Crea o desactiva el link público de una presentación: cualquiera con el link la ve sin cuenta, sin las notas de quien presenta ni otros datos de la empresa.",
   askQuestions: "Muestra a la persona de 1 a 4 preguntas con opciones para elegir; siempre puede responder con texto libre. Úsala cuando necesites datos o decisiones que solo ella conoce. Termina tu turno: las respuestas llegan en su próximo mensaje, así que no escribas nada después de llamarla.",
 };
 
@@ -636,11 +658,49 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       await saveExplanationLevel(principal, value.level);
       return { ok: true, done: [`Nivel de explicación: ${value.level === "simple" ? "simple" : value.level === "medium" ? "medio" : "avanzado"}`], note: "Desde el próximo mensaje explica con ese nivel." };
     }
+    case "createPresentation": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.createPresentation>;
+      const created = await createPresentation(principal, value);
+      return deckReceipt(created, [`Presentación «${created.title}» creada con ${created.deck.slides.length} diapositivas`], created.warnings);
+    }
+    case "editPresentation": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.editPresentation>;
+      if (!value.undo && !value.changes?.length) return { ok: false, error: "Indica los cambios (changes) o undo: true." };
+      const target = await resolvePresentation(principal, value.presentation);
+      const result = value.undo ? await undoPresentation(principal, target.id) : await updatePresentation(principal, target.id, value.changes!);
+      return deckReceipt(result.presentation, result.done, "warnings" in result ? result.warnings as string[] : []);
+    }
+    case "readPresentation": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.readPresentation>;
+      if (!value.presentation) {
+        const list = await listPresentations(principal);
+        if (list.length !== 1) return { ok: true, presentations: list.slice(0, 20).map((item) => ({ id: item.id, title: item.title, slides: item.slideCount, month: monthLabel(item.deck.month), shared: Boolean(item.shareUrl), updatedAt: item.updatedAt })), note: list.length ? "Pide una por título para ver sus diapositivas." : "Todavía no hay presentaciones." };
+      }
+      const found = await resolvePresentation(principal, value.presentation);
+      return { ...deckReceipt(found, []), note: "Diapositivas actuales, numeradas desde 1." };
+    }
+    case "sharePresentation": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.sharePresentation>;
+      const target = await resolvePresentation(principal, value.presentation);
+      const shared = await setPresentationSharing(principal, target.id, value.public);
+      return deckReceipt(shared, [shared.shareUrl ? `Link público de «${shared.title}»: ${shared.shareUrl}` : `Link público de «${shared.title}» desactivado`]);
+    }
     case "askQuestions": {
       const value = args as z.infer<typeof cozteToolInputSchemas.askQuestions>;
       return { ok: true, asked: value.questions.length, waitingForAnswers: true };
     }
   }
+}
+
+/** What Cozte gets back from a presentation tool: the deck by numbered slides with its figures, and its links. */
+function deckReceipt(presentation: Presentation, done: string[], warnings: string[] = []): ToolResult {
+  return {
+    ok: true, done, presentationId: presentation.id, revision: presentation.revision, title: presentation.title, theme: presentation.theme,
+    month: monthLabel(presentation.deck.month), slideCount: presentation.deck.slides.length, publicUrl: presentation.shareUrl,
+    slides: deckOutline(presentation.deck),
+    ...(warnings.length ? { warning: `Estos montos de tus textos no salen del motor: ${warnings.join(", ")}. Corrígelos con editPresentation (update de esas diapositivas) sobre esta misma presentación; no crees otra.` } : {}),
+    note: "La persona ve la presentación en el chat con botones para verla, editarla y copiar el link. En tu mensaje cuenta en pocas frases qué muestra y lo más importante (con las cifras de arriba), y ofrece ajustes; no repitas diapositiva por diapositiva.",
+  };
 }
 
 async function executeCozteToolStep(input: ToolStepInput): Promise<ToolResult> {
@@ -654,9 +714,9 @@ async function executeCozteToolStep(input: ToolStepInput): Promise<ToolResult> {
   } catch (error) {
     // Every failure becomes a readable receipt: the model must see it failed and why, never a silent success.
     const message = error instanceof z.ZodError ? `Datos inválidos: ${error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`
-      : error instanceof ApiError ? error.message
+      : error instanceof ApiError || error instanceof DeckError ? error.message
       : "Error interno al guardar; el cambio no se aplicó.";
-    output = { ok: false, error: message, ...(error instanceof ApiError || error instanceof z.ZodError ? {} : { technicalDetail: errorDetails(error).slice(0, 240) }) };
+    output = { ok: false, error: message, ...(error instanceof DeckError && error.options.length ? { options: error.options.slice(0, 20) } : {}), ...(error instanceof ApiError || error instanceof z.ZodError || error instanceof DeckError ? {} : { technicalDetail: errorDetails(error).slice(0, 240) }) };
     await record("tool_finished", { toolCallId: input.toolCallId, toolName: input.toolName, durationMs: Date.now() - startedAt, failed: true, output, error: errorDetails(error) });
     return output;
   }
@@ -688,6 +748,10 @@ export function createCozteTools(principal: Principal, runId: string) {
     readBusiness: tool({ description: describe.readBusiness, inputSchema: schemas.readBusiness, execute: execute("readBusiness") }),
     showVisual: tool({ description: describe.showVisual, inputSchema: schemas.showVisual, execute: execute("showVisual") }),
     setExplanationLevel: tool({ description: describe.setExplanationLevel, inputSchema: schemas.setExplanationLevel, execute: execute("setExplanationLevel") }),
+    createPresentation: tool({ description: describe.createPresentation, inputSchema: schemas.createPresentation, execute: execute("createPresentation") }),
+    editPresentation: tool({ description: describe.editPresentation, inputSchema: schemas.editPresentation, execute: execute("editPresentation") }),
+    readPresentation: tool({ description: describe.readPresentation, inputSchema: schemas.readPresentation, execute: execute("readPresentation") }),
+    sharePresentation: tool({ description: describe.sharePresentation, inputSchema: schemas.sharePresentation, execute: execute("sharePresentation") }),
     askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),
   };
 }

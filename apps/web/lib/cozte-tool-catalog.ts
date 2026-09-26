@@ -18,6 +18,10 @@ export const COZTE_TOOL_LABELS = {
   readBusiness: "Revisar el mes",
   showVisual: "Mostrar gráfico",
   setExplanationLevel: "Guardar nivel",
+  createPresentation: "Crear presentación",
+  editPresentation: "Editar presentación",
+  readPresentation: "Revisar presentaciones",
+  sharePresentation: "Compartir presentación",
   askQuestions: "Preguntarte",
 } as const;
 
@@ -26,7 +30,7 @@ export type CozteToolName = keyof typeof COZTE_TOOL_LABELS;
 export const COZTE_TOOL_NAMES = Object.keys(COZTE_TOOL_LABELS) as CozteToolName[];
 
 /** Tools that can change stored data; the UI refreshes and the verifier requires their receipts. */
-export const COZTE_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveNote", "saveChannel", "recordPurchase", "recordSale", "setInvestmentCost", "voidRecord", "setExplanationLevel"]);
+export const COZTE_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveNote", "saveChannel", "recordPurchase", "recordSale", "setInvestmentCost", "voidRecord", "setExplanationLevel", "createPresentation", "editPresentation", "sharePresentation"]);
 
 /** Tools whose successful result changes costs shown elsewhere in the app. */
 export const COZTE_COST_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveChannel", "recordPurchase", "recordSale", "setInvestmentCost", "voidRecord"]);
