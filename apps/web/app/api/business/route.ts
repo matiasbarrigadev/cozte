@@ -2,6 +2,7 @@ import { z } from "zod";
 import { businessToday } from "@/lib/business";
 import { ApiError, apiFailure, requirePrincipal } from "@/lib/server/auth";
 import { addressInputSchema, archiveCustomer, archiveCustomerAddress, customerInputSchema, mergeCustomers, saveCustomer, saveCustomerAddress } from "@/lib/server/customers";
+import { archiveZone, saveZone, zoneInputSchema } from "@/lib/server/delivery-zones";
 import { archiveRecord, channelInputSchema, deliveryInputSchema, loadBusinessView, purchaseInputSchema, purchasePatchSchema, updatePurchase, recordPurchase, recordSale, saleInputSchema, salePatchSchema, saveChannel, saveDelivery, updateSale } from "@/lib/server/business";
 
 export const runtime = "nodejs";
@@ -31,6 +32,8 @@ const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("archive-customer-address"), customerId: z.string().min(1).max(120), id: z.string().min(1).max(120) }),
   z.object({ action: z.literal("merge-customers"), fromId: z.string().min(1).max(120), intoId: z.string().min(1).max(120) }),
   z.object({ action: z.literal("archive-customer"), id: z.string().min(1).max(120) }),
+  z.object({ action: z.literal("save-zone"), zone: zoneInputSchema }),
+  z.object({ action: z.literal("archive-zone"), id: z.string().min(1).max(120) }),
 ]);
 
 export async function POST(request: Request) {
@@ -50,6 +53,8 @@ export async function POST(request: Request) {
       case "archive-customer-address": await archiveCustomerAddress(principal, input.customerId, input.id); return Response.json({ ok: true });
       case "merge-customers": return Response.json(await mergeCustomers(principal, input.fromId, input.intoId));
       case "archive-customer": await archiveCustomer(principal, input.id); return Response.json({ ok: true });
+      case "save-zone": return Response.json(await saveZone(principal, input.zone, "user"));
+      case "archive-zone": return Response.json(await archiveZone(principal, input.id));
     }
   } catch (error) {
     if (error instanceof z.ZodError) return Response.json({ error: error.issues[0]?.message ?? "Datos inválidos" }, { status: 400 });

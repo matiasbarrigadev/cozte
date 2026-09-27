@@ -145,7 +145,7 @@ describe("sales and deliveries", () => {
   });
 
   it("summarizes what is due, late and what delivering cost in the month", () => {
-    const base = { saleId: "s", timeWindow: "", method: "", carrier: "", recipient: "", address: "", contact: "", tracking: "", note: "", deliveredOn: null, source: "user" as const, sale: { soldOn: "2026-09-01", channelId: null, channelName: "", customer: "", totalMinor: 0, items: "" } };
+    const base = { saleId: "s", timeWindow: "", method: "", carrier: "", recipient: "", address: "", contact: "", tracking: "", note: "", deliveredOn: null, zoneId: null, zoneName: "", source: "user" as const, sale: { soldOn: "2026-09-01", channelId: null, channelName: "", customer: "", totalMinor: 0, items: "" } };
     const list: Delivery[] = [
       { ...base, id: "a", scheduledOn: "2026-09-26", status: "pending", costMinor: 400 },
       { ...base, id: "b", scheduledOn: "2026-09-24", status: "on_the_way", costMinor: 400 },

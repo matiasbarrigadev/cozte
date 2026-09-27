@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { AREA_LABELS, PURCHASE_KIND_LABELS, buildBusinessView } from "@/lib/business";
 import { analysisInsights, change, monthsBack, summarizeMonth, type BusinessAnalysis, type MonthSummary } from "@/lib/business-analytics";
 import { COST_AREAS, type DomainState } from "@/lib/domain";
+import type { DeliveryTally } from "@/lib/delivery-zones";
 import { DEMO_MONTH, DEMO_TODAY, demoHistorySales } from "@/lib/demo";
 import { demoRecords } from "@/lib/demo-store";
 import { Button } from "@/components/ui/button";
@@ -278,6 +279,70 @@ function ExpensesTab({ months, focus, onFocus, money, compact }: TabProps) {
   </div>;
 }
 
+type PerformanceRow = { key: string; name: string } & DeliveryTally;
+
+const OUTCOMES = [
+  { key: "onTime", label: "A tiempo", color: DATA_COLORS[0], value: (row: DeliveryTally) => row.onTime },
+  { key: "late", label: "Tarde", color: DATA_COLORS[4], value: (row: DeliveryTally) => row.delivered - row.onTime },
+  { key: "open", label: "Por entregar", color: DATA_COLORS[3], value: (row: DeliveryTally) => row.open },
+  { key: "failed", label: "Con problema", color: DATA_COLORS[5], value: (row: DeliveryTally) => row.failed },
+  { key: "cancelled", label: "Cancelada", color: DATA_COLORS[1], value: (row: DeliveryTally) => row.cancelled },
+];
+
+/** Each zone or carrier as a row: a bar as long as its deliveries, split by how they went, with its on-time rate and cost. */
+function PerformanceRows({ rows, money, empty }: { rows: PerformanceRow[]; money: Format; empty: string }) {
+  const [hover, setHover] = React.useState<string | null>(null);
+  if (!rows.length) return <p className="py-6 text-center text-sm text-muted-foreground">{empty}</p>;
+  const most = Math.max(...rows.map((row) => row.total), 1);
+  return <ul className="flex flex-col gap-3.5">
+    {rows.map((row) => {
+      const rate = row.delivered ? row.onTime / row.delivered : null;
+      const parts = OUTCOMES.map((outcome) => ({ ...outcome, count: outcome.value(row) })).filter((part) => part.count > 0);
+      return <li key={row.key} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5">
+        <div className="flex min-w-0 items-baseline gap-2"><span className="truncate text-sm font-medium">{row.name}</span><span className="shrink-0 text-xs text-muted-foreground tabular-nums">{row.total} entrega{row.total === 1 ? "" : "s"}</span></div>
+        <p className="text-right text-sm font-medium tabular-nums">{rate === null ? "—" : `${Math.round(rate * 100)} %`}<span className="ml-1 text-xs font-normal text-muted-foreground">a tiempo</span></p>
+        <div className="flex h-3 min-w-2 gap-0.5" style={{ width: `${Math.max(6, (row.total / most) * 100)}%` }} role="img" aria-label={`${row.name}: ${parts.map((part) => `${part.count} ${part.label.toLowerCase()}`).join(", ")}`}>
+          {parts.map((part) => <span key={part.key} onMouseEnter={() => setHover(`${row.key}:${part.key}`)} onMouseLeave={() => setHover(null)} title={`${part.label}: ${part.count}`}
+            className={cn("h-full first:rounded-l-[4px] last:rounded-r-[4px] transition-opacity", hover && hover !== `${row.key}:${part.key}` && hover.startsWith(`${row.key}:`) && "opacity-50")} style={{ flexGrow: part.count, background: part.color }} />)}
+        </div>
+        <p className="text-right text-xs text-muted-foreground tabular-nums">{money(row.cost / Math.max(row.total, 1))} c/u · {money(row.cost)}</p>
+      </li>;
+    })}
+  </ul>;
+}
+
+/** How each zone and each carrier did in the month. */
+function ZonesCard({ months, focus, money }: { months: MonthSummary[]; focus: number; money: Format }) {
+  const [by, setBy] = usePersistentState<"zone" | "carrier">("analisis:entregas-por", "zone", ["zone", "carrier"]);
+  const current = months[focus];
+  const rows = by === "zone" ? current.byZone : current.byCarrier;
+  const toggle = <div className="flex rounded-md border p-0.5" role="tablist" aria-label="Agrupar entregas">
+    {([["zone", "Zonas"], ["carrier", "Quién entrega"]] as const).map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={by === key} onClick={() => setBy(key)}
+      className={cn("rounded px-2 py-0.5 text-[11px] font-medium", by === key ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>{label}</button>)}
+  </div>;
+  return <ChartCard title={by === "zone" ? `Cada zona en ${longMonth(current.month).split(" ")[0]}` : `Quién entregó en ${longMonth(current.month).split(" ")[0]}`}
+    description={by === "zone" ? "Cuántas entregas tuvo cada zona, cómo salieron y cuánto costó cada una." : "Cada repartidor o empresa de envíos: cuántas llevó, si llegaron a tiempo y a qué costo."}
+    action={toggle} legend={<Legend items={OUTCOMES} />}
+    table={{ columns: [by === "zone" ? "Zona" : "Quién entrega", "Entregas", "A tiempo", "Tarde", "Por entregar", "Con problema", "Costo por entrega", "Costo total"], rows: rows.map((row) => [row.name, row.total, row.onTime, row.delivered - row.onTime, row.open, row.failed, money(row.cost / Math.max(row.total, 1)), money(row.cost)]) }}>
+    <PerformanceRows rows={rows} money={money} empty={by === "zone" ? "Sin entregas este mes. Las zonas se arman en Entregas." : "Sin entregas este mes."} />
+  </ChartCard>;
+}
+
+/** What delivering cost in each zone, month by month. */
+function ZoneCostCard({ months, focus, onFocus, money, compact }: { months: MonthSummary[]; focus: number; onFocus: (index: number) => void; money: Format; compact: Format }) {
+  const colorOf = useKeyColors(months, (month) => month.byZone);
+  const names = new Map<string, string>();
+  for (const month of months) for (const zone of month.byZone) names.set(zone.key, zone.name);
+  const segments = [...names].map(([key, name]) => ({ key: key || "none", label: name, color: key ? colorOf(key) : "var(--data-grid)", values: months.map((month) => month.byZone.find((zone) => zone.key === key)?.cost ?? 0) }))
+    .sort((a, b) => b.values.reduce((sum, value) => sum + value, 0) - a.values.reduce((sum, value) => sum + value, 0));
+  if (!segments.length) return null;
+  return <ChartCard title="Lo que cuesta entregar en cada zona" description="El costo de las entregas de cada mes, zona por zona. Haz clic en un mes para mirarlo."
+    legend={<Legend items={segments} />}
+    table={{ columns: ["Mes", ...segments.map((segment) => segment.label)], rows: months.map((month, index) => [longMonth(month.month), ...segments.map((segment) => money(segment.values[index]))]) }}>
+    <StackedBars months={months.map((month) => month.month)} segments={segments} focus={focus} onFocus={onFocus} format={compact} label="Costo de entregar por zona y mes" height={220} />
+  </ChartCard>;
+}
+
 function DeliveriesTab({ months, focus, onFocus, money, compact }: TabProps) {
   const labels = months.map((item) => item.month);
   const current = months[focus];
@@ -306,6 +371,8 @@ function DeliveriesTab({ months, focus, onFocus, money, compact }: TabProps) {
         table={{ columns: ["Mes", ...segments.map((segment) => segment.label)], rows: months.map((item, index) => [longMonth(item.month), ...segments.map((segment) => segment.values[index])]) }}>
         <StackedBars months={labels} segments={segments} focus={focus} onFocus={onFocus} format={count} label="Entregas por estado y mes" height={240} />
       </ChartCard>
+      <ZonesCard months={months} focus={focus} money={money} />
+      <ZoneCostCard months={months} focus={focus} onFocus={onFocus} money={money} compact={compact} />
       <ChartCard title="A tiempo y lo que cuesta entregar" description="Qué parte de las entregas llegó el día acordado, y el costo promedio de cada una."
         table={{ columns: ["Mes", "A tiempo", "Costo por entrega", "Costo total"], rows: months.map((item) => [longMonth(item.month), rate(item) === null ? "—" : `${Math.round(rate(item)! * 100)} %`, perDelivery(item) === null ? "—" : money(perDelivery(item)!), money(item.deliveries.cost)]) }}>
         <p className="text-xs font-medium text-muted-foreground">Llegaron a tiempo</p>

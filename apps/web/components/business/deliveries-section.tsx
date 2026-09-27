@@ -4,7 +4,9 @@ import * as React from "react";
 import { toast } from "sonner";
 import { DELIVERY_STATUSES, DELIVERY_STATUS_HINTS, DELIVERY_STATUS_LABELS, byProximity, daysFrom, deliverySummary, isOpenDelivery, saleItemsText, type Delivery, type DeliveryStatus, type SalesChannel } from "@/lib/business";
 import type { DomainState } from "@/lib/domain";
-import { demoDeliveryList, demoRecords } from "@/lib/demo-store";
+import { demoDeliveryList, demoRecords, demoZoneData } from "@/lib/demo-store";
+import { ZONE_MODE_LABELS, type DeliveryZone } from "@/lib/delivery-zones";
+import { ZonesPanel, type ZonePlace } from "./delivery-zones";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,8 +28,8 @@ import { DELIVERY_TONE, relativeDay } from "./delivery-status";
 import { DeliveryCards } from "./mobile-cards";
 import { useIsMobile } from "@/hooks/use-mobile";
 
-type DeliveryData = { deliveries: Delivery[]; channels: SalesChannel[] };
-type Patch = Partial<Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "method" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn">> & { cost?: number };
+type DeliveryData = { deliveries: Delivery[]; channels: SalesChannel[]; zones: DeliveryZone[]; places: ZonePlace[] };
+type Patch = Partial<Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "method" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn" | "zoneId">> & { cost?: number };
 
 /** The change that puts a delivery back as it was before an edit (including when it was delivered). */
 function inverseDeliveryPatch(delivery: Delivery, patch: Patch): Patch {
@@ -35,6 +37,8 @@ function inverseDeliveryPatch(delivery: Delivery, patch: Patch): Patch {
   for (const key of ["scheduledOn", "timeWindow", "method", "carrier", "recipient", "address", "contact", "tracking", "note"] as const) if (patch[key] !== undefined) back[key] = delivery[key];
   if (patch.status !== undefined) { back.status = delivery.status; back.deliveredOn = delivery.deliveredOn; }
   if (patch.cost !== undefined) back.cost = delivery.costMinor;
+  // A zone change can bring the zone's method, carrier and cost: undo puts them back too.
+  if (patch.zoneId !== undefined) { back.zoneId = delivery.zoneId; back.method = delivery.method; back.carrier = delivery.carrier; back.cost = delivery.costMinor; }
   return back;
 }
 type Quick = "all" | "open" | "today" | "overdue" | "delivered" | "failed";
@@ -45,7 +49,7 @@ export function useDeliveries(month: string, demo: boolean, revision: number) {
   const [version, setVersion] = React.useState(0);
   const [loaded, setLoaded] = React.useState<{ key: string; data: DeliveryData } | null>(null);
   const demoChanges = useDemoVersion(demo);
-  const demoData = React.useMemo<DeliveryData | null>(() => demo ? { deliveries: demoDeliveryList(month), channels: demoRecords().channels } : null, [demo, month, demoChanges]); // eslint-disable-line react-hooks/exhaustive-deps
+  const demoData = React.useMemo<DeliveryData | null>(() => demo ? { deliveries: demoDeliveryList(month), channels: demoRecords().channels, ...demoZoneData() } : null, [demo, month, demoChanges]); // eslint-disable-line react-hooks/exhaustive-deps
   const key = `${month}:${version}:${revision}`;
   React.useEffect(() => {
     if (demo) return;
@@ -74,7 +78,7 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
       const result = await businessAction<{ done: string[] }>({ action: "save-delivery", delivery: { ...(delivery ? { id: delivery.id } : {}), ...patch } }, demo);
       notifySaved(message ?? result.done[0] ?? "Entrega actualizada", delivery && undoable ? () => void save(delivery, inverseDeliveryPatch(delivery, patch), "Cambio deshecho", false) : undefined);
       reload();
-      if (patch.cost !== undefined) onDataChanged?.();
+      if (patch.cost !== undefined || patch.zoneId !== undefined) onDataChanged?.();
       return true;
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo guardar"); return false; }
   }
@@ -115,13 +119,15 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
           <MonthPicker month={month} today={todayFor(demo)} onChange={onMonthChange} />
         </CardHeader>
         <CardContent>
-          {deliveries.length ? <DeliveriesTable directory={directory} deliveries={deliveries} channels={data.channels} demo={demo} today={today} money={money} onSave={save} onRemove={(delivery) => void remove(delivery)} onOpenSales={onOpenSales} />
+          {deliveries.length ? <DeliveriesTable directory={directory} deliveries={deliveries} channels={data.channels} zones={data.zones} demo={demo} today={today} money={money} onSave={save} onRemove={(delivery) => void remove(delivery)} onOpenSales={onOpenSales} />
             : <Empty className="py-6"><EmptyHeader><EmptyTitle>No hay entregas en {monthName(month)}</EmptyTitle><EmptyDescription>Cuando registras una venta por un canal que entrega (o con dirección), su entrega aparece acá. También puedes programar una para una venta que ya tengas.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={() => setScheduleOpen(true)}>Programar entrega</Button></Empty>}
         </CardContent>
       </Card>
 
+      <ZonesPanel zones={data.zones} places={data.places} deliveries={deliveries} month={month} today={today} carriers={directory.carriers} money={money} demo={demo} onChanged={() => { reload(); onDataChanged?.(); }} />
+
       <Card>
-        <CardHeader><CardTitle>Cómo entrega cada canal</CardTitle><CardDescription>La forma y el costo habitual de entregar un pedido en cada canal. Se usan para las próximas ventas; lo que ya se vendió conserva su costo.</CardDescription></CardHeader>
+        <CardHeader><CardTitle>Cómo entrega cada canal</CardTitle><CardDescription>La forma y el costo habitual de entregar un pedido en cada canal: se usan cuando la dirección no está en una zona con su propio costo. Lo que ya se vendió conserva su costo.</CardDescription></CardHeader>
         <CardContent>{data.channels.length ? <><ul className="flex flex-col gap-3 md:hidden" aria-label="Cómo entrega cada canal">{data.channels.map((channel) => <li key={channel.id} className="flex flex-col gap-2 rounded-lg border p-3">
           <p className="text-sm font-medium">{channel.name}</p>
           <div className="grid grid-cols-[1fr_8rem] gap-2 text-xs text-muted-foreground">
@@ -144,18 +150,19 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
         </CardContent>
       </Card>
     </div>}
-    {scheduleOpen ? <ScheduleDialog directory={directory} state={state} demo={demo} month={month} today={today} existing={new Set(deliveries.map((item) => item.saleId))} onClose={() => setScheduleOpen(false)} onSave={async (saleId, patch) => { if (await save(null, { saleId, ...patch })) setScheduleOpen(false); }} /> : null}
+    {scheduleOpen && data ? <ScheduleDialog zones={data.zones} directory={directory} state={state} demo={demo} month={month} today={today} existing={new Set(deliveries.map((item) => item.saleId))} onClose={() => setScheduleOpen(false)} onSave={async (saleId, patch) => { if (await save(null, { saleId, ...patch })) setScheduleOpen(false); }} /> : null}
   </>;
 }
 
-function DeliveriesTable({ directory, deliveries, channels, demo, today, money, onSave, onRemove, onOpenSales }: {
-  directory: CustomerDirectory; deliveries: Delivery[]; channels: SalesChannel[]; demo: boolean; today: string; money: (value: number) => string;
+function DeliveriesTable({ directory, deliveries, channels, zones, demo, today, money, onSave, onRemove, onOpenSales }: {
+  directory: CustomerDirectory; deliveries: Delivery[]; channels: SalesChannel[]; zones: DeliveryZone[]; demo: boolean; today: string; money: (value: number) => string;
   onSave: (delivery: Delivery, patch: Patch, message?: string) => Promise<boolean>; onRemove: (delivery: Delivery) => void; onOpenSales?: () => void;
 }) {
   const [search, setSearch] = React.useState("");
   const [quick, setQuick] = usePersistentState<Quick>("entregas:estado", "all", ["all", "open", "today", "overdue", "delivered", "failed"]);
   const [channelFilter, setChannelFilter] = usePersistentState<string>("entregas:canal", "all");
   const [carrierFilter, setCarrierFilter] = usePersistentState<string>("entregas:quien", "all");
+  const [zoneFilter, setZoneFilter] = usePersistentState<string>("entregas:zona", "all");
   const [sort, setSort] = React.useState<SortState<SortKey>>(null);
   const isMobile = useIsMobile();
   const carriers = [...new Set(deliveries.map((item) => item.carrier).filter(Boolean))].sort();
@@ -176,19 +183,20 @@ function DeliveriesTable({ directory, deliveries, channels, demo, today, money, 
       if (quick === "failed" && item.status !== "failed") return false;
       if (channelFilter !== "all" && (item.sale.channelId ?? "direct") !== channelFilter) return false;
       if (carrierFilter !== "all" && item.carrier !== carrierFilter) return false;
-      return matches(search, [item.recipient, item.address, item.contact, item.carrier, item.method, item.tracking, item.note, item.sale.customer, item.sale.channelName, item.sale.items, DELIVERY_STATUS_LABELS[item.status]]);
+      if (zoneFilter !== "all" && (item.zoneId ?? "none") !== zoneFilter) return false;
+      return matches(search, [item.zoneName, item.recipient, item.address, item.contact, item.carrier, item.method, item.tracking, item.note, item.sale.customer, item.sale.channelName, item.sale.items, DELIVERY_STATUS_LABELS[item.status]]);
     });
     if (!sort) return byProximity(filtered, (item) => item.scheduledOn, today);
     const direction = sort.direction === "asc" ? 1 : -1;
     const value = (item: Delivery): string | number => sort.key === "date" ? item.scheduledOn : sort.key === "recipient" ? (item.recipient || item.sale.customer).toLowerCase() : item.costMinor;
     return [...filtered].sort((a, b) => { const x = value(a), y = value(b); return (x < y ? -1 : x > y ? 1 : 0) * direction; });
-  }, [deliveries, search, quick, channelFilter, carrierFilter, sort, today]);
+  }, [deliveries, search, quick, channelFilter, carrierFilter, zoneFilter, sort, today]);
   const channelOptions = [{ value: "all", label: "Todos los canales" }, ...channels.map((channel) => ({ value: channel.id, label: channel.name })), ...(deliveries.some((item) => !item.sale.channelId) ? [{ value: "direct", label: "Venta directa" }] : [])];
   const quickChips: { id: Quick; label: string }[] = [{ id: "all", label: "Todas" }, { id: "open", label: "Por entregar" }, { id: "today", label: "Hoy" }, { id: "overdue", label: "Atrasadas" }, { id: "failed", label: "Con problema" }, { id: "delivered", label: "Entregadas" }];
   const disabled = false;
   const [history, setHistory] = React.useState<Delivery | null>(null);
-  const exportRows = () => downloadCsv(`entregas-${today.slice(0, 7)}`, ["Fecha", "Franja", "Estado", "Recibe", "Dirección", "Contacto", "Quién entrega", "Forma", "Seguimiento", "Costo", "Productos", "Canal", "Vendida el", "Entregada el", "Nota"],
-    rows.map((item) => [item.scheduledOn, item.timeWindow, DELIVERY_STATUS_LABELS[item.status], item.recipient || item.sale.customer, item.address, item.contact, item.carrier, item.method, item.tracking, item.costMinor, item.sale.items, item.sale.channelName, item.sale.soldOn, item.deliveredOn, item.note]));
+  const exportRows = () => downloadCsv(`entregas-${today.slice(0, 7)}`, ["Fecha", "Franja", "Estado", "Recibe", "Dirección", "Zona", "Contacto", "Quién entrega", "Forma", "Seguimiento", "Costo", "Productos", "Canal", "Vendida el", "Entregada el", "Nota"],
+    rows.map((item) => [item.scheduledOn, item.timeWindow, DELIVERY_STATUS_LABELS[item.status], item.recipient || item.sale.customer, item.address, item.zoneName, item.contact, item.carrier, item.method, item.tracking, item.costMinor, item.sale.items, item.sale.channelName, item.sale.soldOn, item.deliveredOn, item.note]));
   const recipientSuggestions = [...directory.customers.map((item) => ({ value: item.name, hint: item.address || undefined })), ...directory.recipients.map((value) => ({ value }))];
   const addressSuggestions = directory.addresses.map((value) => ({ value }));
   const carrierSuggestions = directory.carriers.map((value) => ({ value }));
@@ -201,6 +209,7 @@ function DeliveriesTable({ directory, deliveries, channels, demo, today, money, 
     </div>
     <TableToolbar search={search} onSearch={setSearch} placeholder="Buscar cliente, dirección, producto o seguimiento" shown={rows.length} total={deliveries.length} filters={[
       { id: "channel", label: "Canal", value: channelFilter, onChange: setChannelFilter, options: channelOptions },
+      ...(zones.length ? [{ id: "zone", label: "Zona", value: zoneFilter, onChange: setZoneFilter, options: [{ value: "all", label: "Todas las zonas" }, ...zones.map((zone) => ({ value: zone.id, label: zone.name })), { value: "none", label: "Sin zona" }] }] : []),
       ...(carriers.length ? [{ id: "carrier", label: "Quién entrega", value: carrierFilter, onChange: setCarrierFilter, options: [{ value: "all", label: "Todos los que entregan" }, ...carriers.map((carrier) => ({ value: carrier, label: carrier }))] }] : []),
     ]}>{sort ? <Button type="button" size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setSort(null)}>Orden: más cercanas a hoy</Button> : null}<Button type="button" size="sm" variant="outline" className="h-8" onClick={exportRows} title="Descarga lo que ves (con los filtros aplicados)"><AnimatedIcon name="cloud" data-icon="inline-start" size={14} />Descargar Excel</Button></TableToolbar>
     {history ? <RecordHistory kind="delivery" id={history.id} title={`Entrega a ${history.recipient || history.sale.customer || "cliente"}`} demo={demo} onClose={() => setHistory(null)} /> : null}
@@ -212,6 +221,7 @@ function DeliveriesTable({ directory, deliveries, channels, demo, today, money, 
           <TableHead className={cn(sheetHead, "min-w-44")}>Estado</TableHead>
           <SortableHead column="recipient" label="Recibe" sort={sort} onSort={setSort} className="min-w-40" defaultDirection="asc" />
           <TableHead className={cn(sheetHead, "min-w-56")}>Dirección</TableHead>
+          {zones.length ? <TableHead className={cn(sheetHead, "min-w-44")}>Zona</TableHead> : null}
           <TableHead className={cn(sheetHead, "min-w-36")}>Contacto</TableHead>
           <TableHead className={cn(sheetHead, "min-w-40")}>Quién entrega</TableHead>
           <TableHead className={cn(sheetHead, "min-w-36")}>Forma</TableHead>
@@ -238,6 +248,13 @@ function DeliveriesTable({ directory, deliveries, channels, demo, today, money, 
             </TableCell>
             <TableCell className={sheetCell}><EditableSuggest suggestions={recipientSuggestions} value={item.recipient} label="Recibe" placeholder={item.sale.customer || "—"} disabled={disabled} onCommit={(recipient) => void onSave(item, { recipient })} /></TableCell>
             <TableCell className={sheetCell}><EditableSuggest suggestions={addressSuggestions} value={item.address} label="Dirección" placeholder="Sin dirección" disabled={disabled} onCommit={(address) => void onSave(item, { address })} /></TableCell>
+            {zones.length ? <TableCell className={cn(sheetCell, "px-1.5")}>
+              <Dropdown variant="cell" aria-label="Zona de la entrega" value={item.zoneId ?? "none"} disabled={disabled} className="my-1.5 h-8 px-2 text-xs" onChange={(event) => { const zoneId = event.target.value === "none" ? null : event.target.value; if (zoneId !== item.zoneId) void onSave(item, { zoneId }); }}>
+                <DropdownOption value="none" hint="Toma el costo que tenga la venta">Sin zona</DropdownOption>
+                {zones.map((zone) => <DropdownOption key={zone.id} value={zone.id} hint={`${ZONE_MODE_LABELS[zone.mode]}${zone.mode !== "pickup" && zone.costPerOrderMinor ? ` · ${money(zone.costPerOrderMinor)}` : ""}`}>{zone.name}</DropdownOption>)}
+                {item.zoneId && !zones.some((zone) => zone.id === item.zoneId) ? <DropdownOption value={item.zoneId}>{item.zoneName || "Zona quitada"}</DropdownOption> : null}
+              </Dropdown>
+            </TableCell> : null}
             <TableCell className={sheetCell}><EditableText value={item.contact} label="Contacto" placeholder="—" disabled={disabled} onCommit={(contact) => void onSave(item, { contact })} /></TableCell>
             <TableCell className={sheetCell}><EditableSuggest suggestions={carrierSuggestions} value={item.carrier} label="Quién entrega" placeholder="—" disabled={disabled} onCommit={(carrier) => void onSave(item, { carrier })} /></TableCell>
             <TableCell className={sheetCell}><EditableText value={item.method} label="Forma de entrega" placeholder="—" disabled={disabled} onCommit={(method) => void onSave(item, { method })} /></TableCell>
@@ -256,7 +273,7 @@ function DeliveriesTable({ directory, deliveries, channels, demo, today, money, 
           </TableRow>;
         })}</TableBody>
         <TableFooter><TableRow>
-          <TableCell colSpan={9} className="px-3 text-sm">{rows.length === deliveries.length ? "Todas" : "Lo filtrado"} · {rows.length} entrega{rows.length === 1 ? "" : "s"}</TableCell>
+          <TableCell colSpan={zones.length ? 10 : 9} className="px-3 text-sm">{rows.length === deliveries.length ? "Todas" : "Lo filtrado"} · {rows.length} entrega{rows.length === 1 ? "" : "s"}</TableCell>
           <TableCell className="px-3 text-right tabular-nums">{money(rows.reduce((sum, item) => sum + item.costMinor, 0))}</TableCell>
           <TableCell colSpan={3} />
         </TableRow></TableFooter>
@@ -266,7 +283,7 @@ function DeliveriesTable({ directory, deliveries, channels, demo, today, money, 
 }
 
 /** Schedules a delivery for a sale of the month that does not have one yet. */
-function ScheduleDialog({ directory, state, demo, month, today, existing, onClose, onSave }: { directory: CustomerDirectory; state: DomainState; demo: boolean; month: string; today: string; existing: Set<string>; onClose: () => void; onSave: (saleId: string, patch: Patch) => Promise<void> }) {
+function ScheduleDialog({ zones, directory, state, demo, month, today, existing, onClose, onSave }: { zones: DeliveryZone[]; directory: CustomerDirectory; state: DomainState; demo: boolean; month: string; today: string; existing: Set<string>; onClose: () => void; onSave: (saleId: string, patch: Patch) => Promise<void> }) {
   const { view } = useBusinessView(month, demo, state);
   const money = useMoney(state.organization.currency);
   const candidates = (view?.sales ?? []).filter((sale) => !sale.delivery && !existing.has(sale.id));
@@ -284,11 +301,12 @@ function ScheduleDialog({ directory, state, demo, month, today, existing, onClos
     const data = new FormData(event.currentTarget);
     const field = (name: string) => String(data.get(name) ?? "").trim();
     const cost = field("cost");
+    const zone = field("zone");
     setBusy(true);
     try {
       await onSave(selected.id, {
         scheduledOn: field("date") || today, timeWindow: field("window"), recipient: (recipient ?? selected.customer).trim(), address: (address ?? known?.address ?? "").trim(), contact: (contact ?? known?.contact ?? "").trim(), carrier: carrier.trim(), note: field("note"),
-        ...(cost ? { cost: Number(cost) } : {}),
+        ...(cost ? { cost: Number(cost) } : {}), ...(zone && zone !== "auto" ? { zoneId: zone === "none" ? null : zone } : {}),
       });
     } finally { setBusy(false); }
   }
@@ -309,8 +327,16 @@ function ScheduleDialog({ directory, state, demo, month, today, existing, onClos
       <Field><FieldLabel htmlFor="schedule-address">Dirección</FieldLabel><SuggestInput id="schedule-address" value={address ?? known?.address ?? ""} placeholder="Calle, número, ciudad" suggestions={directory.addresses.map((value) => ({ value }))} onValueChange={(value) => setAddress(value)} /></Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field><FieldLabel htmlFor="schedule-carrier">Quién entrega</FieldLabel><SuggestInput id="schedule-carrier" value={carrier} placeholder="Ej. moto propia, correo" suggestions={directory.carriers.map((value) => ({ value }))} onValueChange={(value) => setCarrier(value)} /></Field>
-        <Field><FieldLabel htmlFor="schedule-cost">Costo</FieldLabel><Input id="schedule-cost" name="cost" type="number" min="0" step="1" placeholder={selected ? money(selected.deliveryCostMinor) : ""} /><FieldDescription>Vacío: el de la venta.</FieldDescription></Field>
+        <Field><FieldLabel htmlFor="schedule-cost">Costo</FieldLabel><Input id="schedule-cost" name="cost" type="number" min="0" step="1" placeholder={selected ? money(selected.deliveryCostMinor) : ""} /><FieldDescription>Vacío: el de la zona o el de la venta.</FieldDescription></Field>
       </div>
+      {zones.length ? <Field><FieldLabel htmlFor="schedule-zone">Zona</FieldLabel>
+        <Dropdown id="schedule-zone" name="zone" className="w-full" defaultValue="auto">
+          <DropdownOption value="auto" hint="La de la ciudad o el barrio de la dirección">Según la dirección</DropdownOption>
+          {zones.map((zone) => <DropdownOption key={zone.id} value={zone.id} hint={ZONE_MODE_LABELS[zone.mode]}>{zone.name}</DropdownOption>)}
+          <DropdownOption value="none">Sin zona</DropdownOption>
+        </Dropdown>
+        <FieldDescription>La zona pone el día de salida, quién la lleva y el costo, salvo lo que escribas acá.</FieldDescription>
+      </Field> : null}
       <Field><FieldLabel htmlFor="schedule-note">Nota</FieldLabel><Input id="schedule-note" name="note" placeholder="Timbre, horario, referencias" /></Field>
     </FieldGroup>
       <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancelar</Button><Button type="submit" disabled={busy}>{busy ? "Guardando…" : "Programar entrega"}</Button></DialogFooter>

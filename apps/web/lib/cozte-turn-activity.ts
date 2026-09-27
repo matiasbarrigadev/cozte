@@ -42,6 +42,7 @@ const running: Record<string, string> = {
   setCompanyLocation: "Guardando dónde está la empresa",
   readCustomers: "Revisando tus clientes",
   saveCustomer: "Guardando el cliente",
+  saveDeliveryZone: "Guardando la zona de entrega",
   askQuestions: "Preparando unas preguntas",
 };
 
@@ -77,6 +78,7 @@ const summaryVerb: Record<string, [string, string]> = {
   setCompanyLocation: ["guardó dónde está la empresa", "guardó dónde está la empresa"],
   readCustomers: ["revisó tus clientes", "revisó tus clientes"],
   saveCustomer: ["guardó 1 cliente", "guardó {n} clientes"],
+  saveDeliveryZone: ["guardó 1 zona de entrega", "guardó {n} zonas de entrega"],
 };
 
 function record(value: unknown): Record<string, unknown> {

@@ -1,6 +1,7 @@
 import { calculateCosts, type DomainState } from "./domain";
 import { snapshotRowsFor } from "./cost-snapshots";
 import { byProximity, priceSale, saleItemsText, type BusinessRecords, type Delivery, type Purchase, type Sale, type SalesChannel } from "./business";
+import { matchZone, type DeliveryZone } from "./delivery-zones";
 
 export const demoState: DomainState = {
   revision: 3,
@@ -98,28 +99,37 @@ export function demoBusinessRecords(): BusinessRecords {
       sale("v5", "2026-09-04", librerias, [{ productId: "dura", quantity: 60 }, { productId: "blanda", quantity: 60 }]),
     ].map((item) => {
       const delivery = DEMO_DELIVERY_DETAILS[item.id];
-      return delivery ? { ...item, customer: delivery.recipient, delivery: { id: `e-${item.id}`, status: delivery.status, scheduledOn: delivery.scheduledOn, deliveredOn: delivery.deliveredOn } } : item;
+      const zone = delivery ? matchZone(DEMO_ZONES, { address: delivery.address }) : null;
+      return delivery ? { ...item, customer: delivery.recipient, delivery: { id: `e-${item.id}`, status: delivery.status, scheduledOn: delivery.scheduledOn, deliveredOn: delivery.deliveredOn, zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", carrier: delivery.carrier } } : item;
     }),
   };
 }
 
 /** Logistics of the demo's sales: one delivered long ago, one on the way today, one that failed and one coming up. */
 const DEMO_DELIVERY_DETAILS: Record<string, Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn">> = {
-  v6: { scheduledOn: "2026-09-28", timeWindow: "9 a 13", status: "pending", carrier: "Correo Andreani", recipient: "Lucía Ferreyra", address: "Av. Colón 1450, Córdoba", contact: "351 555 0142", tracking: "", note: "Timbre 3B", deliveredOn: null },
-  v1: { scheduledOn: "2026-09-23", timeWindow: "Mañana", status: "delivered", carrier: "Moto propia (Tomás)", recipient: "Librería El Ateneo", address: "San Martín 220", contact: "Depósito, preguntar por Marta", tracking: "", note: "", deliveredOn: "2026-09-23" },
-  v2: { scheduledOn: "2026-09-26", timeWindow: "14 a 18", status: "on_the_way", carrier: "Correo Andreani", recipient: "Martín Ruiz", address: "Belgrano 88, Rosario", contact: "341 555 0199", tracking: "AND-4821-77", note: "", deliveredOn: null },
-  v3: { scheduledOn: "2026-09-24", timeWindow: "", status: "failed", carrier: "Correo Andreani", recipient: "Sofía Paz", address: "Mitre 1020, Mendoza", contact: "261 555 0110", tracking: "AND-4790-12", note: "No había nadie: reprogramar", deliveredOn: null },
-  v5: { scheduledOn: "2026-09-05", timeWindow: "Tarde", status: "delivered", carrier: "Moto propia (Tomás)", recipient: "Librería Rayuela", address: "Caseros 540", contact: "", tracking: "", note: "", deliveredOn: "2026-09-05" },
+  v6: { scheduledOn: "2026-09-29", timeWindow: "9 a 13", status: "pending", carrier: "Moto propia (Tomás)", recipient: "Lucía Ferreyra", address: "Av. Providencia 1450, Providencia", contact: "+56 9 5555 0142", tracking: "", note: "Timbre 3B", deliveredOn: null },
+  v1: { scheduledOn: "2026-09-23", timeWindow: "Mañana", status: "delivered", carrier: "Moto propia (Tomás)", recipient: "Librería El Ateneo", address: "Merced 220, Santiago Centro", contact: "Depósito, preguntar por Marta", tracking: "", note: "", deliveredOn: "2026-09-23" },
+  v2: { scheduledOn: "2026-09-26", timeWindow: "14 a 18", status: "on_the_way", carrier: "Starken", recipient: "Martín Ruiz", address: "Av. Libertad 88, Viña del Mar", contact: "+56 9 5555 0199", tracking: "STK-4821-77", note: "", deliveredOn: null },
+  v3: { scheduledOn: "2026-09-24", timeWindow: "", status: "failed", carrier: "Starken", recipient: "Sofía Paz", address: "Barros Arana 1020, Concepción", contact: "+56 9 5555 0110", tracking: "STK-4790-12", note: "No había nadie: reprogramar", deliveredOn: null },
+  v5: { scheduledOn: "2026-09-05", timeWindow: "Tarde", status: "delivered", carrier: "Moto propia (Tomás)", recipient: "Librería Rayuela", address: "Irarrázaval 540, Ñuñoa", contact: "", tracking: "", note: "", deliveredOn: "2026-09-05" },
 };
 
 /** The demo's deliveries, closest to the demo's today first. */
+/** How the demo delivers: its own motorbike around Santiago, a courier to the regions, and pickup at the workshop. */
+export const DEMO_ZONES: DeliveryZone[] = [
+  { id: "z-santiago", name: "Santiago centro y oriente", mode: "own", carrier: "Moto propia (Tomás)", areas: ["Providencia", "Ñuñoa", "Santiago Centro", "Las Condes"], costPerOrderMinor: 3000, weekdays: [2, 4, 6], leadDays: 0, isFallback: false, notes: "Sale del taller a las 10" },
+  { id: "z-regiones", name: "Regiones", mode: "carrier", carrier: "Starken", areas: [], costPerOrderMinor: 5200, weekdays: [1, 3, 5], leadDays: 1, isFallback: true, notes: "Se deja en la sucursal antes de las 17" },
+  { id: "z-retiro", name: "Retiro en el taller", mode: "pickup", carrier: "", areas: [], costPerOrderMinor: 0, weekdays: [], leadDays: 0, isFallback: false, notes: "" },
+];
+
 export function demoDeliveries(today = DEMO_TODAY): Delivery[] {
   const records = demoBusinessRecords();
   const list = records.sales.flatMap((sale): Delivery[] => {
     const details = DEMO_DELIVERY_DETAILS[sale.id];
     if (!details) return [];
     const channel = records.channels.find((item) => item.id === sale.channelId);
-    return [{ id: `e-${sale.id}`, saleId: sale.id, ...details, method: channel?.deliveryMethod ?? "", source: "cozte", costMinor: sale.deliveryCostMinor, sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) } }];
+    const zone = matchZone(DEMO_ZONES, { address: details.address });
+    return [{ id: `e-${sale.id}`, saleId: sale.id, ...details, method: channel?.deliveryMethod ?? "", zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", source: "cozte", costMinor: sale.deliveryCostMinor, sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) } }];
   });
   return byProximity(list, (item) => item.scheduledOn, today);
 }
@@ -142,6 +152,7 @@ export function demoHistorySales(): Sale[] {
   const sales: Sale[] = [];
   const people = ["Lucía Ferreyra", "Martín Ruiz", "Sofía Paz", "Carla Gómez", "Diego Luna", "Valentina Ríos"];
   const shops = ["Librería El Ateneo", "Librería Rayuela", "Papelería Norte"];
+  const inRegions = new Set(["Martín Ruiz", "Sofía Paz", "Valentina Ríos"]);
   const customerFor = (channel: SalesChannel, month: string) => {
     if (channel.id === "feria") return "";
     // Carla bought only in April and Papelería Norte stopped after June: they show as inactive or at risk.
@@ -165,11 +176,13 @@ export function demoHistorySales(): Sale[] {
         const id = `h-${month}-${index += 1}`;
         const delivers = channel.deliveryCostPerOrderMinor > 0;
         const scheduled = new Date(Date.parse(`${soldOn}T12:00:00Z`) + (1 + Math.floor(random() * 3)) * 86_400_000).toISOString().slice(0, 10);
-        const late = random() < 0.18;
+        const customer = customerFor(channel, month);
+        const zone = inRegions.has(customer) ? DEMO_ZONES[1] : DEMO_ZONES[0];
+        const late = random() < (zone.mode === "carrier" ? 0.3 : 0.08);
         sales.push({
-          id, soldOn, channelId: channel.id, channelName: channel.name, customer: customerFor(channel, month), note: "", documentId: null, source: "user",
+          id, soldOn, channelId: channel.id, channelName: channel.name, customer, note: "", documentId: null, source: "user",
           items: priced.items, totalMinor: priced.totalMinor, sellingCostMinor: priced.sellingCostMinor, deliveryCostMinor: priced.deliveryCostMinor, variableCostMinor: priced.variableCostMinor, productionCostMinor: priced.productionCostMinor,
-          delivery: delivers ? { id: `e-${id}`, status: random() < 0.06 ? "cancelled" : "delivered", scheduledOn: scheduled, deliveredOn: late ? new Date(Date.parse(`${scheduled}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10) : scheduled } : null,
+          delivery: delivers ? { id: `e-${id}`, status: random() < 0.06 ? "cancelled" : "delivered", scheduledOn: scheduled, deliveredOn: late ? new Date(Date.parse(`${scheduled}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10) : scheduled, zoneId: zone.id, zoneName: zone.name, carrier: zone.carrier } : null,
         });
       }
     }

@@ -63,31 +63,37 @@ export async function ensureCustomersImported(principal: Principal): Promise<voi
 
 /** The customer of a name: the existing one (however it was written) or a new one. Null for sales without customer. */
 export async function resolveCustomer(principal: Principal, name: string | undefined | null, source: "user" | "cozte"): Promise<string | null> {
+  return (await resolveCustomerEntry(principal, name, source))?.id ?? null;
+}
+
+/** The customer of a name, saying whether it was created now. */
+export async function resolveCustomerEntry(principal: Principal, name: string | undefined | null, source: "user" | "cozte"): Promise<{ id: string; created: boolean } | null> {
   const clean = name?.trim() ?? "";
   const key = customerKey(clean);
   if (!key) return null;
   await ensureCustomersImported(principal);
   const find = async () => (await dbQuery<{ id: string }>("SELECT id FROM customers WHERE organization_id=? AND name_key=? AND archived_at IS NULL", [principal.organizationId, key]))[0]?.id ?? null;
   const found = await find();
-  if (found) return found;
+  if (found) return { id: found, created: false };
   const id = crypto.randomUUID();
   await dbBatch([{ sql: "INSERT OR IGNORE INTO customers (id, organization_id, name, name_key, source) VALUES (?, ?, ?, ?, ?)", params: [id, principal.organizationId, clean.slice(0, 120), key, source] }]);
-  return await find() ?? id;
+  const stored = await find() ?? id;
+  return { id: stored, created: stored === id };
 }
 
 /** A customer's address to deliver to: the given one (kept in their record if new) or their default one. */
-export async function customerAddressFor(principal: Principal, customerId: string, given: { address?: string; recipient?: string; contact?: string }): Promise<{ id: string; address: string; recipient: string; contact: string } | null> {
+export async function customerAddressFor(principal: Principal, customerId: string, given: { address?: string; recipient?: string; contact?: string }): Promise<{ id: string; address: string; zone: string; recipient: string; contact: string } | null> {
   const addresses = await dbQuery<AddressRowDb>("SELECT id, customer_id, label, address, zone, recipient, contact, notes, is_default FROM customer_addresses WHERE organization_id=? AND customer_id=? AND archived_at IS NULL ORDER BY is_default DESC, created_at DESC", [principal.organizationId, customerId]);
   const address = given.address?.trim() ?? "";
   if (!address) {
     const main = addresses[0];
-    return main ? { id: main.id, address: main.address, recipient: main.recipient, contact: main.contact } : null;
+    return main ? { id: main.id, address: main.address, zone: main.zone, recipient: main.recipient, contact: main.contact } : null;
   }
   const same = addresses.find((row) => customerKey(row.address) === customerKey(address));
-  if (same) return { id: same.id, address: same.address, recipient: given.recipient ?? same.recipient, contact: given.contact ?? same.contact };
+  if (same) return { id: same.id, address: same.address, zone: same.zone, recipient: given.recipient ?? same.recipient, contact: given.contact ?? same.contact };
   const id = crypto.randomUUID();
   await dbBatch([{ sql: "INSERT INTO customer_addresses (id, organization_id, customer_id, address, zone, recipient, contact, is_default) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params: [id, principal.organizationId, customerId, address.slice(0, 200), zoneFromAddress(address), given.recipient?.trim().slice(0, 120) ?? "", given.contact?.trim().slice(0, 120) ?? "", addresses.length ? 0 : 1] }]);
-  return { id, address, recipient: given.recipient ?? "", contact: given.contact ?? "" };
+  return { id, address, zone: zoneFromAddress(address), recipient: given.recipient ?? "", contact: given.contact ?? "" };
 }
 
 async function loadRecords(principal: Principal, customerId?: string): Promise<{ customers: Customer[]; sales: CustomerSale[] }> {

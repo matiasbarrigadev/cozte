@@ -27,8 +27,9 @@ vi.mock("./assistant-trace", async (original) => ({ ...(await original<typeof im
 vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOString(), rates: { USD: 1 }, source: "FXRatesAPI" }), quotesFor: () => ({}) }));
 
 import { cozteToolSucceeded, cozteToolWrote, questionsShown } from "@/lib/cozte-tool-catalog";
-import { loadCustomers } from "./customers";
-import { recordSale } from "./business";
+import { loadCustomers, saveCustomer, saveCustomerAddress } from "./customers";
+import { loadDeliveries, recordSale } from "./business";
+import { loadZones } from "./delivery-zones";
 import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
 import { correctionMessage, finalAnswerStep, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
@@ -433,6 +434,37 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
     console.log(`\n[${model}] location ${JSON.stringify(checks)}\n${first.answer}\n---\n${second?.answer ?? ""}`);
     results.push({ model, scenario: "location", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "Rosario", answer: first.answer }, { user: "¿Qué necesitás?", answer: second?.answer ?? "" }] });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("sets up a delivery zone, delivers a new sale through it and names the places without a zone, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    const tools = createCozteTools(principal, crypto.randomUUID());
+    const run = async (name: keyof typeof tools, input: Record<string, unknown>) => await (tools[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<Record<string, unknown>>)(input, { toolCallId: crypto.randomUUID() });
+    await run("readCosts", {});
+    await run("saveProduct", { name: "Tofu 300g", goodUnitsPerLot: 100, lotsPerMonth: 20, hoursPerLot: 5, salePrice: 2000 });
+    await run("saveMaterial", { name: "Soja", purchaseUnit: "kg", price: 1000 });
+    await run("saveRecipe", { product: "Tofu 300g", items: [{ material: "Soja", perLot: 30 }] });
+    await saveCustomerAddress(principal, { customerId: (await saveCustomer(principal, { name: "Almacén Don Pepe" }, "user")).id, address: "Belgrano 88, Rosario" }, "user");
+    await saveCustomerAddress(principal, { customerId: (await saveCustomer(principal, { name: "Dietética Andina" }, "user")).id, address: "San Martín 900, Mendoza" }, "user");
+    const history: ModelMessage[] = [];
+    const first = await productionTurn({ model, principal, history, text: "Armá una zona de entrega Rosario: la lleva Andreani, me cuesta $4.500 cada pedido y sale los martes y los viernes." });
+    const second = await productionTurn({ model, principal, history, text: "Registrá una venta de 20 Tofu 300g a Almacén Don Pepe, con entrega." });
+    const third = await productionTurn({ model, principal, history, text: "¿Qué clientes me quedaron en lugares sin zona de entrega?" });
+    const zone = (await loadZones(principal)).find((item) => /rosario/i.test(item.name));
+    const delivery = (await loadDeliveries(principal, new Date().toISOString().slice(0, 7))).find((item) => /pepe/i.test(item.sale.customer));
+    const checks = {
+      savedTheZone: Boolean(zone) && zone!.mode === "carrier" && /andreani/i.test(zone!.carrier) && zone!.costPerOrderMinor === 4500 && zone!.weekdays.join() === "2,5",
+      zoneCoversRosario: Boolean(zone) && (zone!.areas.some((area) => /rosario/i.test(area)) || /^rosario$/i.test(zone!.name.trim())),
+      confirmedIt: first.verified && /rosario/i.test(first.answer),
+      deliveredThroughIt: delivery?.zoneId === zone?.id && delivery?.costMinor === 4500,
+      namedTheUncovered: third.records.some((item) => item.name === "readDeliveries" && item.ok) && /mendoza|andina/i.test(third.answer),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] zones ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}\n---\n${third.answer}`);
+    results.push({ model, scenario: "zones", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "zona", answer: first.answer }, { user: "venta", answer: second.answer }, { user: "sin zona", answer: third.answer }] });
     expect(failures).toEqual([]);
   });
 

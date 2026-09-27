@@ -106,6 +106,12 @@ describe("verifyCozteResponse", () => {
     ]) expect(verifyCozteResponse(text, [read]).ok, text).toBe(true);
   });
 
+  it("accepts what is stored when a fresh read of it backs the answer", () => {
+    const customers = { name: "readCustomers", ok: true, write: false, output: { ok: true, addresses: [{ address: "Belgrano 88, Rosario" }] } };
+    expect(verifyCozteResponse("Su dirección guardada es Belgrano 88, Rosario.", [customers]).ok).toBe(true);
+    expect(verifyCozteResponse("Su dirección guardada es Belgrano 88, Rosario.", []).ok).toBe(false);
+  });
+
   it("flags internal names and empty answers", () => {
     expect(verifyCozteResponse("Usé applyCostAction para eso.", [read]).issues[0].code).toBe("internal-detail");
     expect(verifyCozteResponse("   ", []).issues[0].code).toBe("empty-answer");

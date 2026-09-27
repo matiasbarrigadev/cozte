@@ -101,7 +101,7 @@ function sourceFigures(texts: string[]): Set<number> {
 
 const identifierPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
 
-const internalNames = /\b(?:readCosts|saveProduct|saveMaterial|saveRecipe|saveExpense|saveCategory|removeItem|saveNote|askQuestions|saveChannel|recordPurchase|recordSale|updateSale|updateDelivery|readDeliveries|setInvestmentCost|voidRecord|readBusiness|showVisual|manageBoard|setExplanationLevel|createPresentation|editPresentation|readPresentation|sharePresentation|searchConversation|setCompanyLocation|readCustomers|saveCustomer|calculate|simulate|inspectCostBase|applyCostAction|updateMaterialPrice|updateExpenseAmount|updateProductionMap|upsertProductDraft|calculateCostRule|findMaterial|create-product|create-material|create-expense|set-component|bulk-prices|quantityMilli|\w+Minor|\w+Milli|toolCallId|null)\b/u;
+const internalNames = /\b(?:readCosts|saveProduct|saveMaterial|saveRecipe|saveExpense|saveCategory|removeItem|saveNote|askQuestions|saveChannel|recordPurchase|recordSale|updateSale|updateDelivery|readDeliveries|setInvestmentCost|voidRecord|readBusiness|showVisual|manageBoard|setExplanationLevel|createPresentation|editPresentation|readPresentation|sharePresentation|searchConversation|setCompanyLocation|readCustomers|saveCustomer|saveDeliveryZone|calculate|simulate|inspectCostBase|applyCostAction|updateMaterialPrice|updateExpenseAmount|updateProductionMap|upsertProductDraft|calculateCostRule|findMaterial|create-product|create-material|create-expense|set-component|bulk-prices|quantityMilli|\w+Minor|\w+Milli|toolCallId|null)\b/u;
 
 /** Sentence markers for actions from earlier turns ("antes guardé…"), which a fresh read can confirm. */
 const earlierTurn = /(?<![\p{L}\p{N}])(?:antes|anteriormente|previamente|hace un rato|ayer|la vez pasada|en (?:esta|la) (?:charla|conversación)|en (?:el|los) mensajes? anteriores?|más temprano)(?![\p{L}\p{N}])/iu;
@@ -134,7 +134,8 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
     return askedPerson ? { ok: true, mustUseTools: false, issues: [] } : { ok: false, mustUseTools: false, issues: [{ code: "empty-answer", detail: "No hubo respuesta final para la persona." }] };
   }
   const successfulWrites = tools.filter((tool) => tool.write && tool.ok);
-  const freshRead = tools.some((tool) => tool.name === "readCosts" && tool.ok);
+  // Any fresh read of stored data (costs, customers, deliveries, the month) backs statements about what is stored.
+  const freshRead = tools.some((tool) => /^read[A-Z]/.test(tool.name) && tool.ok);
   const unbacked = [...claims(answer, actionClaim, freshRead), ...(freshRead ? [] : claims(answer, stateClaim)), ...(tools.length ? [] : claims(answer, openerClaim))];
   if (unbacked.length && !successfulWrites.length) {
     const failedWrites = tools.filter((tool) => tool.write && !tool.ok).length;

@@ -86,7 +86,7 @@ export const DELIVERY_STATUS_HINTS: Record<DeliveryStatus, string> = {
 };
 export const isOpenDelivery = (status: DeliveryStatus) => status === "pending" || status === "on_the_way" || status === "failed";
 
-export type SaleDelivery = { id: string; status: DeliveryStatus; scheduledOn: string; deliveredOn?: string | null };
+export type SaleDelivery = { id: string; status: DeliveryStatus; scheduledOn: string; deliveredOn?: string | null; zoneId?: string | null; zoneName?: string; carrier?: string };
 
 export type Delivery = {
   id: string;
@@ -102,6 +102,9 @@ export type Delivery = {
   tracking: string;
   note: string;
   deliveredOn: string | null;
+  /** The delivery zone it goes to, picked from the address or by hand. */
+  zoneId: string | null;
+  zoneName: string;
   source: "user" | "cozte";
   /** What delivering costs, kept on the sale so the month's result reads it. */
   costMinor: number;

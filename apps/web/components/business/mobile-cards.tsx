@@ -39,7 +39,7 @@ export function DeliveryCards({ rows, today, money, onSave, onRemove }: { rows: 
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className={cn("text-sm font-semibold", late && "text-red-800 dark:text-red-200")}>{relativeDay(item.scheduledOn, today)} · {item.scheduledOn.slice(8, 10)}/{item.scheduledOn.slice(5, 7)}{item.timeWindow ? ` · ${item.timeWindow}` : ""}</p>
-              <p className="truncate text-xs text-muted-foreground">{item.sale.channelName}{item.carrier ? ` · ${item.carrier}` : ""}</p>
+              <p className="truncate text-xs text-muted-foreground">{item.zoneName || item.sale.channelName}{item.carrier ? ` · ${item.carrier}` : ""}</p>
             </div>
             <Dropdown size="sm" aria-label="Estado de la entrega" value={item.status} className={cn("shrink-0 rounded-full font-medium ring-1", DELIVERY_TONE[item.status])} onChange={(event) => { const status = event.target.value as DeliveryStatus; if (status !== item.status) void onSave(item, { status }); }}>
               {DELIVERY_STATUSES.map((status) => <DropdownOption key={status} value={status} hint={DELIVERY_STATUS_HINTS[status]}>{DELIVERY_STATUS_LABELS[status]}</DropdownOption>)}

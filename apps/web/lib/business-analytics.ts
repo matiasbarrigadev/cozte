@@ -1,5 +1,6 @@
 import { AREA_LABELS, type BusinessView, type PurchaseKind } from "./business";
 import { COST_AREAS, type CostArea } from "./domain";
+import { emptyTally, tallyDelivery, type DeliveryTally } from "./delivery-zones";
 
 /**
  * The business month by month, for the analysis section: how much came in, what each sale cost, the structure, the
@@ -29,7 +30,10 @@ export type MonthSummary = {
   purchases: Record<PurchaseKind, number>;
   /** The month's fixed costs item by item, for the structure map. */
   expenses: { area: CostArea; name: string; amount: number }[];
-  deliveries: { total: number; delivered: number; onTime: number; late: number; open: number; failed: number; cancelled: number; cost: number };
+  deliveries: DeliveryTally;
+  /** The month's deliveries by zone and by who took them, most deliveries first. */
+  byZone: ({ key: string; name: string } & DeliveryTally)[];
+  byCarrier: ({ key: string; name: string } & DeliveryTally)[];
 };
 
 const round = (value: number) => Math.round(value * 100) / 100;
@@ -80,24 +84,20 @@ export function summarizeMonth(view: BusinessView, month: string, today: string)
     ...area.investments.filter((item) => item.monthlyShare > 0).map((item) => ({ area: area.area, name: `${item.description} (inversión)`, amount: item.monthlyShare })),
   ]).filter((item) => item.amount > 0);
   if (result.oneOffTotal > 0) for (const area of COST_AREAS) if (result.oneOffByArea[area] > 0) expenses.push({ area, name: `Gastos del mes · ${AREA_LABELS[area]}`, amount: result.oneOffByArea[area] });
-  const deliveries = { total: 0, delivered: 0, onTime: 0, late: 0, open: 0, failed: 0, cancelled: 0, cost: 0 };
+  const deliveries = emptyTally();
+  const byZone = new Map<string, { key: string; name: string } & DeliveryTally>();
+  const byCarrier = new Map<string, { key: string; name: string } & DeliveryTally>();
   for (const sale of sales) {
     const delivery = sale.delivery;
     if (!delivery) continue;
-    deliveries.total += 1;
-    deliveries.cost += sale.deliveryCostMinor;
-    if (delivery.status === "delivered") {
-      deliveries.delivered += 1;
-      // Delivered on the day or before counts as on time; without a recorded day it counts as on time.
-      if (!delivery.deliveredOn || delivery.deliveredOn <= delivery.scheduledOn) deliveries.onTime += 1;
-      else deliveries.late += 1;
-    } else if (delivery.status === "cancelled") deliveries.cancelled += 1;
-    else if (delivery.status === "failed") deliveries.failed += 1;
-    else {
-      deliveries.open += 1;
-      if (delivery.scheduledOn < today) deliveries.late += 1;
-    }
+    tallyDelivery(deliveries, delivery, sale.deliveryCostMinor, today);
+    const zoneKey = delivery.zoneId ?? "";
+    tallyDelivery(byZone.get(zoneKey) ?? byZone.set(zoneKey, { key: zoneKey, name: delivery.zoneName || "Sin zona", ...emptyTally() }).get(zoneKey)!, delivery, sale.deliveryCostMinor, today);
+    const carrier = delivery.carrier?.trim() || "Sin indicar";
+    const carrierKey = carrier.toLowerCase();
+    tallyDelivery(byCarrier.get(carrierKey) ?? byCarrier.set(carrierKey, { key: carrierKey, name: carrier, ...emptyTally() }).get(carrierKey)!, delivery, sale.deliveryCostMinor, today);
   }
+  const byCount = <T extends DeliveryTally>(list: T[]) => list.sort((a, b) => b.total - a.total || b.cost - a.cost).map((item) => ({ ...item, cost: round(item.cost) }));
   const sortByRevenue = <T extends { revenue: number }>(list: T[]) => list.sort((a, b) => b.revenue - a.revenue).map((item) => ({ ...item, revenue: round(item.revenue) }));
   return {
     month,
@@ -118,6 +118,8 @@ export function summarizeMonth(view: BusinessView, month: string, today: string)
     purchases,
     expenses: expenses.sort((a, b) => b.amount - a.amount),
     deliveries: { ...deliveries, cost: round(deliveries.cost) },
+    byZone: byCount([...byZone.values()]),
+    byCarrier: byCount([...byCarrier.values()]),
   };
 }
 
@@ -158,5 +160,8 @@ export function analysisInsights(months: MonthSummary[], focus: number, money: (
     const onTime = current.deliveries.onTime / current.deliveries.delivered;
     insights.push({ tone: onTime >= 0.9 ? "good" : onTime < 0.75 ? "bad" : "info", text: `${percent(onTime)} de las entregas llegaron a tiempo${current.deliveries.late ? `; ${current.deliveries.late} llegaron o van tarde` : ""}.` });
   }
+  const zones = current.byZone.filter((zone) => zone.key && zone.delivered >= 2);
+  const slowest = zones.map((zone) => ({ zone, rate: zone.onTime / zone.delivered })).sort((a, b) => a.rate - b.rate)[0];
+  if (zones.length > 1 && slowest && slowest.rate < 0.8) insights.push({ tone: "bad", text: `${slowest.zone.name} es la zona que más se atrasa: llegó a tiempo el ${percent(slowest.rate)} de sus entregas.` });
   return insights.slice(0, 5);
 }

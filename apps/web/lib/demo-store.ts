@@ -1,6 +1,7 @@
 import { calculateCosts, type CostArea } from "./domain";
 import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, buildCustomerDirectory, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type BusinessRecords, type CustomerDirectory, type Delivery, type Purchase, type PurchaseKind, type Sale, type SalePatch, type SalesChannel } from "./business";
-import { DEMO_TODAY, demoBusinessRecords, demoDeliveries, demoHistorySales, demoState } from "./demo";
+import { DEMO_TODAY, DEMO_ZONES, demoBusinessRecords, demoDeliveries, demoHistorySales, demoState } from "./demo";
+import { ZONE_MODE_LABELS, matchZone, nextDeliveryDay, parseAreas, weekdaysFromNames, zoneCost, zoneDeliveryFields, type DeliveryZone, type ZoneMode } from "./delivery-zones";
 import { buildCustomerList, customerKey, customerMonths, customersFromHistory, customerStats, directoryFromCustomers, zoneFromAddress, type Customer, type CustomerAddress, type CustomerSale } from "./customers";
 import { monthsBack } from "./business-analytics";
 
@@ -9,7 +10,7 @@ import { monthsBack } from "./business-analytics";
  * the same engine as a real workspace. Nothing leaves the browser; a reload starts over.
  */
 
-type Store = { records: BusinessRecords; deliveries: Delivery[]; customers: Customer[]; history: Sale[] };
+type Store = { records: BusinessRecords; deliveries: Delivery[]; customers: Customer[]; history: Sale[]; zones: DeliveryZone[] };
 
 let store: Store | null = null;
 let version = 0;
@@ -30,7 +31,7 @@ function data(): Store {
     const idOf = (name: string) => customers.find((customer) => customerKey(customer.name) === customerKey(name))?.id ?? null;
     store = {
       records: { ...records, sales: records.sales.map((sale) => ({ ...sale, delivery: undefined, customerId: idOf(sale.customer) })) },
-      deliveries, customers, history: history.map((sale) => ({ ...sale, customerId: idOf(sale.customer) })),
+      deliveries, customers, history: history.map((sale) => ({ ...sale, customerId: idOf(sale.customer) })), zones: DEMO_ZONES,
     };
   }
   return store;
@@ -90,20 +91,27 @@ export const demoVersion = () => version;
 
 /** The demo's records, each sale carrying its delivery summary. */
 export function demoRecords(): BusinessRecords {
-  const { records, deliveries } = data();
-  const bySale = new Map(deliveries.map((item) => [item.saleId, { id: item.id, status: item.status, scheduledOn: item.scheduledOn, deliveredOn: item.deliveredOn }]));
+  const { records, deliveries, zones } = data();
+  const bySale = new Map(deliveries.map((item) => [item.saleId, { id: item.id, status: item.status, scheduledOn: item.scheduledOn, deliveredOn: item.deliveredOn, zoneId: item.zoneId, zoneName: zones.find((zone) => zone.id === item.zoneId)?.name ?? "", carrier: item.carrier }]));
   return { ...records, sales: records.sales.map((sale) => ({ ...sale, delivery: bySale.get(sale.id) ?? null })) };
 }
 
 /** The demo's deliveries of a month plus the open ones, closest to the demo's today first. */
 export function demoDeliveryList(month: string): Delivery[] {
-  const { records, deliveries } = data();
+  const { records, deliveries, zones } = data();
   const sales = new Map(records.sales.map((sale) => [sale.id, sale]));
   const list = deliveries.filter((item) => item.scheduledOn.startsWith(month) || ["pending", "on_the_way", "failed"].includes(item.status)).map((item) => {
     const sale = sales.get(item.saleId);
-    return sale ? { ...item, costMinor: sale.deliveryCostMinor, sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) } } : item;
+    const zoneName = zones.find((zone) => zone.id === item.zoneId)?.name ?? item.zoneName;
+    return sale ? { ...item, zoneName, costMinor: sale.deliveryCostMinor, sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) } } : item;
   });
   return byProximity(list, (item) => item.scheduledOn, DEMO_TODAY);
+}
+
+/** The demo's zones and where its customers receive, like /api/deliveries adds them. */
+export function demoZoneData(): { zones: DeliveryZone[]; places: { zone: string; address: string }[] } {
+  const { zones, customers } = data();
+  return { zones, places: customers.flatMap((customer) => customer.addresses.map((address) => ({ zone: address.zone, address: address.address }))) };
 }
 
 /** What was typed before in the demo, for its suggestions. */
@@ -116,15 +124,24 @@ export function demoCustomerDirectory(): CustomerDirectory {
 
 class DemoError extends Error {}
 
-type DeliveryFields = Partial<Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "method" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn">>;
+type DeliveryFields = Partial<Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "method" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn">> & { zoneId?: string | null };
 
-function newDelivery(sale: Sale, channel: Pick<SalesChannel, "deliveryMethod">, fields: DeliveryFields): Delivery {
+/** The zone of a delivery in the demo: the one chosen (null for none) or the one its address falls in. */
+function demoZoneFor(zones: DeliveryZone[], zoneId: string | null | undefined, address: string | undefined, zoneText?: string): DeliveryZone | null {
+  if (zoneId === null) return null;
+  if (zoneId) { const chosen = zones.find((zone) => zone.id === zoneId); if (!chosen) throw new DemoError("Zona de entrega no encontrada"); return chosen; }
+  return matchZone(zones, { zone: zoneText, address });
+}
+
+function newDelivery(sale: Sale, channel: Pick<SalesChannel, "deliveryMethod">, input: DeliveryFields, zone: DeliveryZone | null = null): Delivery {
+  const given = zone ? zoneDeliveryFields(zone) : null;
+  const fields = { ...input, method: input.method || given?.method, carrier: input.carrier || given?.carrier || undefined, scheduledOn: input.scheduledOn ?? (zone ? nextDeliveryDay(zone, sale.soldOn) : undefined) };
   const scheduledOn = fields.scheduledOn ?? sale.soldOn;
   const status = fields.status ?? initialDeliveryStatus(scheduledOn, DEMO_TODAY);
   return {
     id: `e-${Math.random().toString(36).slice(2, 10)}`, saleId: sale.id, scheduledOn, timeWindow: fields.timeWindow ?? "", status, method: fields.method ?? channel.deliveryMethod,
     carrier: fields.carrier ?? "", recipient: fields.recipient ?? sale.customer, address: fields.address ?? "", contact: fields.contact ?? "", tracking: fields.tracking ?? "", note: fields.note ?? "",
-    deliveredOn: status === "delivered" ? fields.deliveredOn ?? (scheduledOn < DEMO_TODAY ? scheduledOn : DEMO_TODAY) : null, source: "user", costMinor: sale.deliveryCostMinor,
+    deliveredOn: status === "delivered" ? fields.deliveredOn ?? (scheduledOn < DEMO_TODAY ? scheduledOn : DEMO_TODAY) : null, zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", source: "user", costMinor: sale.deliveryCostMinor,
     sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) },
   };
 }
@@ -144,10 +161,14 @@ export function demoBusinessAction<T>(body: Body): T {
       const priced = priceSale(demoState, costs, channel, input.items, input.deliveryCost);
       if (priced.problems.length) throw new DemoError(priced.problems.join(". "));
       const resolved = demoResolveCustomer(current, input.customer);
-      const sale: Sale = { id: `v-${Math.random().toString(36).slice(2, 8)}`, soldOn: input.soldOn, channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id, channelName: channel.name, customer: input.customer ?? "", customerId: resolved.id, note: input.note ?? "", documentId: null, source: "user", ...priced };
+      const draft: Sale = { id: `v-${Math.random().toString(36).slice(2, 8)}`, soldOn: input.soldOn, channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id, channelName: channel.name, customer: input.customer ?? "", customerId: resolved.id, note: input.note ?? "", documentId: null, source: "user", ...priced };
       const main = resolved.customers.find((customer) => customer.id === resolved.id)?.addresses.find((address) => address.isDefault);
       const fields: DeliveryFields = { ...input.delivery, ...(!input.delivery?.address?.trim() && main ? { address: main.address, recipient: input.delivery?.recipient || main.recipient || undefined, contact: input.delivery?.contact || main.contact || undefined } : {}) };
-      const delivery = input.delivery || needsDelivery(channel, input.deliveryCost) ? newDelivery(sale, channel, fields) : null;
+      const delivers = Boolean(input.delivery) || needsDelivery(channel, input.deliveryCost);
+      const zone = delivers ? demoZoneFor(current.zones, input.delivery?.zoneId, fields.address, !input.delivery?.address?.trim() ? main?.zone : undefined) : null;
+      const fromZone = zone && input.deliveryCost === undefined ? zoneCost(zone) : null;
+      const sale: Sale = fromZone !== null ? { ...draft, deliveryCostMinor: fromZone } : draft;
+      const delivery = delivers ? newDelivery(sale, channel, fields, zone) : null;
       const customers = demoLearnAddress(resolved.customers, resolved.id, delivery?.address, delivery?.recipient, delivery?.contact);
       commit({ ...current, customers, records: { ...current.records, sales: [sale, ...current.records.sales] }, deliveries: delivery ? [...current.deliveries, delivery] : current.deliveries });
       return { id: sale.id, duplicate: false, sale } as T;
@@ -174,19 +195,31 @@ export function demoBusinessAction<T>(body: Body): T {
         const existing = deliveries.find((item) => item.id === id);
         if (!existing) throw new DemoError("Entrega no encontrada");
         saleId = existing.saleId;
-        const fields: DeliveryFields = Object.fromEntries(Object.entries(input).filter(([key, value]) => value !== undefined && !["id", "saleId", "cost"].includes(key)));
+        const fields: DeliveryFields = Object.fromEntries(Object.entries(input).filter(([key, value]) => value !== undefined && !["id", "saleId", "cost", "zoneId"].includes(key)));
         if (fields.status === "delivered" && existing.status !== "delivered" && fields.deliveredOn === undefined) fields.deliveredOn = DEMO_TODAY;
         if (fields.status && fields.status !== "delivered" && fields.deliveredOn === undefined) fields.deliveredOn = null;
-        deliveries = deliveries.map((item) => item.id === id ? { ...item, ...fields } : item);
+        // A zone chosen by hand, or an address that falls in another zone, moves it there with the zone's cost.
+        const zone = input.zoneId !== undefined ? demoZoneFor(current.zones, input.zoneId, undefined) : input.address?.trim() ? demoZoneFor(current.zones, undefined, input.address) : undefined;
+        const moved = zone !== undefined && (zone?.id ?? null) !== existing.zoneId;
+        const given = moved && zone ? zoneDeliveryFields(zone) : null;
+        deliveries = deliveries.map((item) => item.id === id ? { ...item, ...fields, ...(moved ? { zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", ...(given ? { method: input.method ?? given.method, carrier: input.carrier ?? given.carrier } : {}) } : {}) } : item);
+        const cost = moved && zone && input.cost === undefined ? zoneCost(zone) : null;
+        if (cost !== null) sales = sales.map((item) => item.id === saleId ? { ...item, deliveryCostMinor: cost } : item);
         if (input.status) done.push(`Entrega: ${DELIVERY_STATUS_LABELS[input.status]}`);
+        else if (moved) done.push(zone ? `Zona: ${zone.name}${cost !== null ? " (costo de la zona aplicado)" : ""}` : "Entrega sin zona");
         else done.push("Entrega actualizada");
       } else {
         const sale = sales.find((item) => item.id === saleId);
         if (!sale) throw new DemoError("Venta no encontrada");
         if (deliveries.some((item) => item.saleId === sale.id)) throw new DemoError("Esa venta ya tiene una entrega: cámbiala en lugar de crear otra");
-        const delivery = newDelivery(sale, channelOf(sale.channelId) ?? DIRECT_CHANNEL, input);
+        const owner = current.customers.find((customer) => customer.id === sale.customerId);
+        const main = owner?.addresses.find((address) => address.isDefault);
+        const zone = demoZoneFor(current.zones, input.zoneId, input.address || main?.address, input.address ? undefined : main?.zone);
+        const delivery = newDelivery(sale, channelOf(sale.channelId) ?? DIRECT_CHANNEL, { ...input, address: input.address || main?.address }, zone);
         id = delivery.id;
         deliveries = [...deliveries, delivery];
+        const cost = zone && input.cost === undefined ? zoneCost(zone) : null;
+        if (cost !== null) sales = sales.map((item) => item.id === sale.id ? { ...item, deliveryCostMinor: cost } : item);
         done.push(`Entrega programada para el ${delivery.scheduledOn}`);
       }
       if (input.cost !== undefined) { sales = sales.map((item) => item.id === saleId ? { ...item, deliveryCostMinor: Math.round(input.cost!) } : item); done.push("Costo de entrega actualizado"); }
@@ -255,6 +288,41 @@ export function demoBusinessAction<T>(body: Body): T {
       const unlink = (sale: Sale) => sale.customerId === id ? { ...sale, customerId: null } : sale;
       commit({ ...current, customers: current.customers.filter((customer) => customer.id !== id), records: { ...current.records, sales: current.records.sales.map(unlink) }, history: current.history.map(unlink) });
       return { ok: true } as T;
+    }
+    case "save-zone": {
+      const input = body.zone as { id?: string; name: string; mode?: ZoneMode; carrier?: string; areas?: string[] | string; costPerOrder?: number; weekdays?: (number | string)[]; leadDays?: number; isFallback?: boolean; notes?: string };
+      const name = input.name?.trim() ?? "";
+      if (name.length < 2) throw new DemoError("Escribe el nombre de la zona");
+      const existing = input.id ? current.zones.find((zone) => zone.id === input.id) : undefined;
+      if (input.id && !existing) throw new DemoError("Zona de entrega no encontrada");
+      if (current.zones.some((zone) => zone.id !== input.id && customerKey(zone.name) === customerKey(name))) throw new DemoError(`Ya hay una zona llamada ${name}`);
+      const mode = input.mode ?? "own";
+      const zone: DeliveryZone = {
+        id: existing?.id ?? `z-${Math.random().toString(36).slice(2, 8)}`, name, mode, carrier: mode === "pickup" ? "" : input.carrier ?? "",
+        areas: typeof input.areas === "string" ? parseAreas(input.areas) : parseAreas((input.areas ?? []).join(",")), costPerOrderMinor: mode === "pickup" ? 0 : Math.round(input.costPerOrder ?? 0),
+        weekdays: weekdaysFromNames(input.weekdays ?? []), leadDays: input.leadDays ?? 0, isFallback: mode !== "pickup" && Boolean(input.isFallback), notes: input.notes ?? "",
+      };
+      const zones = [...current.zones.filter((item) => item.id !== zone.id).map((item) => zone.isFallback ? { ...item, isFallback: false } : item), zone];
+      const given = zoneDeliveryFields(zone);
+      let assigned = 0;
+      const fallback = zone.isFallback ? undefined : current.zones.find((item) => item.isFallback && item.id !== zone.id);
+      const deliveries = current.deliveries.map((item) => {
+        const movable = !item.zoneId || item.zoneId === fallback?.id;
+        if (!movable || !["pending", "on_the_way", "failed"].includes(item.status) || matchZone(zones, { address: item.address })?.id !== zone.id) return item;
+        assigned += 1;
+        return item.zoneId ? { ...item, zoneId: zone.id, zoneName: zone.name, ...given } : { ...item, zoneId: zone.id, zoneName: zone.name, method: item.method || given.method, carrier: item.carrier || given.carrier };
+      });
+      commit({ ...current, zones, deliveries });
+      const done = [existing ? `Zona actualizada: ${zone.name}` : `Zona creada: ${zone.name} (${ZONE_MODE_LABELS[zone.mode].toLowerCase()})`];
+      if (assigned) done.push(`${assigned} entrega${assigned === 1 ? " abierta quedó" : "s abiertas quedaron"} en ${zone.name}`);
+      return { id: zone.id, created: !existing, assigned, done } as T;
+    }
+    case "archive-zone": {
+      const { id } = body as unknown as { id: string };
+      const zone = current.zones.find((item) => item.id === id);
+      if (!zone) throw new DemoError("Zona de entrega no encontrada");
+      commit({ ...current, zones: current.zones.filter((item) => item.id !== id), deliveries: current.deliveries.map((item) => item.zoneId === id && ["pending", "on_the_way", "failed"].includes(item.status) ? { ...item, zoneId: null, zoneName: "" } : item) });
+      return { done: [`Zona quitada: ${zone.name}`] } as T;
     }
     case "archive": {
       const { kind, id } = body as unknown as { kind: "channel" | "purchase" | "sale" | "delivery"; id: string };
