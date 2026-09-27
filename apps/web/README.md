@@ -51,7 +51,14 @@ El motor está en `lib/business.ts` (puro) y la persistencia en `lib/server/busi
 - Líneas de ventas contra gastos fijos y de entregas a tiempo.
 - Barras apiladas de compras y de entregas por estado.
 
-Todo responde al pasar el mouse, un clic en cualquier mes enfoca el análisis entero, las leyendas ocultan series y cada gráfico tiene "Ver tabla". El Resumen agrega lo que se destaca del mes en palabras (`analysisInsights`) y el punto de equilibrio; la pestaña Costos es el análisis de costos por producto de siempre.
+Todo responde al pasar el mouse, un clic en cualquier mes enfoca el análisis entero, las leyendas ocultan series y cada gráfico tiene "Ver tabla". El Resumen agrega lo que se destaca del mes en palabras (`analysisInsights`) y el punto de equilibrio; la pestaña Costos (`components/cost-analysis-view.tsx`) usa la misma familia de gráficos:
+- Tarjetas por producto con sparkline y barra de qué está hecho el costo; tocar una elige el producto.
+- Líneas de costo por unidad.
+- Un río de cómo se arma el costo del producto (por tipo, categoría o concepto).
+- Un treemap de dónde se va cada peso en el período elegido.
+- Barras divergentes de qué explica el cambio.
+- Barras del costo total de producción.
+- "Costos en una fecha" con la proporción de cada producto.
 
 ## Cozte: nivel, tablero y calidad
 

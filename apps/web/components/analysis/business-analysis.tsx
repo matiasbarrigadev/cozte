@@ -14,7 +14,7 @@ import { CostAnalysisView } from "@/components/cost-analysis-view";
 import { useDemoVersion, useMoney } from "@/components/business/business-ui";
 import { usePersistentState } from "@/components/business/data-table";
 import { cn } from "@/lib/utils";
-import { ChartCard, DATA_COLORS, FlowChart, Legend, LineChart, MonthBars, RadarChart, Sparkline, StackedBars, Treemap, deltaText, longMonth, shortMonth, type Format } from "./charts";
+import { ChartCard, DATA_COLORS, FlowChart, Legend, LineChart, MonthBars, RadarChart, Sparkline, StackedBars, Treemap, deltaText, longMonth, shortMonth, useCompactMoney, type Format } from "./charts";
 
 /**
  * The whole business month by month: sales, what each sale cost, the structure, the result and the deliveries, with
@@ -50,14 +50,6 @@ function useAnalysis(state: DomainState, demo: boolean, count: number): { data: 
   return { data: loaded.data, error: loaded.key === key || !loaded.data ? loaded.error : null };
 }
 
-/** "$1,2 M" style amounts for pills and axes. */
-function useCompact(currency: string): Format {
-  return React.useMemo(() => {
-    const symbol = new Intl.NumberFormat("es-CL", { style: "currency", currency, currencyDisplay: "narrowSymbol" }).formatToParts(0).find((part) => part.type === "currency")?.value ?? "$";
-    const number = new Intl.NumberFormat("es-AR", { notation: "compact", maximumFractionDigits: 1 });
-    return (value: number) => `${value < 0 ? "−" : ""}${symbol}${number.format(Math.abs(value))}`;
-  }, [currency]);
-}
 
 export function BusinessAnalysisView({ state, demo }: { state: DomainState; demo: boolean }) {
   const [range, setRange] = usePersistentState<string>("analisis:rango", "6", RANGES);
@@ -65,7 +57,7 @@ export function BusinessAnalysisView({ state, demo }: { state: DomainState; demo
   const count = Number(range);
   const { data, error } = useAnalysis(state, demo, count);
   const money = useMoney(state.organization.currency);
-  const compact = useCompact(state.organization.currency);
+  const compact = useCompactMoney(state.organization.currency);
   const months = data?.months ?? [];
   const [chosen, setChosen] = React.useState<string | null>(null);
   const focus = Math.max(0, chosen ? months.findIndex((item) => item.month === chosen) : months.length - 1);

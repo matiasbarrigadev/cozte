@@ -15,6 +15,8 @@ const LIGHT_SLOTS = new Set(["var(--data-3)", "var(--data-5)"]);
 export const textOn = (color: string) => LIGHT_SLOTS.has(color) ? "var(--brand-ink)" : "#fff";
 
 export type Format = (value: number) => string;
+/** How a period is named: short under the axis, long in tooltips. Months by default. */
+export type PeriodNames = { labelOf?: (period: string) => string; titleOf?: (period: string) => string };
 
 const MONTHS_SHORT = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 const MONTHS_LONG = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
@@ -156,10 +158,10 @@ export type FlowLayer = { key: string; label: string; color: string; values: num
  * Money flowing month by month: each layer is a part of the total, centered like a river, with the month's total in
  * a pill above and a second figure below. Hovering a month explains it; clicking it focuses the analysis there.
  */
-export function FlowChart({ months, layers, top, bottom, focus, onFocus, format, height = 280, label }: {
+export function FlowChart({ months, layers, top, bottom, focus, onFocus, format, height = 280, label, labelOf = shortMonth, titleOf = longMonth }: {
   months: string[]; layers: FlowLayer[]; top: (index: number) => string; bottom?: (index: number) => { text: string; tone?: "negative" } | null
   focus: number; onFocus: (index: number) => void; format: Format; height?: number; label: string
-}) {
+} & PeriodNames) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = React.useState<number | null>(null);
   const id = React.useId().replace(/:/g, "");
@@ -214,18 +216,18 @@ export function FlowChart({ months, layers, top, bottom, focus, onFocus, format,
           <line x1={x} x2={x} y1={14} y2={height - 44} stroke={on ? "var(--foreground)" : "var(--card)"} strokeOpacity={on ? 0.55 : 0.9} strokeWidth={on ? 1.5 : 1.5} />
           {roomy || on ? pill(14, top(index), on) : null}
           {below && (roomy || on) ? pill(height - 44, below.text, false, below.tone) : null}
-          <text x={x} y={height - 12} textAnchor="middle" fontSize={11} fill={on ? "var(--foreground)" : "var(--muted-foreground)"} fontWeight={on ? 600 : 400}>{shortMonth(months[index])}</text>
+          <text x={x} y={height - 12} textAnchor="middle" fontSize={11} fill={on ? "var(--foreground)" : "var(--muted-foreground)"} fontWeight={on ? 600 : 400}>{labelOf(months[index])}</text>
           <rect x={x - slot / 2} y={0} width={slot} height={height} fill="transparent" style={{ cursor: "pointer" }}
             onPointerEnter={() => setHover(index)} onPointerLeave={() => setHover(null)} onClick={() => onFocus(index)}>
-            <title>{longMonth(months[index])}</title>
+            <title>{titleOf(months[index])}</title>
           </rect>
         </g>;
       })}
     </svg> : null}
     {hover !== null && width ? <Tooltip x={xs[hover]} y={padTop + 8} width={width}>
-      <p className="mb-1 font-semibold capitalize">{longMonth(months[hover])}</p>
+      <p className="mb-1 font-semibold capitalize">{titleOf(months[hover])}</p>
       {layers.map((layer) => <TooltipRow key={layer.key} color={layer.color} label={layer.label} value={`${format(layer.values[hover] ?? 0)}${totals[hover] ? ` · ${Math.round((layer.values[hover] ?? 0) / totals[hover] * 100)} %` : ""}`} />)}
-      <p className="mt-1 text-[10px] text-muted-foreground">Clic para mirar este mes</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">Clic para mirar este período</p>
     </Tooltip> : null}
   </div>;
 }
@@ -233,9 +235,9 @@ export function FlowChart({ months, layers, top, bottom, focus, onFocus, format,
 /* ---------- Monthly bars ---------- */
 
 /** One bar per month; the month being looked at is highlighted. Months without data show as a hatched outline. */
-export function MonthBars({ months, values, focus, onFocus, format, compact, color = "var(--data-1)", height = 220, label }: {
+export function MonthBars({ months, values, focus, onFocus, format, compact, color = "var(--data-1)", height = 220, label, labelOf = shortMonth, titleOf = longMonth }: {
   months: string[]; values: number[]; focus: number; onFocus: (index: number) => void; format: Format; compact: Format; color?: string; height?: number; label: string
-}) {
+} & PeriodNames) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = React.useState<number | null>(null);
   const id = React.useId().replace(/:/g, "");
@@ -259,15 +261,15 @@ export function MonthBars({ months, values, focus, onFocus, format, compact, col
           <path d={`M${x},${padTop + plot} V${barTop + 4} Q${x},${barTop} ${x + 4},${barTop} H${x + barWidth - 4} Q${x + barWidth},${barTop} ${x + barWidth},${barTop + 4} V${padTop + plot} Z`}
             fill={value > 0 ? (on ? color : "var(--data-muted)") : `url(#hatch-${id})`} opacity={hover !== null && hover !== index && !on ? 0.75 : 1} className="transition-all duration-300" />
           {on && value > 0 ? <text x={x + barWidth / 2} y={barTop - 7} textAnchor="middle" fontSize={11} fontWeight={600} fill="var(--foreground)" className="tabular-nums">{compact(value)}</text> : null}
-          <text x={x + barWidth / 2} y={height - 8} textAnchor="middle" fontSize={11} fill={on ? "var(--foreground)" : "var(--muted-foreground)"} fontWeight={on ? 600 : 400}>{shortMonth(month)}</text>
+          <text x={x + barWidth / 2} y={height - 8} textAnchor="middle" fontSize={11} fill={on ? "var(--foreground)" : "var(--muted-foreground)"} fontWeight={on ? 600 : 400}>{labelOf(month)}</text>
           <rect x={padLeft + slot * index} y={0} width={slot} height={height} fill="transparent" style={{ cursor: "pointer" }} onPointerEnter={() => setHover(index)} onPointerLeave={() => setHover(null)} onClick={() => onFocus(index)} />
         </g>;
       })}
     </svg> : null}
     {hover !== null && width ? <Tooltip x={padLeft + slot * hover + slot / 2} y={Math.max(40, y(values[hover] ?? 0))} width={width}>
-      <p className="font-semibold capitalize">{longMonth(months[hover])}</p>
+      <p className="font-semibold capitalize">{titleOf(months[hover])}</p>
       <p className="tabular-nums">{values[hover] ? format(values[hover]) : "Sin registros"}</p>
-      {hover > 0 && values[hover - 1] ? <p className="text-muted-foreground">{deltaText(values[hover], values[hover - 1])} frente a {shortMonth(months[hover - 1])}</p> : null}
+      {hover > 0 && values[hover - 1] ? <p className="text-muted-foreground">{deltaText(values[hover], values[hover - 1])} frente a {labelOf(months[hover - 1])}</p> : null}
     </Tooltip> : null}
   </div>;
 }
@@ -284,8 +286,12 @@ export function Sparkline({ values, focus, color = "var(--data-1)", height = 44,
   const [ref, width] = useWidth<HTMLDivElement>();
   const id = React.useId().replace(/:/g, "");
   const known = values.map((value, index) => [index, value] as const).filter((item): item is readonly [number, number] => item[1] !== null);
-  const min = Math.min(0, ...known.map((item) => item[1]));
-  const max = Math.max(1, ...known.map((item) => item[1]));
+  // Its own range, so a small change is still visible; a flat series sits in the middle.
+  const low = Math.min(...known.map((item) => item[1]));
+  const high = Math.max(...known.map((item) => item[1]));
+  const pad = (high - low) * 0.15 || Math.abs(high) * 0.1 || 1;
+  const min = low - pad;
+  const max = high + pad;
   const x = (index: number) => values.length < 2 ? width / 2 : 4 + (index / (values.length - 1)) * (width - 8);
   const y = (value: number) => 6 + (1 - (value - min) / (max - min || 1)) * (height - 12);
   const points = known.map(([index, value]) => [x(index), y(value)] as [number, number]);
@@ -431,16 +437,17 @@ export function RadarChart({ axes, series, format, height = 300, label }: { axes
 export type LineSeries = { key: string; label: string; color: string; values: (number | null)[]; dashed?: boolean; area?: boolean };
 
 /** Several series of the same unit over the months, with a guide under the pointer. */
-export function LineChart({ months, series, focus, onFocus, format, compact, height = 240, label, min = 0, max }: {
+export function LineChart({ months, series, focus, onFocus, format, compact, height = 240, label, min = 0, max, labelOf = shortMonth, titleOf = longMonth }: {
   months: string[]; series: LineSeries[]; focus: number; onFocus: (index: number) => void; format: Format; compact: Format; height?: number; label: string; min?: number; max?: number
-}) {
+} & PeriodNames) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = React.useState<number | null>(null);
   const id = React.useId().replace(/:/g, "");
   const padLeft = 48, padRight = 14, padTop = 16, padBottom = 26;
   const plot = height - padTop - padBottom;
   const values = series.flatMap((item) => item.values.filter((value): value is number => value !== null));
-  const ticks = max ? niceTicks(max, 4).filter((tick) => tick <= max) : niceTicks(Math.max(...values, 0) * 1.1);
+  const ticks = (max ? niceTicks(max, 4).filter((tick) => tick <= max) : niceTicks(Math.max(...values, 0) * 1.1)).filter((tick) => tick >= min);
+  if (min > 0 && ticks[0] !== min) ticks.unshift(min);
   const top = max ?? (ticks[ticks.length - 1] || 1);
   const x = (index: number) => months.length < 2 ? (padLeft + width - padRight) / 2 : padLeft + (index / (months.length - 1)) * (width - padLeft - padRight);
   const y = (value: number) => padTop + plot - ((value - min) / (top - min || 1)) * plot;
@@ -451,7 +458,7 @@ export function LineChart({ months, series, focus, onFocus, format, compact, hei
       onPointerLeave={() => setHover(null)} onClick={() => { if (hover !== null) onFocus(hover); }} style={{ cursor: "pointer" }}>
       <defs>{series.filter((item) => item.area).map((item) => <linearGradient key={item.key} id={`line-${id}-${item.key}`} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor={item.color} stopOpacity={0.22} /><stop offset="100%" stopColor={item.color} stopOpacity={0} /></linearGradient>)}</defs>
       {ticks.map((tick) => <g key={tick}><line x1={padLeft} x2={width - padRight} y1={y(tick)} y2={y(tick)} stroke="var(--data-grid)" strokeDasharray={tick ? "3 4" : undefined} /><text x={padLeft - 8} y={y(tick) + 3.5} textAnchor="end" fontSize={10} fill="var(--muted-foreground)" className="tabular-nums">{compact(tick)}</text></g>)}
-      {months.map((month, index) => <text key={month} x={x(index)} y={height - 8} textAnchor="middle" fontSize={11} fill={index === focus ? "var(--foreground)" : "var(--muted-foreground)"} fontWeight={index === focus ? 600 : 400}>{shortMonth(month)}</text>)}
+      {months.map((month, index) => <text key={month} x={x(index)} y={height - 8} textAnchor="middle" fontSize={11} fill={index === focus ? "var(--foreground)" : "var(--muted-foreground)"} fontWeight={index === focus ? 600 : 400}>{labelOf(month)}</text>)}
       <line x1={x(active)} x2={x(active)} y1={padTop} y2={padTop + plot} stroke="var(--foreground)" strokeOpacity={0.25} />
       {series.map((item) => {
         const points = item.values.map((value, index) => value === null ? null : [x(index), y(value)] as [number, number]).filter((value): value is [number, number] => value !== null);
@@ -464,7 +471,7 @@ export function LineChart({ months, series, focus, onFocus, format, compact, hei
       })}
     </svg> : null}
     {hover !== null && width ? <Tooltip x={x(hover)} y={padTop + 20} width={width}>
-      <p className="mb-1 font-semibold capitalize">{longMonth(months[hover])}</p>
+      <p className="mb-1 font-semibold capitalize">{titleOf(months[hover])}</p>
       {series.map((item) => <TooltipRow key={item.key} color={item.color} dashed={item.dashed} label={item.label} value={item.values[hover] === null ? "—" : format(item.values[hover]!)} />)}
     </Tooltip> : null}
   </div>;
@@ -515,4 +522,64 @@ export function StackedBars({ months, segments, focus, onFocus, format, height =
       <TooltipRow label="Total" value={format(totals[hover])} strong />
     </Tooltip> : null}
   </div>;
+}
+
+/* ---------- Proportion bar ---------- */
+
+export type ProportionPart = { key: string; label: string; value: number; color: string };
+
+/** One bar split in its parts (what a cost is made of), with the share of each on hover. */
+export function ProportionBar({ parts, format, height = 12, label }: { parts: ProportionPart[]; format: Format; height?: number; label: string }) {
+  const [hover, setHover] = React.useState<string | null>(null);
+  const total = parts.reduce((sum, part) => sum + Math.max(0, part.value), 0);
+  if (!total) return null;
+  const hovered = parts.find((part) => part.key === hover);
+  return <div className="relative">
+    <div className="flex w-full gap-0.5 overflow-hidden rounded-full" style={{ height }} role="img" aria-label={`${label}: ${parts.map((part) => `${part.label} ${Math.round((part.value / total) * 100)} %`).join(", ")}`}>
+      {parts.filter((part) => part.value > 0).map((part) => <span key={part.key} className="h-full transition-opacity first:rounded-l-full last:rounded-r-full" style={{ width: `${(part.value / total) * 100}%`, background: part.color, opacity: hover && hover !== part.key ? 0.5 : 1 }}
+        onPointerEnter={() => setHover(part.key)} onPointerLeave={() => setHover(null)} />)}
+    </div>
+    {hovered ? <div className="pointer-events-none absolute top-full left-0 z-20 mt-1.5 w-max max-w-64 rounded-lg border bg-popover px-2.5 py-1.5 text-xs shadow-md" role="status">
+      <TooltipRow color={hovered.color} label={hovered.label} value={`${format(hovered.value)} · ${Math.round((hovered.value / total) * 100)} %`} />
+    </div> : null}
+  </div>;
+}
+
+/* ---------- Diverging bars ---------- */
+
+export type DivergingItem = { key: string; label: string; value: number; detail?: string };
+
+/**
+ * What moved a number between two moments: each part to the right if it went up, to the left if it went down,
+ * from the largest change to the smallest. Up and down carry an arrow and a sign, not only a color.
+ */
+export function DivergingBars({ items, format, up = "var(--data-6)", down = "var(--data-1)", label }: { items: DivergingItem[]; format: Format; up?: string; down?: string; label: string }) {
+  const [hover, setHover] = React.useState<string | null>(null);
+  const max = Math.max(1, ...items.map((item) => Math.abs(item.value)));
+  return <ul className="flex flex-col gap-1.5" aria-label={label}>
+    {items.map((item) => {
+      const width = `${Math.max(3, (Math.abs(item.value) / max) * 100)}%`;
+      const rises = item.value > 0;
+      return <li key={item.key} className={cn("grid grid-cols-[minmax(0,8.5rem)_1fr_1fr] items-center gap-2 rounded-lg px-1 py-1 text-sm transition-colors", hover === item.key && "bg-muted/60")}
+        onPointerEnter={() => setHover(item.key)} onPointerLeave={() => setHover(null)} title={item.detail}>
+        <span className="truncate text-muted-foreground" title={item.label}>{item.label}</span>
+        <span className="flex h-6 items-center justify-end border-r border-foreground/20 pr-0.5">
+          {!rises ? <span className="flex h-full items-center justify-start rounded-l-md pl-1.5 text-[11px] font-semibold text-white tabular-nums transition-all duration-500" style={{ width, background: down }}>↓</span> : null}
+        </span>
+        <span className="flex h-6 items-center gap-1.5 pl-0.5">
+          {rises ? <span className="flex h-full items-center justify-end rounded-r-md pr-1.5 text-[11px] font-semibold text-white tabular-nums transition-all duration-500" style={{ width, background: up }}>↑</span> : null}
+          <span className="shrink-0 text-xs font-medium tabular-nums">{rises ? "+" : "−"}{format(Math.abs(item.value))}</span>
+        </span>
+      </li>;
+    })}
+  </ul>;
+}
+
+/** "$1,2 M" style amounts for pills and axes. */
+export function useCompactMoney(currency: string): Format {
+  return React.useMemo(() => {
+    const symbol = new Intl.NumberFormat("es-CL", { style: "currency", currency, currencyDisplay: "narrowSymbol" }).formatToParts(0).find((part) => part.type === "currency")?.value ?? "$";
+    const number = new Intl.NumberFormat("es-AR", { notation: "compact", maximumFractionDigits: 1 });
+    return (value: number) => `${value < 0 ? "−" : ""}${symbol}${number.format(Math.abs(value))}`;
+  }, [currency]);
 }
