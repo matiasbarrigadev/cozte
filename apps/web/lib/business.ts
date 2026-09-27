@@ -70,6 +70,8 @@ export type Sale = {
   items: SaleItem[];
   /** The sale's delivery, when it has to reach the customer. */
   delivery?: SaleDelivery | null;
+  /** The customer's record, when the sale has one. */
+  customerId?: string | null;
 };
 
 export type DeliveryStatus = "pending" | "on_the_way" | "delivered" | "failed" | "cancelled";

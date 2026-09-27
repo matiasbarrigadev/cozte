@@ -386,11 +386,13 @@ export function ChannelDialog({ channel, demo, onClose, onSaved }: { channel: Sa
 
 type Line = { key: number; productId: string; quantity: string; price: string };
 
-function SaleDialog({ directory, state, channels, demo, month, onClose, onSaved }: { directory: CustomerDirectory; state: DomainState; channels: SalesChannel[]; demo: boolean; month: string; onClose: () => void; onSaved: () => void }) {
-  const [customer, setCustomer] = React.useState("");
-  const [address, setAddress] = React.useState("");
-  const [recipient, setRecipient] = React.useState("");
-  const [contact, setContact] = React.useState("");
+/** `initialCustomer` opens it for a known customer (from their record), with their default address. */
+export function SaleDialog({ directory, state, channels, demo, month, onClose, onSaved, initialCustomer = "" }: { directory: CustomerDirectory; state: DomainState; channels: SalesChannel[]; demo: boolean; month: string; onClose: () => void; onSaved: () => void; initialCustomer?: string }) {
+  const initial = initialCustomer ? directory.customers.find((item) => item.name === initialCustomer) : undefined;
+  const [customer, setCustomer] = React.useState(initialCustomer);
+  const [address, setAddress] = React.useState(initial?.address ?? "");
+  const [recipient, setRecipient] = React.useState(initial?.recipient ?? "");
+  const [contact, setContact] = React.useState(initial?.contact ?? "");
   const pickCustomer = (name: string) => {
     const known = directory.customers.find((item) => item.name === name);
     if (!known) return;

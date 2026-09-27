@@ -1,11 +1,12 @@
 /** Sections of the workspace and their URLs under /app. */
-export type AppView = "dashboard" | "producto" | "planilla" | "ventas" | "entregas" | "gastos" | "compras" | "resultado" | "analisis" | "asistente" | "historial" | "presentaciones" | "presentacion";
+export type AppView = "dashboard" | "producto" | "planilla" | "ventas" | "entregas" | "clientes" | "gastos" | "compras" | "resultado" | "analisis" | "asistente" | "historial" | "presentaciones" | "presentacion";
 
 const segments: Record<Exclude<AppView, "producto" | "presentacion">, string> = {
   dashboard: "",
   planilla: "costos",
   ventas: "ventas",
   entregas: "entregas",
+  clientes: "clientes",
   gastos: "gastos",
   compras: "compras",
   resultado: "resultado",

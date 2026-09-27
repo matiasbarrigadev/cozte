@@ -27,6 +27,8 @@ vi.mock("./assistant-trace", async (original) => ({ ...(await original<typeof im
 vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOString(), rates: { USD: 1 }, source: "FXRatesAPI" }), quotesFor: () => ({}) }));
 
 import { cozteToolSucceeded, cozteToolWrote, questionsShown } from "@/lib/cozte-tool-catalog";
+import { loadCustomers } from "./customers";
+import { recordSale } from "./business";
 import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
 import { correctionMessage, finalAnswerStep, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
@@ -431,6 +433,36 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
     console.log(`\n[${model}] location ${JSON.stringify(checks)}\n${first.answer}\n---\n${second?.answer ?? ""}`);
     results.push({ model, scenario: "location", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "Rosario", answer: first.answer }, { user: "¿Qué necesitás?", answer: second?.answer ?? "" }] });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("answers about a customer from their record and saves a new one with an address, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    const tools = createCozteTools(principal, crypto.randomUUID());
+    const run = async (name: keyof typeof tools, input: Record<string, unknown>) => await (tools[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<Record<string, unknown>>)(input, { toolCallId: crypto.randomUUID() });
+    await run("readCosts", {});
+    const product = await run("saveProduct", { name: "Tofu 300g", goodUnitsPerLot: 100, lotsPerMonth: 20, hoursPerLot: 5, salePrice: 2000 });
+    await run("saveMaterial", { name: "Soja", purchaseUnit: "kg", price: 1000 });
+    await run("saveRecipe", { product: "Tofu 300g", items: [{ material: "Soja", perLot: 30 }] });
+    const productId = (product.ids as Record<string, string>).product;
+    for (const [date, quantity] of [["2026-08-05", 20], ["2026-09-02", 30]] as const) await recordSale(principal, { soldOn: date, customer: "Almacén Don Pepe", items: [{ productId, quantity }], delivery: { address: "Belgrano 88, Rosario", recipient: "Pepe" } }, { source: "user", idempotencyKey: crypto.randomUUID() });
+    const history: ModelMessage[] = [];
+    const first = await productionTurn({ model, principal, history, text: "¿Qué dirección tiene Almacén Don Pepe y cuánto me compró en total?" });
+    const second = await productionTurn({ model, principal, history, text: "Agregá como cliente a Librería Rayuela, teléfono 351 444 0000, entregamos en Caseros 540, Córdoba." });
+    const { customers } = await loadCustomers(principal);
+    const rayuela = customers.find((row) => /rayuela/i.test(row.name));
+    const checks = {
+      readTheRecord: first.records.some((item) => item.name === "readCustomers" && item.ok),
+      toldTheAddress: /belgrano 88/i.test(first.answer),
+      toldTheTotal: /100\.000|100000/.test(first.answer.replace(/\s/g, "")),
+      savedTheCustomer: Boolean(rayuela) && rayuela!.addresses.some((address) => /caseros 540/i.test(address.address)) && /351/.test(rayuela!.phone),
+      confirmedIt: second.verified && /rayuela/i.test(second.answer),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] customers ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}`);
+    results.push({ model, scenario: "customers", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "Don Pepe", answer: first.answer }, { user: "Rayuela", answer: second.answer }] });
     expect(failures).toEqual([]);
   });
 

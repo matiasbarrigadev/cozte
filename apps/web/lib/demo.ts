@@ -140,6 +140,14 @@ export function demoHistorySales(): Sale[] {
     { month: "2026-07", strength: 1.05 }, { month: "2026-08", strength: 0.85 },
   ];
   const sales: Sale[] = [];
+  const people = ["Lucía Ferreyra", "Martín Ruiz", "Sofía Paz", "Carla Gómez", "Diego Luna", "Valentina Ríos"];
+  const shops = ["Librería El Ateneo", "Librería Rayuela", "Papelería Norte"];
+  const customerFor = (channel: SalesChannel, month: string) => {
+    if (channel.id === "feria") return "";
+    // Carla bought only in April and Papelería Norte stopped after June: they show as inactive or at risk.
+    const pool = channel.id === "librerias" ? shops.filter((name) => name !== "Papelería Norte" || month <= "2026-06") : people.filter((name) => name !== "Carla Gómez" || month === "2026-04");
+    return pool[Math.floor(random() * pool.length)];
+  };
   for (const { month, strength } of months) {
     const plan: { channel: SalesChannel; items: { productId: string; base: number }[]; count: number }[] = [
       { channel: tienda, items: [{ productId: "bolsillo", base: 4 }, { productId: "blanda", base: 2 }], count: Math.round(5 * strength + random() * 2) },
@@ -159,7 +167,7 @@ export function demoHistorySales(): Sale[] {
         const scheduled = new Date(Date.parse(`${soldOn}T12:00:00Z`) + (1 + Math.floor(random() * 3)) * 86_400_000).toISOString().slice(0, 10);
         const late = random() < 0.18;
         sales.push({
-          id, soldOn, channelId: channel.id, channelName: channel.name, customer: "", note: "", documentId: null, source: "user",
+          id, soldOn, channelId: channel.id, channelName: channel.name, customer: customerFor(channel, month), note: "", documentId: null, source: "user",
           items: priced.items, totalMinor: priced.totalMinor, sellingCostMinor: priced.sellingCostMinor, deliveryCostMinor: priced.deliveryCostMinor, variableCostMinor: priced.variableCostMinor, productionCostMinor: priced.productionCostMinor,
           delivery: delivers ? { id: `e-${id}`, status: random() < 0.06 ? "cancelled" : "delivered", scheduledOn: scheduled, deliveredOn: late ? new Date(Date.parse(`${scheduled}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10) : scheduled } : null,
         });

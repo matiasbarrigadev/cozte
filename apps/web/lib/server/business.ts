@@ -6,6 +6,8 @@ import { calculateCosts, convertToOrganizationCurrency, type CostArea, type Doma
 import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, buildCustomerDirectory, businessToday, describeHistoryEvent, type HistoryEvent, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement, type SqlValue } from "./db";
+import { customerAddressFor, loadCustomers, resolveCustomer } from "./customers";
+import { directoryFromCustomers } from "@/lib/customers";
 import { commitMutation, type Mutation } from "./mutations";
 import { loadState } from "./state";
 
@@ -145,7 +147,7 @@ function monthBounds(value: string): [string, string] {
 
 type ChannelRow = { id: string; name: string; delivery_method: string; commission_bps: number; fee_per_order_minor: number; delivery_cost_per_order_minor: number; units_per_order_milli: number; price_adjustment_bps: number };
 type PurchaseRow = { id: string; purchased_on: string; description: string; supplier: string; amount_minor: number; kind: PurchaseKind; area: CostArea; material_name: string | null; quantity_milli: number | null; expense_id: string | null; expense_name: string | null; useful_life_months: number | null; include_in_unit_cost: number; document_id: string | null; source: "user" | "cozte" };
-type SaleRow = { id: string; sold_on: string; channel_id: string | null; channel_name: string; customer: string; note: string; total_minor: number; selling_cost_minor: number; delivery_cost_minor: number; variable_cost_minor: number | null; production_cost_minor: number | null; document_id: string | null; source: "user" | "cozte" };
+type SaleRow = { id: string; sold_on: string; channel_id: string | null; channel_name: string; customer: string; customer_id?: string | null; note: string; total_minor: number; selling_cost_minor: number; delivery_cost_minor: number; variable_cost_minor: number | null; production_cost_minor: number | null; document_id: string | null; source: "user" | "cozte" };
 type SaleDeliveryRow = { sale_id: string; id: string; status: DeliveryStatus; scheduled_on: string; delivered_on: string | null };
 type DeliveryRow = { id: string; sale_id: string; scheduled_on: string; time_window: string; status: DeliveryStatus; method: string; carrier: string; recipient: string; address: string; contact: string; tracking: string; note: string; delivered_on: string | null; source: "user" | "cozte"; sold_on: string; channel_id: string | null; channel_name: string; customer: string; total_minor: number; delivery_cost_minor: number };
 type SaleItemRow = { sale_id: string; product_id: string; product_name: string; quantity_milli: number; unit_price_minor: number; unit_variable_cost_minor: number | null; unit_cost_minor: number | null };
@@ -168,7 +170,7 @@ export async function loadBusinessRecords(principal: Principal, forMonth: string
     { sql: "SELECT id, name, delivery_method, commission_bps, fee_per_order_minor, delivery_cost_per_order_minor, units_per_order_milli, price_adjustment_bps FROM sales_channels WHERE organization_id=? AND archived_at IS NULL ORDER BY created_at", params: [org] },
     { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.purchased_on >= ? AND p.purchased_on < ? ORDER BY p.purchased_on DESC, p.created_at DESC LIMIT 500`, params: [org, from, to] },
     { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.kind='investment' ORDER BY p.purchased_on DESC LIMIT 500`, params: [org] },
-    { sql: "SELECT id, sold_on, channel_id, channel_name, customer, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE organization_id=? AND archived_at IS NULL AND sold_on >= ? AND sold_on < ? ORDER BY sold_on DESC, created_at DESC LIMIT 500", params: [org, from, to] },
+    { sql: "SELECT id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE organization_id=? AND archived_at IS NULL AND sold_on >= ? AND sold_on < ? ORDER BY sold_on DESC, created_at DESC LIMIT 500", params: [org, from, to] },
     { sql: "SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE s.organization_id=? AND s.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
     { sql: "SELECT d.sale_id, d.id, d.status, d.scheduled_on, d.delivered_on FROM deliveries d JOIN sales s ON s.id=d.sale_id WHERE s.organization_id=? AND s.archived_at IS NULL AND d.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
   ], { retrySafe: true });
@@ -184,7 +186,7 @@ export async function loadBusinessRecords(principal: Principal, forMonth: string
     purchases: (purchases as PurchaseRow[]).map(toPurchase),
     investments: (investments as PurchaseRow[]).map(toPurchase),
     sales: (sales as SaleRow[]).map((row): Sale => ({
-      id: row.id, soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, note: row.note,
+      id: row.id, soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, customerId: row.customer_id ?? null, note: row.note,
       totalMinor: row.total_minor, sellingCostMinor: row.selling_cost_minor, deliveryCostMinor: row.delivery_cost_minor,
       variableCostMinor: row.variable_cost_minor, productionCostMinor: row.production_cost_minor, documentId: row.document_id, source: row.source,
       items: itemsBySale.get(row.id) ?? [],
@@ -330,10 +332,15 @@ export async function recordSale(principal: Principal, input: SaleInput, options
   };
   if (duplicate[0]) return { id: duplicate[0].id, duplicate: true, sale: { id: duplicate[0].id, ...sale } };
   const id = crypto.randomUUID();
-  const delivery = value.delivery || needsDelivery(channel, value.deliveryCost) ? newDeliveryRow(principal, id, value.soldOn, channel, value.customer, value.delivery ?? {}, options.source, businessToday(state.organization.currency)) : null;
+  const customerId = await resolveCustomer(principal, value.customer, options.source);
+  const delivers = Boolean(value.delivery) || needsDelivery(channel, value.deliveryCost);
+  // Without an address the delivery goes to the customer's default one; a new address is kept in their record.
+  const place = delivers && customerId ? await customerAddressFor(principal, customerId, value.delivery ?? {}) : null;
+  const fields = place ? { ...value.delivery, address: place.address, recipient: value.delivery?.recipient || place.recipient || undefined, contact: value.delivery?.contact || place.contact || undefined } : value.delivery ?? {};
+  const delivery = delivers ? newDeliveryRow(principal, id, value.soldOn, channel, value.customer, fields, options.source, businessToday(state.organization.currency), place?.id ?? null) : null;
   await dbBatch([
-    { sql: "INSERT INTO sales (id, organization_id, sold_on, channel_id, channel_name, customer, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source, actor_id, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
-      id, principal.organizationId, sale.soldOn, sale.channelId, sale.channelName, sale.customer, sale.note, sale.totalMinor, sale.sellingCostMinor, sale.deliveryCostMinor,
+    { sql: "INSERT INTO sales (id, organization_id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source, actor_id, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
+      id, principal.organizationId, sale.soldOn, sale.channelId, sale.channelName, sale.customer, customerId, sale.note, sale.totalMinor, sale.sellingCostMinor, sale.deliveryCostMinor,
       sale.variableCostMinor, sale.productionCostMinor, sale.documentId, options.source, principal.userId, options.idempotencyKey,
     ] },
     ...priced.items.map((item): SqlStatement => ({ sql: "INSERT INTO sale_items (sale_id, product_id, product_name, quantity_milli, unit_price_minor, unit_variable_cost_minor, unit_cost_minor) VALUES (?, ?, ?, ?, ?, ?, ?)", params: [id, item.productId, item.productName, item.quantityMilli, item.unitPriceMinor, item.unitVariableCostMinor, item.unitCostMinor] })),
@@ -352,28 +359,28 @@ export async function organizationPlace(principal: Principal): Promise<{ currenc
 /** Today's date where the business is. */
 export const organizationToday = async (principal: Principal) => businessToday(await organizationPlace(principal));
 
-function newDeliveryRow(principal: Principal, saleId: string, soldOn: string, channel: Pick<SalesChannel, "deliveryMethod">, customer: string, fields: z.infer<typeof deliveryFieldsSchema>, source: "user" | "cozte", today: string) {
+function newDeliveryRow(principal: Principal, saleId: string, soldOn: string, channel: Pick<SalesChannel, "deliveryMethod">, customer: string, fields: z.infer<typeof deliveryFieldsSchema>, source: "user" | "cozte", today: string, customerAddressId: string | null = null) {
   const id = crypto.randomUUID();
   const scheduledOn = fields.scheduledOn ?? soldOn;
   const status = fields.status ?? initialDeliveryStatus(scheduledOn, today);
   const deliveredOn = status === "delivered" ? fields.deliveredOn ?? (scheduledOn < today ? scheduledOn : today) : null;
   return {
     id, status, scheduledOn,
-    statement: { sql: "INSERT INTO deliveries (id, organization_id, sale_id, scheduled_on, time_window, status, method, carrier, recipient, address, contact, tracking, note, delivered_on, source, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
-      id, principal.organizationId, saleId, scheduledOn, fields.timeWindow ?? "", status, fields.method ?? channel.deliveryMethod ?? "", fields.carrier ?? "", fields.recipient ?? customer, fields.address ?? "", fields.contact ?? "", fields.tracking ?? "", fields.note ?? "", deliveredOn, source, principal.userId,
+    statement: { sql: "INSERT INTO deliveries (id, organization_id, sale_id, scheduled_on, time_window, status, method, carrier, recipient, address, contact, tracking, note, delivered_on, source, actor_id, customer_address_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
+      id, principal.organizationId, saleId, scheduledOn, fields.timeWindow ?? "", status, fields.method ?? channel.deliveryMethod ?? "", fields.carrier ?? "", fields.recipient ?? customer, fields.address ?? "", fields.contact ?? "", fields.tracking ?? "", fields.note ?? "", deliveredOn, source, principal.userId, customerAddressId,
     ] } satisfies SqlStatement,
   };
 }
 
 async function loadSale(principal: Principal, id: string): Promise<Sale> {
   const [rows, items] = await dbBatch<SaleRow | SaleItemRow>([
-    { sql: "SELECT id, sold_on, channel_id, channel_name, customer, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [id, principal.organizationId] },
+    { sql: "SELECT id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [id, principal.organizationId] },
     { sql: "SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE si.sale_id=? AND s.organization_id=?", params: [id, principal.organizationId] },
   ], { retrySafe: true });
   const row = (rows as SaleRow[])[0];
   if (!row) throw new ApiError(404, "Venta no encontrada");
   return {
-    id: row.id, soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, note: row.note,
+    id: row.id, soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, customerId: row.customer_id ?? null, note: row.note,
     totalMinor: row.total_minor, sellingCostMinor: row.selling_cost_minor, deliveryCostMinor: row.delivery_cost_minor,
     variableCostMinor: row.variable_cost_minor, productionCostMinor: row.production_cost_minor, documentId: row.document_id, source: row.source,
     items: (items as SaleItemRow[]).map((item) => ({ productId: item.product_id, productName: item.product_name, quantityMilli: item.quantity_milli, unitPriceMinor: item.unit_price_minor, unitVariableCostMinor: item.unit_variable_cost_minor, unitCostMinor: item.unit_cost_minor })),
@@ -390,7 +397,11 @@ export async function updateSale(principal: Principal, id: string, input: SalePa
   const [sale, state, channels] = await Promise.all([loadSale(principal, id), loadState(principal), loadChannels(principal)]);
   const { sale: next, problems } = repriceSale(sale, patch, state, calculateCosts(state), channels);
   if (problems.length) throw new ApiError(400, problems.join(". "));
+  const customerChange: SqlStatement[] = patch.customer !== undefined && patch.customer.trim() !== sale.customer
+    ? [{ sql: "UPDATE sales SET customer_id=? WHERE id=? AND organization_id=?", params: [await resolveCustomer(principal, patch.customer, source), id, principal.organizationId] }]
+    : [];
   await dbBatch([
+    ...customerChange,
     { sql: "UPDATE sales SET sold_on=?, channel_id=?, channel_name=?, customer=?, note=?, total_minor=?, selling_cost_minor=?, delivery_cost_minor=?, variable_cost_minor=?, production_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [
       next.soldOn, next.channelId, next.channelName, next.customer, next.note, next.totalMinor, next.sellingCostMinor, next.deliveryCostMinor, next.variableCostMinor, next.productionCostMinor, id, principal.organizationId,
     ] },
@@ -432,8 +443,12 @@ export async function loadRecordHistory(principal: Principal, kind: "sale" | "de
 
 /** Customers, recipients, addresses and carriers used in the last sales, for suggestions. */
 export async function loadCustomerDirectory(principal: Principal) {
-  const rows = await dbQuery<{ customer: string; sold_on: string; recipient: string | null; address: string | null; contact: string | null; carrier: string | null }>("SELECT s.customer, s.sold_on, d.recipient, d.address, d.contact, d.carrier FROM sales s LEFT JOIN deliveries d ON d.sale_id=s.id AND d.archived_at IS NULL WHERE s.organization_id=? AND s.archived_at IS NULL ORDER BY s.sold_on DESC LIMIT 2000", [principal.organizationId]);
-  return buildCustomerDirectory(rows.map((row) => ({ customer: row.customer, soldOn: row.sold_on, recipient: row.recipient, address: row.address, contact: row.contact, carrier: row.carrier })));
+  const [{ customers }, rows] = await Promise.all([
+    loadCustomers(principal),
+    dbQuery<{ customer: string; sold_on: string; recipient: string | null; address: string | null; contact: string | null; carrier: string | null }>("SELECT s.customer, s.sold_on, d.recipient, d.address, d.contact, d.carrier FROM sales s LEFT JOIN deliveries d ON d.sale_id=s.id AND d.archived_at IS NULL WHERE s.organization_id=? AND s.archived_at IS NULL ORDER BY s.sold_on DESC LIMIT 2000", [principal.organizationId]),
+  ]);
+  const typed = buildCustomerDirectory(rows.map((row) => ({ customer: row.customer, soldOn: row.sold_on, recipient: row.recipient, address: row.address, contact: row.contact, carrier: row.carrier })));
+  return directoryFromCustomers(customers, typed);
 }
 
 /**
@@ -521,17 +536,25 @@ export async function saveDelivery(principal: Principal, input: DeliveryInput, s
     if (fields.status && fields.status !== "delivered" && fields.deliveredOn === undefined) fields.deliveredOn = null;
     const sets = Object.entries(DELIVERY_COLUMNS).filter(([key]) => fields[key as keyof typeof fields] !== undefined);
     if (sets.length) statements.push({ sql: `UPDATE deliveries SET ${sets.map(([, column]) => `${column}=?`).join(", ")}, updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`, params: [...sets.map(([key]) => (fields[key as keyof typeof fields] ?? null) as string | null), id, org] });
+    // A new address for this delivery is kept in the customer's record, and the delivery points to it.
+    if (value.address?.trim()) {
+      const [owner] = await dbQuery<{ customer_id: string | null }>("SELECT customer_id FROM sales WHERE id=? AND organization_id=?", [saleId, org]);
+      const place = owner?.customer_id ? await customerAddressFor(principal, owner.customer_id, { address: value.address, recipient: value.recipient, contact: value.contact }) : null;
+      if (place) statements.push({ sql: "UPDATE deliveries SET customer_address_id=? WHERE id=? AND organization_id=?", params: [place.id, id, org] });
+    }
     if (value.status) done.push(`Entrega: ${DELIVERY_STATUS_LABELS[value.status]}`);
     if (value.scheduledOn) done.push(`Entrega programada para el ${value.scheduledOn}`);
     if (sets.some(([key]) => !["status", "scheduledOn", "deliveredOn"].includes(key))) done.push("Datos de la entrega actualizados");
   } else {
     if (!saleId) throw new ApiError(400, "Indica la venta a entregar");
-    const [sale] = await dbQuery<{ sold_on: string; customer: string; channel_id: string | null }>("SELECT sold_on, customer, channel_id FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL", [saleId, org]);
+    const [sale] = await dbQuery<{ sold_on: string; customer: string; channel_id: string | null; customer_id: string | null }>("SELECT sold_on, customer, channel_id, customer_id FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL", [saleId, org]);
     if (!sale) throw new ApiError(404, "Venta no encontrada");
     const [existing] = await dbQuery<{ id: string }>("SELECT id FROM deliveries WHERE sale_id=? AND organization_id=? AND archived_at IS NULL", [saleId, org]);
     if (existing) throw new ApiError(409, "Esa venta ya tiene una entrega: cámbiala en lugar de crear otra");
     const channel = sale.channel_id ? (await loadChannels(principal)).find((item) => item.id === sale.channel_id) ?? DIRECT_CHANNEL : DIRECT_CHANNEL;
-    const row = newDeliveryRow(principal, saleId, sale.sold_on, channel, sale.customer, value, source, await organizationToday(principal));
+    const place = sale.customer_id ? await customerAddressFor(principal, sale.customer_id, value) : null;
+    const fields = place ? { ...value, address: place.address, recipient: value.recipient || place.recipient || undefined, contact: value.contact || place.contact || undefined } : value;
+    const row = newDeliveryRow(principal, saleId, sale.sold_on, channel, sale.customer, fields, source, await organizationToday(principal), place?.id ?? null);
     id = row.id;
     created = true;
     statements.push(row.statement);

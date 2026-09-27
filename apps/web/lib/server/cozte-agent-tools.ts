@@ -21,6 +21,8 @@ import { DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, businessTimeZone, businessTo
 import { resolveDocument } from "./documents";
 import { searchMessages } from "./cozte-messages";
 import { saveOrganizationLocation } from "./organization-location";
+import { findCustomer, loadCustomer, loadCustomers, saveCustomer, saveCustomerAddress } from "./customers";
+import { CUSTOMER_STATUS_LABELS, customerKey, type CustomerStats } from "@/lib/customers";
 import { COUNTRIES, findCountry } from "@/lib/locations";
 import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { WIDGETS, WIDGET_KINDS, boardOutline, computeWidget, moveWidget, widgetFigures, widgetNeeds, widgetTitle, type WidgetKind, type WidgetSpec } from "@/lib/cozte-widgets";
@@ -247,6 +249,26 @@ export const cozteToolInputSchemas = {
   readPresentation: z.object({
     presentation: reference.optional().describe("Título o ID para ver sus diapositivas; omítelo para listar las presentaciones"),
   }),
+  readCustomers: z.object({
+    customer: z.string().trim().min(1).max(120).optional().describe("Nombre o ID de un cliente para ver su ficha (direcciones, compras y ventas); omítelo para listar"),
+    query: z.string().trim().max(120).optional().describe("Para listar: parte del nombre, la dirección, la zona o el teléfono"),
+    status: z.enum(["frequent", "active", "new", "at-risk", "inactive", "none"]).optional().describe("Para listar: frequent frecuentes, active activos, new nuevos, at-risk en riesgo (tardan en volver), inactive inactivos, none sin compras"),
+  }),
+  saveCustomer: z.object({
+    customer: z.string().trim().min(1).max(120).optional().describe("Nombre o ID del cliente a corregir; omítelo para crear uno nuevo"),
+    name: z.string().trim().min(1).max(120).optional().describe("Nombre (para crear, o el nombre nuevo al corregir)"),
+    phone: z.string().trim().max(60).optional(),
+    email: z.string().trim().max(120).optional(),
+    notes: z.string().trim().max(1000).optional().describe("Notas del cliente: horarios, cómo avisarle, condiciones"),
+    address: z.object({
+      address: z.string().trim().min(3).max(200).describe("Calle, número y ciudad"),
+      zone: z.string().trim().max(60).optional().describe("Barrio, localidad o zona de reparto"),
+      recipient: z.string().trim().max(120).optional(),
+      contact: z.string().trim().max(120).optional(),
+      label: z.string().trim().max(60).optional().describe("Nombre de la dirección: Local, Depósito, Casa"),
+      isDefault: z.boolean().optional().describe("true la deja como dirección principal"),
+    }).optional().describe("Una dirección de entrega para agregarle"),
+  }),
   setCompanyLocation: z.object({
     country: z.string().trim().min(2).max(60).describe("País de la empresa, por nombre o código (Argentina, AR, México…)"),
     city: z.string().trim().max(80).optional().describe("Ciudad o localidad"),
@@ -297,6 +319,8 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   createPresentation: `Crea una presentación de diapositivas con los datos reales del negocio y la guarda. Parte de una plantilla o de diapositivas a medida. Cada plantilla ya trae: ${(Object.keys(DECK_TEMPLATES) as (keyof typeof DECK_TEMPLATES)[]).map((key) => `${key} = ${templateOutline(key)}`).join("; ")}. Con plantilla, slides agrega diapositivas NUEVAS antes del cierre: no repitas las que ya trae; para cambiar sus títulos o textos usa después editPresentation con update. Los gráficos y cifras los calcula el motor: tú eliges cuáles y escribes títulos, conclusiones y puntos. La persona la ve en el chat y puede presentarla, editarla o compartirla.`,
   editPresentation: "Modifica una presentación guardada: agrega, cambia, quita, mueve o duplica diapositivas; cambia título, estilo o mes; recalcula los datos; o deshace el último cambio. Todos los números de diapositiva de una llamada se refieren a la presentación como estaba ANTES de la llamada (como la ves en el último resultado): puedes quitar 2 y 7 y agregar antes de la 9 en una sola llamada. Cada cambio queda en el historial y se puede deshacer.",
   readPresentation: "Lista las presentaciones guardadas o muestra las diapositivas de una (número, diseño, título, textos, gráfico con su conclusión y cifras).",
+  readCustomers: "Lista los clientes con cuántas compras hicieron, cuánto compraron, cada cuánto compran, su última compra y su estado (frecuente, activo, nuevo, en riesgo, inactivo), o muestra la ficha de uno: direcciones de entrega, compras por mes y últimas ventas con su entrega. Los clientes se crean solos al registrar ventas con su nombre.",
+  saveCustomer: "Crea un cliente o corrige sus datos (nombre, teléfono, email, notas) y le agrega una dirección de entrega con su zona. Las ventas con su nombre quedan ligadas a él y sus entregas usan su dirección principal. No hace falta crear el cliente antes de registrar una venta: se crea solo.",
   setCompanyLocation: "Guarda dónde está la empresa (país y ciudad). Con eso quedan bien la hora y el día de la empresa, el trato y las palabras de su país, y la moneda que se sugiere. Úsala cuando la persona te diga dónde está; no cambia costos ni la moneda principal.",
   searchConversation: "Busca en toda la conversación con esta persona, también en la parte que ya no ves y en conversaciones archivadas: devuelve los mensajes que contienen las palabras, con fecha, quién lo dijo y un fragmento. Úsala cuando la persona se refiera a algo dicho antes que no está en los mensajes que ves. Los números del negocio no se buscan acá: léelos con las herramientas, que están al día.",
   sharePresentation: "Crea o desactiva el link público de una presentación: cualquiera con el link la ve sin cuenta, sin las notas de quien presenta ni otros datos de la empresa.",
@@ -875,6 +899,59 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       const found = await resolvePresentation(principal, value.presentation);
       return { ...deckReceipt(found, []), note: "Diapositivas actuales, numeradas desde 1." };
     }
+    case "readCustomers": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.readCustomers>;
+      const labelOf = (stats: CustomerStats) => CUSTOMER_STATUS_LABELS[stats.status];
+      if (value.customer) {
+        const found = await findCustomer(principal, value.customer);
+        if (!found) {
+          const { customers } = await loadCustomers(principal);
+          const key = customerKey(value.customer);
+          return notFound("el cliente", value.customer, customers.filter((row) => customerKey(row.name).includes(key.split(" ")[0] ?? "")).slice(0, 8).map((row) => row.name));
+        }
+        const detail = await loadCustomer(principal, found.id);
+        return {
+          ok: true,
+          customer: { id: detail.customer.id, name: detail.customer.name, phone: detail.customer.phone, email: detail.customer.email, notes: detail.customer.notes },
+          stats: { sales: detail.stats.sales, revenue: detail.stats.revenue, left: detail.stats.left, firstOn: detail.stats.firstOn, lastOn: detail.stats.lastOn, everyDays: detail.stats.everyDays, daysSinceLast: detail.stats.daysSinceLast, status: labelOf(detail.stats) },
+          addresses: detail.customer.addresses.map((address) => ({ address: address.address, zone: address.zone, recipient: address.recipient, contact: address.contact, label: address.label, notes: address.notes, main: address.isDefault })),
+          months: detail.months.filter((item) => item.sales),
+          sales: detail.sales.slice(0, 10).map((sale) => ({ date: sale.soldOn, channel: sale.channelName, items: sale.items, total: sale.totalMinor, delivery: sale.deliveryStatus ? DELIVERY_STATUS_LABELS[sale.deliveryStatus as DeliveryStatus] ?? sale.deliveryStatus : null })),
+        };
+      }
+      const { customers } = await loadCustomers(principal);
+      const query = customerKey(value.query ?? "");
+      const list = customers.filter((row) => (!value.status || row.stats.status === value.status) && (!query || customerKey([row.name, row.phone, ...row.addresses.flatMap((address) => [address.address, address.zone])].join(" ")).includes(query)));
+      return {
+        ok: true, total: list.length,
+        customers: list.slice(0, 25).map((row) => { const main = row.addresses.find((address) => address.isDefault) ?? row.addresses[0]; return { id: row.id, name: row.name, sales: row.stats.sales, revenue: row.stats.revenue, lastOn: row.stats.lastOn, everyDays: row.stats.everyDays, status: labelOf(row.stats), address: main?.address ?? null, zone: main?.zone ?? null }; }),
+        ...(list.length > 25 ? { note: `Hay ${list.length}; se muestran los 25 que compraron más recientemente.` } : {}),
+      };
+    }
+    case "saveCustomer": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.saveCustomer>;
+      const done: string[] = [];
+      let id: string;
+      if (value.customer) {
+        const found = await findCustomer(principal, value.customer);
+        if (!found) return notFound("el cliente", value.customer, (await loadCustomers(principal)).customers.slice(0, 8).map((row) => row.name));
+        id = found.id;
+        done.push(...(await saveCustomer(principal, { id, name: value.name, phone: value.phone, email: value.email, notes: value.notes }, "cozte")).done);
+      } else {
+        if (!value.name) return { ok: false, error: "Falta el nombre del cliente" };
+        const existing = await findCustomer(principal, value.name);
+        if (existing) {
+          id = existing.id;
+          done.push(...(await saveCustomer(principal, { id, phone: value.phone, email: value.email, notes: value.notes }, "cozte")).done);
+        } else {
+          const created = await saveCustomer(principal, { name: value.name, phone: value.phone, email: value.email, notes: value.notes }, "cozte");
+          id = created.id;
+          done.push(...created.done);
+        }
+      }
+      if (value.address) done.push(...(await saveCustomerAddress(principal, { customerId: id, ...value.address }, "cozte")).done);
+      return done.length ? { ok: true, customerId: id, done } : { ok: true, customerId: id, unchanged: true };
+    }
     case "setCompanyLocation": {
       const value = args as z.infer<typeof cozteToolInputSchemas.setCompanyLocation>;
       const country = findCountry(value.country);
@@ -977,6 +1054,8 @@ export function createCozteTools(principal: Principal, runId: string) {
     readPresentation: tool({ description: describe.readPresentation, inputSchema: schemas.readPresentation, execute: execute("readPresentation") }),
     searchConversation: tool({ description: describe.searchConversation, inputSchema: schemas.searchConversation, execute: execute("searchConversation") }),
     setCompanyLocation: tool({ description: describe.setCompanyLocation, inputSchema: schemas.setCompanyLocation, execute: execute("setCompanyLocation") }),
+    readCustomers: tool({ description: describe.readCustomers, inputSchema: schemas.readCustomers, execute: execute("readCustomers") }),
+    saveCustomer: tool({ description: describe.saveCustomer, inputSchema: schemas.saveCustomer, execute: execute("saveCustomer") }),
     sharePresentation: tool({ description: describe.sharePresentation, inputSchema: schemas.sharePresentation, execute: execute("sharePresentation") }),
     askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),
   };
