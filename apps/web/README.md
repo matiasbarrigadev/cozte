@@ -41,6 +41,18 @@ Ventas, Entregas y Compras comparten el mismo patrón: tabla editable con búsqu
 
 El motor está en `lib/business.ts` (puro) y la persistencia en `lib/server/business.ts`. Cozte registra canales, compras y ventas (con su entrega), corrige ventas (`updateSale`) y gestiona entregas (`updateDelivery`, `readDeliveries`) con sus herramientas; las imágenes y PDF enviados al chat se guardan en R2 como documentos para adjuntarlos al registro que respaldan, por lo que el despliegue necesita `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` y `R2_SECRET_ACCESS_KEY`. Sin R2 el chat funciona igual, pero los comprobantes no quedan adjuntos.
 
+## Análisis del negocio
+
+`/app/analisis` muestra el negocio mes a mes (3, 6 o 12 meses) con pestañas Resumen, Ventas, Costos, Gastos y Entregas. `GET /api/analysis/business?months=6` resume cada mes con el mismo motor que las secciones (`summarizeMonth` en `lib/business-analytics.ts`: ventas, lo que costó cada venta, gastos fijos, resultado, canales, productos, días de la semana, compras, gastos por concepto y entregas a tiempo). La demo usa una historia de ejemplo de abril a agosto (`demoHistorySales`). Los gráficos son SVG propios (`components/analysis/charts.tsx`) con la paleta de datos de Cozte (`--data-1…6`, validada para daltonismo en claro y oscuro):
+- Un flujo de a dónde va la plata de las ventas y otro por canal, con píldoras de cada mes.
+- Barras por mes con el mes elegido resaltado y sparklines en las tarjetas.
+- Treemaps de productos y de gastos.
+- Un radar de días de la semana contra el mes anterior.
+- Líneas de ventas contra gastos fijos y de entregas a tiempo.
+- Barras apiladas de compras y de entregas por estado.
+
+Todo responde al pasar el mouse, un clic en cualquier mes enfoca el análisis entero, las leyendas ocultan series y cada gráfico tiene "Ver tabla". El Resumen agrega lo que se destaca del mes en palabras (`analysisInsights`) y el punto de equilibrio; la pestaña Costos es el análisis de costos por producto de siempre.
+
 ## Cozte: nivel, tablero y calidad
 
 - Cada persona elige cómo le explica Cozte (Simple, Medio, Avanzado); cambia la profundidad y el vocabulario, nunca las acciones ni la verificación.

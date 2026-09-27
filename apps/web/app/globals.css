@@ -144,6 +144,16 @@
 }
 
 :root {
+  /* Cozte data palette for the analysis, fixed order, validated (light on #fbfbf6: adjacent CVD ΔE ≥ 13.5, normal ≥ 17.2;
+     lime and ochre sit under 3:1 on white, so they always carry labels or a table). */
+  --data-1: #23804f;
+  --data-2: #7667c4;
+  --data-3: #86b83a;
+  --data-4: #2a8fb0;
+  --data-5: #d39a2c;
+  --data-6: #c8553d;
+  --data-muted: oklch(0.88 0.02 135);
+  --data-grid: oklch(0.9 0.012 130);
   /* Chart categorical slots in fixed order (validated: adjacent CVD ΔE ≥ 9.1, normal-vision ΔE ≥ 19.6). */
   --chart-series-1: #2a78d6;
   --chart-series-2: #eb6834;
@@ -197,6 +207,15 @@
 }
 
 .dark {
+  /* The same six hues stepped for the dark surface (validated on #18261f: all ≥ 3:1, normal-vision ΔE ≥ 15). */
+  --data-1: #2e9e63;
+  --data-2: #8577d6;
+  --data-3: #72a236;
+  --data-4: #3a9cc4;
+  --data-5: #b8862a;
+  --data-6: #d45a6a;
+  --data-muted: oklch(0.34 0.02 150);
+  --data-grid: oklch(0.3 0.02 150);
   --chart-series-1: #3987e5;
   --chart-series-2: #d95926;
   --chart-series-3: #199e70;

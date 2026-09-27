@@ -98,7 +98,7 @@ export function demoBusinessRecords(): BusinessRecords {
       sale("v5", "2026-09-04", librerias, [{ productId: "dura", quantity: 60 }, { productId: "blanda", quantity: 60 }]),
     ].map((item) => {
       const delivery = DEMO_DELIVERY_DETAILS[item.id];
-      return delivery ? { ...item, customer: delivery.recipient, delivery: { id: `e-${item.id}`, status: delivery.status, scheduledOn: delivery.scheduledOn } } : item;
+      return delivery ? { ...item, customer: delivery.recipient, delivery: { id: `e-${item.id}`, status: delivery.status, scheduledOn: delivery.scheduledOn, deliveredOn: delivery.deliveredOn } } : item;
     }),
   };
 }
@@ -122,4 +122,49 @@ export function demoDeliveries(today = DEMO_TODAY): Delivery[] {
     return [{ id: `e-${sale.id}`, saleId: sale.id, ...details, method: channel?.deliveryMethod ?? "", source: "cozte", costMinor: sale.deliveryCostMinor, sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) } }];
   });
   return byProximity(list, (item) => item.scheduledOn, today);
+}
+
+/**
+ * Earlier months of the demo business, only for the analysis section: sales that grow and dip like a real small
+ * business (the book fair in July, a school-start peak in March... here April to August), priced by the same engine.
+ * Deterministic, so every visit shows the same history.
+ */
+export function demoHistorySales(): Sale[] {
+  const costs = calculateCosts(demoState);
+  const { channels } = demoBusinessRecords();
+  const [tienda, feria, librerias] = channels;
+  let seed = 7;
+  const random = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+  const months: { month: string; strength: number }[] = [
+    { month: "2026-04", strength: 0.55 }, { month: "2026-05", strength: 0.7 }, { month: "2026-06", strength: 0.62 },
+    { month: "2026-07", strength: 1.05 }, { month: "2026-08", strength: 0.85 },
+  ];
+  const sales: Sale[] = [];
+  for (const { month, strength } of months) {
+    const plan: { channel: SalesChannel; items: { productId: string; base: number }[]; count: number }[] = [
+      { channel: tienda, items: [{ productId: "bolsillo", base: 4 }, { productId: "blanda", base: 2 }], count: Math.round(5 * strength + random() * 2) },
+      { channel: feria, items: [{ productId: "dura", base: 20 }, { productId: "blanda", base: 22 }, { productId: "bolsillo", base: 30 }], count: strength > 0.9 ? 2 : 1 },
+      { channel: librerias, items: [{ productId: "dura", base: 45 }, { productId: "blanda", base: 40 }, { productId: "bolsillo", base: 50 }], count: strength > 0.6 ? 2 : 1 },
+    ];
+    let index = 0;
+    for (const { channel, items, count } of plan) {
+      for (let order = 0; order < count; order += 1) {
+        const day = String(2 + Math.floor(random() * 26)).padStart(2, "0");
+        const soldOn = `${month}-${day}`;
+        const chosen = items.filter(() => random() > 0.25);
+        const lines = (chosen.length ? chosen : items.slice(0, 1)).map((item) => ({ productId: item.productId, quantity: Math.max(1, Math.round(item.base * strength * (0.7 + random() * 0.6))) }));
+        const priced = priceSale(demoState, costs, channel, lines);
+        const id = `h-${month}-${index += 1}`;
+        const delivers = channel.deliveryCostPerOrderMinor > 0;
+        const scheduled = new Date(Date.parse(`${soldOn}T12:00:00Z`) + (1 + Math.floor(random() * 3)) * 86_400_000).toISOString().slice(0, 10);
+        const late = random() < 0.18;
+        sales.push({
+          id, soldOn, channelId: channel.id, channelName: channel.name, customer: "", note: "", documentId: null, source: "user",
+          items: priced.items, totalMinor: priced.totalMinor, sellingCostMinor: priced.sellingCostMinor, deliveryCostMinor: priced.deliveryCostMinor, variableCostMinor: priced.variableCostMinor, productionCostMinor: priced.productionCostMinor,
+          delivery: delivers ? { id: `e-${id}`, status: random() < 0.06 ? "cancelled" : "delivered", scheduledOn: scheduled, deliveredOn: late ? new Date(Date.parse(`${scheduled}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10) : scheduled } : null,
+        });
+      }
+    }
+  }
+  return sales;
 }

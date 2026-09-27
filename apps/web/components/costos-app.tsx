@@ -23,7 +23,7 @@ import { EntityDialog } from "./entity-dialog";
 import { CostSheet } from "./cost-sheet";
 import { CozteAssistant } from "./cozte-assistant";
 import { CostHistory, type CostSnapshotRow, type HistoryEntry, type ProfileSnapshotRow } from "./cost-history";
-import { CostAnalysisView } from "./cost-analysis-view";
+import { BusinessAnalysisView } from "./analysis/business-analysis";
 import { SalesSection } from "./business/sales-section";
 import { DeliveriesSection } from "./business/deliveries-section";
 import { ExpensesSection } from "./business/expenses-section";
@@ -58,7 +58,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   { label: "Espacio de trabajo", items: [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "asistente", label: "Cozte AI", icon: "assistant" }] },
   { label: "Costos", items: [{ id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
   { label: "Día a día", items: [{ id: "ventas", label: "Ventas", icon: "sales" }, { id: "entregas", label: "Entregas", icon: "truck" }, { id: "compras", label: "Compras", icon: "receipt" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
-  { label: "Evolución", items: [{ id: "analisis", label: "Análisis de costos", icon: "chart" }, { id: "presentaciones", label: "Presentaciones", icon: "presentation" }, { id: "historial", label: "Historial", icon: "history" }] },
+  { label: "Evolución", items: [{ id: "analisis", label: "Análisis", icon: "chart" }, { id: "presentaciones", label: "Presentaciones", icon: "presentation" }, { id: "historial", label: "Historial", icon: "history" }] },
 ];
 
 const formatMoney = (value: number | null, currency: string) => value === null ? "Sin calcular" : new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: currency === "CLP" ? 0 : 3 }).format(value);
@@ -354,7 +354,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
 
           {view === "resultado" ? <ResultSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenSales={() => navigate("ventas")} onOpenCozte={() => navigate("asistente")} /> : null}
 
-          {view === "analisis" ? <CostAnalysisView currency={currency} demo={demo} /> : null}
+          {view === "analisis" ? <BusinessAnalysisView state={state} demo={demo} /> : null}
 
           {view === "presentaciones" || view === "presentacion" ? <PresentationsSection state={state} demo={demo} presentationId={view === "presentacion" ? selectedDeck : null}
             onOpen={(id) => id ? navigate("presentacion", id) : navigate("presentaciones")}

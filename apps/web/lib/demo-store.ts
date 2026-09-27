@@ -33,7 +33,7 @@ export const demoVersion = () => version;
 /** The demo's records, each sale carrying its delivery summary. */
 export function demoRecords(): BusinessRecords {
   const { records, deliveries } = data();
-  const bySale = new Map(deliveries.map((item) => [item.saleId, { id: item.id, status: item.status, scheduledOn: item.scheduledOn }]));
+  const bySale = new Map(deliveries.map((item) => [item.saleId, { id: item.id, status: item.status, scheduledOn: item.scheduledOn, deliveredOn: item.deliveredOn }]));
   return { ...records, sales: records.sales.map((sale) => ({ ...sale, delivery: bySale.get(sale.id) ?? null })) };
 }
 

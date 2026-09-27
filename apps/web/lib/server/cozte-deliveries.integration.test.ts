@@ -9,6 +9,7 @@ vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOS
 import { createCozteTools } from "./cozte-agent-tools";
 import { archiveRecord, loadBusinessView, loadCustomerDirectory, loadDeliveries, loadRecordHistory, recordPurchase, updatePurchase } from "./business";
 import { dbBatch } from "./db";
+import { loadBusinessAnalysis } from "./business-analysis";
 import { businessToday } from "@/lib/business";
 
 type Output = Record<string, unknown> & { ok?: boolean; done?: string[]; error?: string; ids?: Record<string, string>; delivery?: { id: string; status?: string; date?: string; created?: boolean }; deliveries?: { id: string; date: string; status: string; cost: number; daysFromToday: number }[]; sale?: Record<string, unknown> };
@@ -112,5 +113,15 @@ describe.skipIf(!bridgeUrl)("sales corrections and deliveries against D1", { tim
     const scale = await recordPurchase(principal, { purchasedOn: today, description: "Balanza", amount: 45000, kind: "investment", area: "production", usefulLifeMonths: 60, includeInUnitCost: true }, { source: "user", idempotencyKey: crypto.randomUUID() });
     await expect(updatePurchase(principal, scale.id, { amount: 50000 }, "user")).rejects.toThrow(/primero quítala del costo/);
     expect((await updatePurchase(principal, scale.id, { description: "Balanza digital" }, "user")).done.length).toBe(1);
+  });
+
+  it("summarizes the last months for the analysis with the same numbers as the month view", async () => {
+    const analysis = await loadBusinessAnalysis(principal, 3);
+    expect(analysis.months.map((item) => item.month)).toHaveLength(3);
+    const current = analysis.months.at(-1)!;
+    const view = await loadBusinessView(principal, current.month);
+    expect(current.revenue).toBeCloseTo(view.result.revenue, 2);
+    expect(current.deliveries.total).toBe(view.sales.filter((sale) => sale.soldOn.startsWith(current.month) && sale.delivery).length);
+    expect(current.deliveries.delivered).toBeGreaterThan(0);
   });
 });

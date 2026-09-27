@@ -84,7 +84,7 @@ export const DELIVERY_STATUS_HINTS: Record<DeliveryStatus, string> = {
 };
 export const isOpenDelivery = (status: DeliveryStatus) => status === "pending" || status === "on_the_way" || status === "failed";
 
-export type SaleDelivery = { id: string; status: DeliveryStatus; scheduledOn: string };
+export type SaleDelivery = { id: string; status: DeliveryStatus; scheduledOn: string; deliveredOn?: string | null };
 
 export type Delivery = {
   id: string;

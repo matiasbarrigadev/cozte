@@ -47,7 +47,8 @@ function InsightRow({ insight }: { insight: Insight }) {
   </li>;
 }
 
-export function CostAnalysisView({ currency, demo }: { currency: string; demo: boolean }) {
+/** `embedded` hides the title when it is a tab of the business analysis. */
+export function CostAnalysisView({ currency, demo, embedded = false }: { currency: string; demo: boolean; embedded?: boolean }) {
   const [granularity, setGranularity] = React.useState<Granularity>("month");
   const [groupBy, setGroupBy] = React.useState<GroupBy>("category");
   const [display, setDisplay] = React.useState<"chart" | "table">("chart");
@@ -114,9 +115,9 @@ export function CostAnalysisView({ currency, demo }: { currency: string; demo: b
   const maxDriver = Math.max(1, ...drivers.map((driver) => Math.abs(driver.delta)));
 
   return <>
-    <div className="flex flex-wrap items-end justify-between gap-3">
+    {!embedded ? <div className="flex flex-wrap items-end justify-between gap-3">
       <div><p className="text-sm text-muted-foreground">Evolución</p><h1 className="text-3xl font-semibold tracking-tight">Análisis de costos</h1><p className="max-w-2xl text-sm text-muted-foreground">Cómo cambió el costo de fabricar cada producto, qué lo explica y qué conviene vigilar. Se arma con las fotos que guarda cada cambio confirmado{demo ? " (en la demostración, con un historial de ejemplo)" : ""}.</p></div>
-    </div>
+    </div> : <p className="text-sm text-muted-foreground">Cómo cambió el costo de fabricar cada producto, qué lo explica y qué conviene vigilar.</p>}
     <div className="flex flex-wrap items-center gap-2">
       <Segmented label="Agrupar el tiempo" value={granularity} onChange={setGranularity} options={[["month", "Meses"], ["week", "Semanas"]]} />
       <Segmented label="Agrupar los costos" value={groupBy} onChange={setGroupBy} options={[["type", "Tipo"], ["category", "Categoría"], ["concept", "Concepto"]]} />

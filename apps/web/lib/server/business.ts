@@ -146,7 +146,7 @@ function monthBounds(value: string): [string, string] {
 type ChannelRow = { id: string; name: string; delivery_method: string; commission_bps: number; fee_per_order_minor: number; delivery_cost_per_order_minor: number; units_per_order_milli: number; price_adjustment_bps: number };
 type PurchaseRow = { id: string; purchased_on: string; description: string; supplier: string; amount_minor: number; kind: PurchaseKind; area: CostArea; material_name: string | null; quantity_milli: number | null; expense_id: string | null; expense_name: string | null; useful_life_months: number | null; include_in_unit_cost: number; document_id: string | null; source: "user" | "cozte" };
 type SaleRow = { id: string; sold_on: string; channel_id: string | null; channel_name: string; customer: string; note: string; total_minor: number; selling_cost_minor: number; delivery_cost_minor: number; variable_cost_minor: number | null; production_cost_minor: number | null; document_id: string | null; source: "user" | "cozte" };
-type SaleDeliveryRow = { sale_id: string; id: string; status: DeliveryStatus; scheduled_on: string };
+type SaleDeliveryRow = { sale_id: string; id: string; status: DeliveryStatus; scheduled_on: string; delivered_on: string | null };
 type DeliveryRow = { id: string; sale_id: string; scheduled_on: string; time_window: string; status: DeliveryStatus; method: string; carrier: string; recipient: string; address: string; contact: string; tracking: string; note: string; delivered_on: string | null; source: "user" | "cozte"; sold_on: string; channel_id: string | null; channel_name: string; customer: string; total_minor: number; delivery_cost_minor: number };
 type SaleItemRow = { sale_id: string; product_id: string; product_name: string; quantity_milli: number; unit_price_minor: number; unit_variable_cost_minor: number | null; unit_cost_minor: number | null };
 
@@ -170,9 +170,9 @@ export async function loadBusinessRecords(principal: Principal, forMonth: string
     { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.kind='investment' ORDER BY p.purchased_on DESC LIMIT 500`, params: [org] },
     { sql: "SELECT id, sold_on, channel_id, channel_name, customer, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE organization_id=? AND archived_at IS NULL AND sold_on >= ? AND sold_on < ? ORDER BY sold_on DESC, created_at DESC LIMIT 500", params: [org, from, to] },
     { sql: "SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE s.organization_id=? AND s.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
-    { sql: "SELECT d.sale_id, d.id, d.status, d.scheduled_on FROM deliveries d JOIN sales s ON s.id=d.sale_id WHERE s.organization_id=? AND s.archived_at IS NULL AND d.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
+    { sql: "SELECT d.sale_id, d.id, d.status, d.scheduled_on, d.delivered_on FROM deliveries d JOIN sales s ON s.id=d.sale_id WHERE s.organization_id=? AND s.archived_at IS NULL AND d.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
   ], { retrySafe: true });
-  const deliveryBySale = new Map((deliveries as SaleDeliveryRow[]).map((row) => [row.sale_id, { id: row.id, status: row.status, scheduledOn: row.scheduled_on }]));
+  const deliveryBySale = new Map((deliveries as SaleDeliveryRow[]).map((row) => [row.sale_id, { id: row.id, status: row.status, scheduledOn: row.scheduled_on, deliveredOn: row.delivered_on }]));
   const itemsBySale = new Map<string, SaleItem[]>();
   for (const row of items as SaleItemRow[]) {
     const list = itemsBySale.get(row.sale_id) ?? [];
