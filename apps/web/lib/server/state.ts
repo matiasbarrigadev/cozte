@@ -25,9 +25,38 @@ type ExpenseRow = {
 type CategoryRow = { id: string; name: string };
 type InvestmentRow = { id: string; description: string; amount_minor: number; purchased_on: string; useful_life_months: number | null; area: string; include_in_unit_cost: number; allocation_basis: string };
 
+/** The name placed on a new organization until its real one is known. */
+export const DEFAULT_ORGANIZATION_NAME = "Mi empresa";
+
+const clerkNames = new Map<string, { name: string | null; at: number }>();
+const CLERK_NAME_TTL_MS = 10 * 60_000;
+
+/**
+ * The organization's name as the person set it in the account (Clerk), remembered for a few minutes per instance so
+ * a rename shows up soon without asking on every request. Null when the account is not configured or unreachable.
+ */
+async function clerkOrganizationName(organizationId: string): Promise<string | null> {
+  if (!process.env.CLERK_SECRET_KEY) return null;
+  const cached = clerkNames.get(organizationId);
+  if (cached && Date.now() - cached.at < CLERK_NAME_TTL_MS) return cached.name;
+  try {
+    const { clerkClient } = await import("@clerk/nextjs/server");
+    const organization = await (await clerkClient()).organizations.getOrganization({ organizationId });
+    const name = organization.name?.trim().slice(0, 120) || null;
+    clerkNames.set(organizationId, { name, at: Date.now() });
+    return name;
+  } catch (error) {
+    console.error("Organization name lookup failed", error);
+    clerkNames.set(organizationId, { name: cached?.name ?? null, at: Date.now() - CLERK_NAME_TTL_MS + 60_000 });
+    return cached?.name ?? null;
+  }
+}
+
 export async function ensureOrganization(principal: Principal): Promise<void> {
+  const name = await clerkOrganizationName(principal.organizationId);
   await dbBatch([
     { sql: "INSERT OR IGNORE INTO organizations (id) VALUES (?)", params: [principal.organizationId] },
+    ...(name ? [{ sql: "UPDATE organizations SET name=? WHERE id=? AND name<>?", params: [name, principal.organizationId, name] }] : []),
     { sql: "INSERT INTO memberships (organization_id, user_id, role) VALUES (?, ?, ?) ON CONFLICT (organization_id, user_id) DO UPDATE SET role=excluded.role", params: [principal.organizationId, principal.userId, principal.role] },
     { sql: "INSERT OR IGNORE INTO cost_categories (id, organization_id, name) SELECT ?, ?, 'Materia prima' WHERE NOT EXISTS (SELECT 1 FROM cost_categories WHERE organization_id=?) UNION ALL SELECT ?, ?, 'Gastos generales' WHERE NOT EXISTS (SELECT 1 FROM cost_categories WHERE organization_id=?)", params: [crypto.randomUUID(), principal.organizationId, principal.organizationId, crypto.randomUUID(), principal.organizationId, principal.organizationId] },
   ], { retrySafe: true }); // Idempotent upserts.

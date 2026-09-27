@@ -7,7 +7,8 @@ import type { DomainState } from "@/lib/domain";
 import { DEMO_TODAY } from "@/lib/demo";
 import { demoBusinessAction, demoCustomerDirectory, demoRecords, demoVersion, subscribeDemo } from "@/lib/demo-store";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { MonthSelect } from "@/components/ui/date-picker";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** Today on the person's own clock (not UTC), as AAAA-MM-DD. */
@@ -105,8 +106,14 @@ export function ReceiptLink({ documentId, demo, label = "Ver" }: { documentId?: 
   }}>{label}</Button>;
 }
 
-export function MonthPicker({ month, onChange }: { month: string; onChange: (month: string) => void }) {
-  return <label className="flex items-center gap-2 text-sm text-muted-foreground">Mes<Input type="month" value={month} onChange={(event) => { if (/^\d{4}-\d{2}$/.test(event.target.value)) onChange(event.target.value); }} className="w-auto" /></label>;
+/** The month a section shows, with arrows to step one month back or forward. */
+export function MonthPicker({ month, onChange, today }: { month: string; onChange: (month: string) => void; today?: string }) {
+  const step = (delta: number) => { const date = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1 + delta, 1)); onChange(date.toISOString().slice(0, 7)); };
+  return <div className="flex items-center gap-1" role="group" aria-label="Mes">
+    <Button type="button" variant="outline" size="icon-sm" aria-label="Mes anterior" onClick={() => step(-1)}><ChevronLeft /></Button>
+    <MonthSelect value={month} today={today} onChange={(value) => { if (/^\d{4}-\d{2}$/.test(value)) onChange(value); }} aria-label="Mes" className="w-44" />
+    <Button type="button" variant="outline" size="icon-sm" aria-label="Mes siguiente" onClick={() => step(1)}><ChevronRight /></Button>
+  </div>;
 }
 
 export function SectionHeader({ eyebrow, title, description, children }: { eyebrow: string; title: string; description: string; children?: React.ReactNode }) {
@@ -125,9 +132,9 @@ export function Tip({ title = "Para entender", children, className }: { title?: 
 }
 
 export function Stat({ label, value, note, tone }: { label: string; value: string; note?: string; tone?: "positive" | "negative" }) {
-  return <div className="flex flex-col gap-1 rounded-xl border bg-card px-4 py-3">
+  return <div className="flex min-w-0 flex-col gap-1 rounded-xl border bg-card px-3 py-3 sm:px-4">
     <span className="text-xs text-muted-foreground">{label}</span>
-    <span className={cn("text-2xl font-semibold tabular-nums", tone === "negative" && "text-destructive", tone === "positive" && "text-emerald-700 dark:text-emerald-400")}>{value}</span>
+    <span className={cn("text-xl font-semibold tabular-nums break-words sm:text-2xl", tone === "negative" && "text-destructive", tone === "positive" && "text-emerald-700 dark:text-emerald-400")}>{value}</span>
     {note ? <span className="text-xs text-muted-foreground">{note}</span> : null}
   </div>;
 }

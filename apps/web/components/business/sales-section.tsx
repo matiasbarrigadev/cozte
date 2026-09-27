@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
@@ -98,7 +99,7 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
       <Button onClick={() => setSaleOpen(true)} title="Atajo: tecla N"><AnimatedIcon name="plus" data-icon="inline-start" />Registrar venta<kbd className="ml-1 hidden rounded border border-current/30 px-1 text-[10px] opacity-70 sm:inline">N</kbd></Button>
     </SectionHeader>
     {!view || !result ? <TextShimmer className="text-sm">Cargando ventas…</TextShimmer> : <div className={cn("flex flex-col gap-6 transition-opacity", loading && "opacity-60")}>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Vendido en el mes" value={money(result.revenue)} note={`${result.sales} venta${result.sales === 1 ? "" : "s"}`} />
         <Stat label="Te dejaron las ventas" value={money(result.contribution)} note="Después de producir, vender y entregar" tone={result.contribution < 0 ? "negative" : undefined} />
         <Stat label="Venta promedio" value={result.sales ? money(result.revenue / result.sales) : "—"} />
@@ -111,8 +112,8 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
       </div> : null}
       <Card className="gap-4">
         <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
-          <div className="flex flex-col gap-1.5"><CardTitle>Ventas</CardTitle><CardDescription>Haz clic en una celda para corregirla: Enter guarda, Escape cancela. El precio cobrado y el costo de cada producto quedan como estaban el día de la venta.</CardDescription></div>
-          <MonthPicker month={month} onChange={onMonthChange} />
+          <div className="flex flex-col gap-1.5"><CardTitle>Ventas</CardTitle><CardDescription><span className="hidden md:inline">Haz clic en una celda para corregirla: Enter guarda, Escape cancela.</span><span className="md:hidden">Toca «Editar» para corregir una venta.</span> El precio cobrado y el costo de cada producto quedan como estaban el día de la venta.</CardDescription></div>
+          <MonthPicker month={month} today={todayFor(demo)} onChange={onMonthChange} />
         </CardHeader>
         <CardContent>
           {!state.products.length ? <Empty className="py-6"><EmptyHeader><EmptyTitle>Primero, tus productos</EmptyTitle><EmptyDescription>Para registrar ventas, Cozte necesita saber qué vendes y cuánto cuesta hacerlo. Cárgalos en Costos de producción o cuéntaselos a Cozte.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={onOpenCozte}>Contarle a Cozte qué fabrico</Button></Empty>
@@ -124,7 +125,17 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
 
       <Card>
         <CardHeader><CardTitle>Tus canales de venta</CardTitle><CardDescription>Dónde y cómo vendes. Si no cargas ninguno, las ventas se toman como venta directa, sin comisión ni envío. La forma y el costo de entregar de cada canal se ajustan también en Entregas.</CardDescription></CardHeader>
-        <CardContent>{view.channels.length ? <div className="overflow-x-auto"><Table>
+        <CardContent>{view.channels.length ? <><ul className="flex flex-col divide-y md:hidden" aria-label="Canales de venta">{view.channels.map((channel) => <li key={channel.id} className="flex flex-col gap-1.5 py-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0"><p className="font-medium">{channel.name}</p><p className="text-xs text-muted-foreground">{channel.deliveryMethod || "Sin entrega"}{channel.priceAdjustmentBps ? ` · precio ${channel.priceAdjustmentBps > 0 ? "+" : ""}${percent(channel.priceAdjustmentBps)}` : " · precio de lista"}</p></div>
+            <div className="flex shrink-0 gap-1"><Button size="icon-sm" variant="ghost" aria-label={`Editar ${channel.name}`} onClick={() => setChannelDialog(channel)}><AnimatedIcon name="edit" /></Button><Button size="icon-sm" variant="ghost" aria-label={`Quitar ${channel.name}`} onClick={() => void archive("channel", channel.id)}><AnimatedIcon name="delete" /></Button></div>
+          </div>
+          <dl className="grid grid-cols-3 gap-2 text-xs">
+            <div><dt className="text-muted-foreground">Comisión</dt><dd className="tabular-nums">{percent(channel.commissionBps)}</dd></div>
+            <div><dt className="text-muted-foreground">Cargo por venta</dt><dd className="tabular-nums">{money(channel.feePerOrderMinor)}</dd></div>
+            <div><dt className="text-muted-foreground">Entregar</dt><dd className="tabular-nums">{money(channel.deliveryCostPerOrderMinor)}</dd></div>
+          </dl>
+        </li>)}</ul><div className="hidden overflow-x-auto md:block"><Table>
           <TableHeader><TableRow><TableHead>Canal</TableHead><TableHead>Cómo entrega</TableHead><TableHead className="text-right">Comisión</TableHead><TableHead className="text-right">Cargo por venta</TableHead><TableHead className="text-right">Entregar un pedido</TableHead><TableHead className="text-right">Unidades por pedido</TableHead><TableHead className="text-right">Precio</TableHead><TableHead className="w-24" /></TableRow></TableHeader>
           <TableBody>{view.channels.map((channel) => <TableRow key={channel.id}>
             <TableCell className="font-medium">{channel.name}</TableCell>
@@ -136,7 +147,7 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
             <TableCell className="text-right">{channel.priceAdjustmentBps ? <Badge variant="outline">{channel.priceAdjustmentBps > 0 ? "+" : ""}{percent(channel.priceAdjustmentBps)}</Badge> : <span className="text-muted-foreground">De lista</span>}</TableCell>
             <TableCell className="text-right"><div className="flex justify-end gap-1"><Button size="icon-sm" variant="ghost" aria-label={`Editar ${channel.name}`} onClick={() => setChannelDialog(channel)}><AnimatedIcon name="edit" /></Button><Button size="icon-sm" variant="ghost" aria-label={`Quitar ${channel.name}`} onClick={() => void archive("channel", channel.id)}><AnimatedIcon name="delete" /></Button></div></TableCell>
           </TableRow>)}</TableBody>
-        </Table></div> : <Empty className="py-6"><EmptyHeader><EmptyTitle>Todavía no hay canales</EmptyTitle><EmptyDescription>Agrega los lugares donde vendes (local, ferias, Instagram, Mercado Libre, mayoristas) o cuéntaselos a Cozte.</EmptyDescription></EmptyHeader></Empty>}</CardContent>
+        </Table></div></> : <Empty className="py-6"><EmptyHeader><EmptyTitle>Todavía no hay canales</EmptyTitle><EmptyDescription>Agrega los lugares donde vendes (local, ferias, Instagram, Mercado Libre, mayoristas) o cuéntaselos a Cozte.</EmptyDescription></EmptyHeader></Empty>}</CardContent>
       </Card>
 
       <Card>
@@ -144,7 +155,11 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
         <CardContent className="flex flex-col gap-4">
           {state.products.length ? [...byProduct.values()].map((rows) => <div key={rows[0].productId} className="flex flex-col gap-2">
             <h3 className="text-sm font-semibold">{rows[0].productName}</h3>
-            <div className="overflow-x-auto"><Table>
+            <ul className="flex flex-col divide-y rounded-lg border md:hidden">{rows.map((row) => <li key={row.channelId} className="flex items-start justify-between gap-3 px-3 py-2">
+              <div className="min-w-0"><p className="text-sm">{row.channelName}</p><p className="text-xs text-muted-foreground tabular-nums">{row.price === null ? "Sin precio" : money(row.price)} − producir {row.productionCost === null ? "incompleto" : money(row.productionCost)}{row.sellingCost ? ` − vender ${money(row.sellingCost)}` : ""}{row.deliveryCost ? ` − entregar ${money(row.deliveryCost)}` : ""}</p></div>
+              <p className={cn("shrink-0 text-right text-sm font-semibold tabular-nums", row.left !== null && row.left < 0 && "text-destructive")}>{row.left === null ? "—" : money(row.left)}<span className="block text-[11px] font-normal text-muted-foreground">{row.leftPercent !== null ? `te queda ${Math.round(row.leftPercent)} %` : "te queda"}</span></p>
+            </li>)}</ul>
+            <div className="hidden overflow-x-auto md:block"><Table>
               <TableHeader><TableRow><TableHead>Canal</TableHead><TableHead className="text-right">Precio</TableHead><TableHead className="text-right">Producir</TableHead><TableHead className="text-right">Vender</TableHead><TableHead className="text-right">Entregar</TableHead><TableHead className="text-right">Te queda</TableHead></TableRow></TableHeader>
               <TableBody>{rows.map((row) => <TableRow key={row.channelId}>
                 <TableCell>{row.channelName}</TableCell>
@@ -224,7 +239,7 @@ function SalesTable({ costs, month, today, customerSuggestions, sales, state, ch
           const channelKnown = channelOptions.some((option) => option.value === channelValue);
           return <TableRow key={sale.id} className="group/row hover:bg-muted/30">
             <TableCell className={cn(sheetCell, "sticky left-0 z-10 bg-card")}><div className="flex items-center">
-              <EditableDate value={sale.soldOn} label={`Fecha de la venta a ${sale.customer || sale.channelName}`} disabled={disabled} onCommit={(soldOn) => void onUpdate(sale, { soldOn })} className="w-36 shrink-0" />
+              <EditableDate today={today} value={sale.soldOn} label={`Fecha de la venta a ${sale.customer || sale.channelName}`} disabled={disabled} onCommit={(soldOn) => void onUpdate(sale, { soldOn })} className="w-36 shrink-0" />
               <span className="pr-3 text-xs whitespace-nowrap text-muted-foreground">{relativeDay(sale.soldOn, today)}</span>
             </div></TableCell>
             <TableCell className={sheetCell}>
@@ -294,7 +309,7 @@ function QuickSale({ state, channels, demo, today, month, suggestions, onSaved }
   }
   return <form onSubmit={submit} className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-dashed bg-muted/30 p-2" aria-label="Carga rápida de una venta">
     <span className="px-1 text-xs font-medium text-muted-foreground">Carga rápida</span>
-    <Input type="date" value={soldOn} onChange={(event) => setSoldOn(event.target.value)} aria-label="Fecha" className="h-8 w-36" required />
+    <DatePicker value={soldOn} onChange={setSoldOn} today={today} aria-label="Fecha" className="w-36" required />
     <Dropdown aria-label="Canal" value={channelId} onChange={(event) => setChannelId(event.target.value)}>{channels.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}<DropdownOption value={DIRECT_CHANNEL.id}>{DIRECT_CHANNEL.name}</DropdownOption></Dropdown>
     <Dropdown aria-label="Producto" value={productId} onChange={(event) => setProductId(event.target.value)}>{state.products.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}</Dropdown>
     <Input type="number" min="0.001" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} aria-label="Cantidad" className="h-8 w-20 text-right" required />
@@ -421,7 +436,7 @@ function SaleDialog({ directory, state, channels, demo, month, onClose, onSaved 
     <DialogHeader><DialogTitle>Registrar venta</DialogTitle><DialogDescription>Si no escribes el precio se usa el de lista con el ajuste del canal. También puedes mandarle a Cozte la foto del remito.</DialogDescription></DialogHeader>
     <form className="flex flex-col gap-4" onSubmit={submit}><FieldGroup>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field><FieldLabel htmlFor="sale-date">Fecha</FieldLabel><Input id="sale-date" name="date" type="date" required defaultValue={defaultDate} /></Field>
+        <Field><FieldLabel htmlFor="sale-date">Fecha</FieldLabel><DatePicker id="sale-date" name="date" required defaultValue={defaultDate} today={today} /></Field>
         <Field><FieldLabel htmlFor="sale-channel">Canal</FieldLabel><Dropdown id="sale-channel" className="w-full" value={channelId} onChange={(event) => setChannelId(event.target.value)}>{channels.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}<DropdownOption value={DIRECT_CHANNEL.id}>{DIRECT_CHANNEL.name}</DropdownOption></Dropdown></Field>
       </div>
       <div className="flex flex-col gap-2">
@@ -445,7 +460,7 @@ function SaleDialog({ directory, state, channels, demo, month, onClose, onSaved 
       {delivers ? <fieldset className="flex flex-col gap-3 rounded-lg border p-3">
         <legend className="px-1 text-sm font-medium">Entrega</legend>
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field><FieldLabel htmlFor="sale-delivery-date">Fecha de entrega</FieldLabel><Input id="sale-delivery-date" name="deliveryDate" type="date" defaultValue={defaultDate} /><FieldDescription>Si ya pasó, queda como entregada.</FieldDescription></Field>
+          <Field><FieldLabel htmlFor="sale-delivery-date">Fecha de entrega</FieldLabel><DatePicker id="sale-delivery-date" name="deliveryDate" defaultValue={defaultDate} today={today} clearable placeholder="Sin fecha" /><FieldDescription>Si ya pasó, queda como entregada.</FieldDescription></Field>
           <Field><FieldLabel htmlFor="sale-window">Franja horaria</FieldLabel><Input id="sale-window" name="timeWindow" placeholder="Ej. 9 a 13" /></Field>
           <Field><FieldLabel htmlFor="sale-address">Dirección</FieldLabel><SuggestInput id="sale-address" value={address} placeholder="Calle, número, ciudad" suggestions={directory.addresses.map((value) => ({ value }))} onValueChange={(value) => setAddress(value)} /></Field>
           <Field><FieldLabel htmlFor="sale-recipient">Recibe</FieldLabel><SuggestInput id="sale-recipient" value={recipient} placeholder="Si es otra persona que el cliente" suggestions={directory.recipients.map((value) => ({ value }))} onValueChange={(value) => setRecipient(value)} /></Field>

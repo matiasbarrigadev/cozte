@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { productionExpenses, type DomainState, type Material, type SharedExpense } from "@/lib/domain";
+import { calculateCosts, productionExpenses, type DomainState, type Material, type SharedExpense } from "@/lib/domain";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { MonthSelect } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -19,6 +20,8 @@ import { AnimatedIcon } from "@/components/animated-icon";
 import { Columns3, LayoutList, Settings2, Table2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { CostGroupedView } from "@/components/cost-grouped-view";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { ExportMenu, downloadCsv } from "@/components/business/data-table";
 
 type SheetKind = "all" | "materials" | "expenses";
 type SheetView = "table" | "list" | "board";
@@ -89,7 +92,10 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   onDiscard: () => void;
 }) {
   const [kind, setKind] = React.useState<SheetKind>("all");
-  const [view, setView] = React.useState<SheetView>("table");
+  // On a phone the wide table is hard to read, so the list is the default there; the person can still switch.
+  const isMobile = useIsMobile();
+  const [chosenView, setView] = React.useState<SheetView | null>(null);
+  const view: SheetView = chosenView ?? (isMobile ? "list" : "table");
   const [categoryDialog, setCategoryDialog] = React.useState(false);
   const [categoryName, setCategoryName] = React.useState("");
   const [renaming, setRenaming] = React.useState<string | null>(null);
@@ -134,6 +140,32 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
     ...changedExpenseIds.flatMap((expense) => state.products.filter((product) => expenseAppliesTo(expense, product.id)).map((item) => item.id)),
   ]);
   const canEdit = !busy && draftReady;
+  const basisLabel = (basis: SharedExpense["allocationBasis"]) => basis === "hours" ? "Por horas" : basis === "units" ? "Por unidades" : "Porcentajes";
+  const QUALITY_LABELS = { complete: "Completo", estimated: "Estimado", incomplete: "Incompleto" } as const;
+  const today = new Date().toLocaleDateString("en-CA");
+  function exportProducts() {
+    const costs = calculateCosts(state);
+    downloadCsv(`costo-por-producto-${today}`, ["Producto", "Unidades por lote", "Insumos por unidad", "Mano de obra por unidad", "Gastos compartidos por unidad", "Costo por unidad", "Precio de venta", "Margen estimado (%)", "Estado", "Qué falta", "Moneda"],
+      state.products.map((product) => {
+        const cost = costs.find((item) => item.productId === product.id);
+        return [product.name, product.lotUnits, cost?.perUnit?.materialMinor, cost?.perUnit?.laborMinor, cost?.perUnit?.sharedMinor, cost?.unitMinor, product.salePriceMinor || null, cost?.estimatedMarginPercent,
+          cost ? QUALITY_LABELS[cost.quality] : "", cost?.warnings.join(" · ") ?? "", state.organization.currency];
+      }));
+  }
+  function exportConcepts() {
+    downloadCsv(`conceptos-de-costo-${today}`, ["Tipo", "Concepto", "Categoría", "Proveedor", "Período", "Unidad de compra / reparto", "Moneda", "Precio o monto", `Precio o monto en ${state.organization.currency}`, "Productos que lo usan"], [
+      ...materials.map((item) => [
+        "Directo", item.name, item.category, item.supplier, "", item.purchaseUnit, item.currency ?? state.organization.currency,
+        item.nativeAmountMilli == null ? item.priceMinor : item.nativeAmountMilli / 1000, item.priceMinor,
+        state.components.filter((part) => part.materialId === item.id).map((part) => state.products.find((product) => product.id === part.productId)?.name).filter(Boolean).join(", "),
+      ]),
+      ...visibleExpenses.map((item) => [
+        "Compartido", item.name, item.category, "", item.period, basisLabel(item.allocationBasis), item.currency ?? state.organization.currency,
+        item.nativeAmountMilli == null ? item.amountMinor : item.nativeAmountMilli / 1000, item.amountMinor,
+        state.products.filter((product) => expenseAppliesTo(item, product.id)).map((product) => product.name).join(", "),
+      ]),
+    ]);
+  }
 
   function materialRow(item: Material) {
     const operationalProducts = new Set(state.components.filter((part) => part.materialId === item.id).map((part) => state.products.find((product) => product.id === part.productId)?.name).filter((name): name is string => Boolean(name)));
@@ -168,7 +200,7 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
     return <TableRow key={`expense-${item.id}`} className={cn("bg-card hover:bg-muted/40", pending && "bg-accent/35 hover:bg-accent/50")}>
       <TableCell className={cn(sheetCellClass, "min-w-48")}><div className="flex items-center gap-2 px-2"><Badge variant="outline">Compartido</Badge><EditableText value={item.name} label={`Nombre de ${item.name}`} disabled={!canEdit} className="min-w-36 font-medium" onCommit={(value) => onMetaChange({ action: "update-expense-meta", id: item.id, field: "name", value })} /></div></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-40")}><Dropdown aria-label={`Categoría de ${item.name}`} value={item.category} disabled={!canEdit} variant="cell" onChange={(event) => onMetaChange({ action: "update-expense-meta", id: item.id, field: "category", value: event.target.value })}>{categories.map((name) => <DropdownOption key={name} value={name}>{name}</DropdownOption>)}</Dropdown></TableCell>
-      <TableCell className={cn(sheetCellClass, "min-w-44")}><Input type="month" aria-label={`Período de ${item.name}`} value={item.period} disabled={!canEdit} className={editableCellClass} onChange={(event) => { if (event.target.value) onMetaChange({ action: "update-expense-meta", id: item.id, field: "period", value: event.target.value }); }} /></TableCell>
+      <TableCell className={cn(sheetCellClass, "min-w-44")}><MonthSelect variant="cell" aria-label={`Período de ${item.name}`} value={item.period} disabled={!canEdit} onChange={(value) => { if (value) onMetaChange({ action: "update-expense-meta", id: item.id, field: "period", value }); }} /></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-32")}><Button size="sm" variant="ghost" className="h-11 w-full justify-start rounded-none px-3" disabled={!canEdit} onClick={() => openAllocation(item)}><Settings2 data-icon="inline-start" />{item.allocationBasis === "hours" ? "Por horas" : item.allocationBasis === "units" ? "Por unidades" : "Porcentajes"}</Button></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-28")}><Dropdown aria-label={`Moneda de ${item.name}`} value={selectedCurrency} disabled={!canEdit} variant="cell" onChange={(event) => onExpenseCurrency(item.id, event.target.value as Currency)}>{supportedCurrencies.map((code) => <DropdownOption key={code} value={code}>{code}</DropdownOption>)}</Dropdown></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-36")}><EditableMoney value={displayAmount} label={`Monto de ${item.name}`} disabled={!canEdit} onCommit={(value) => onExpenseAmount(item.id, value)} />{selectedCurrency !== state.organization.currency ? <span className="block px-3 pb-1 text-right text-[11px] text-muted-foreground">{state.fxQuotes?.[selectedCurrency]?.asOf ? `${state.fxQuotes[selectedCurrency]?.source} ${state.fxQuotes[selectedCurrency]?.asOf}` : "Cotización pendiente"}</span> : null}</TableCell>
@@ -180,7 +212,10 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   return <div className="flex flex-col gap-4">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><p className="text-sm text-muted-foreground">Producción / costos</p><h1 className="text-3xl font-semibold tracking-tight">Costos de producción</h1><p className="text-sm text-muted-foreground">Organiza los conceptos con los nombres de tu empresa. Revisa el impacto antes de confirmar importes.</p></div>
-      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setCategoryDialog(true)}><Settings2 data-icon="inline-start" />Categorías</Button><Button variant="outline" onClick={onAddMaterial}><AnimatedIcon name="plus" data-icon="inline-start" />Costo directo</Button><Button variant="outline" onClick={onAddExpense}><AnimatedIcon name="plus" data-icon="inline-start" />Costo compartido</Button></div>
+      <div className="flex flex-wrap gap-2"><ExportMenu options={[
+        { label: "Costo por producto", hint: "Cuánto cuesta cada unidad, desglosado, con su precio y margen", onSelect: exportProducts },
+        { label: "Conceptos de costo", hint: "Insumos y gastos compartidos, con los filtros aplicados", onSelect: exportConcepts },
+      ]} /><Button variant="outline" onClick={() => setCategoryDialog(true)}><Settings2 data-icon="inline-start" />Categorías</Button><Button variant="outline" onClick={onAddMaterial}><AnimatedIcon name="plus" data-icon="inline-start" />Costo directo</Button><Button variant="outline" onClick={onAddExpense}><AnimatedIcon name="plus" data-icon="inline-start" />Costo compartido</Button></div>
     </div>
     <Card className="overflow-hidden py-0">
       <CardContent className="p-0">

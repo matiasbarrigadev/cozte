@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, Search, X } from "lucide-react";
+import { Menu as MenuPrimitive } from "@base-ui/react/menu";
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, Download, Search, X } from "lucide-react";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
 import { Input } from "@/components/ui/input";
@@ -49,10 +51,10 @@ export function EditableNumber({ value, label, onCommit, disabled, className, mi
     className={cn(cellInput, "text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none", className)} {...handlers} />;
 }
 
-export function EditableDate({ value, label, onCommit, disabled, className }: CommitProps<string>) {
-  return <Input key={value} type="date" defaultValue={value} aria-label={label} disabled={disabled} className={cn(cellInput, "tabular-nums", className)}
-    onBlur={(event) => { const next = event.currentTarget.value; if (/^\d{4}-\d{2}-\d{2}$/.test(next) && next !== value) onCommit(next); else if (!next) event.currentTarget.value = value; }}
-    onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { event.currentTarget.value = value; event.currentTarget.blur(); } }} />;
+/** A date cell: picking a day in the calendar saves it. */
+export function EditableDate({ value, label, onCommit, disabled, className, today }: CommitProps<string> & { today?: string }) {
+  return <DatePicker variant="cell" value={value} aria-label={label} disabled={disabled} today={today} className={className}
+    onChange={(next) => { if (/^\d{4}-\d{2}-\d{2}$/.test(next) && next !== value) onCommit(next); }} />;
 }
 
 export type SortDirection = "asc" | "desc";
@@ -163,4 +165,23 @@ export function downloadCsv(filename: string, headers: string[], rows: (string |
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** "Descargar Excel" with a choice of what to download, for sections with more than one table. */
+export function ExportMenu({ options, className }: { options: { label: string; hint?: string; onSelect: () => void }[]; className?: string }) {
+  return <MenuPrimitive.Root>
+    <MenuPrimitive.Trigger className={cn("inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-input bg-background px-2.5 text-sm font-medium whitespace-nowrap shadow-xs outline-none hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/40 data-popup-open:bg-accent", className)}>
+      <Download className="size-4" aria-hidden="true" />Descargar Excel<ChevronDown className="size-3.5 text-muted-foreground" aria-hidden="true" />
+    </MenuPrimitive.Trigger>
+    <MenuPrimitive.Portal>
+      <MenuPrimitive.Positioner side="bottom" align="start" sideOffset={6} collisionPadding={8} className="isolate z-50 outline-none">
+        <MenuPrimitive.Popup className="w-64 max-w-[calc(100vw-2rem)] origin-(--transform-origin) rounded-xl border bg-popover p-1 text-popover-foreground shadow-lg ring-1 ring-foreground/5 outline-none duration-100 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0">
+          {options.map((option) => <MenuPrimitive.Item key={option.label} onClick={option.onSelect} className="flex cursor-default flex-col gap-0.5 rounded-lg px-2 py-1.5 text-sm outline-none select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground">
+            <span className="font-medium">{option.label}</span>
+            {option.hint ? <span className="text-xs text-muted-foreground">{option.hint}</span> : null}
+          </MenuPrimitive.Item>)}
+        </MenuPrimitive.Popup>
+      </MenuPrimitive.Positioner>
+    </MenuPrimitive.Portal>
+  </MenuPrimitive.Root>;
 }

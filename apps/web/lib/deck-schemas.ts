@@ -41,7 +41,7 @@ export const slideChangesSchema = slideInputSchema.partial().extend({
 const slideNumber = z.number().int().min(1).max(40).describe("Número de diapositiva, empezando en 1");
 
 export const deckOperationSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("add"), slide: slideInputSchema, position: z.number().int().min(1).max(40).optional().describe("Dónde insertarla; por defecto al final") }),
+  z.object({ action: z.literal("add"), slide: slideInputSchema, position: z.number().int().min(1).max(40).optional().describe("Dónde insertarla (el número de la diapositiva que queda después); sin posición va al final, antes del cierre") }),
   z.object({ action: z.literal("update"), slide: slideNumber, set: slideChangesSchema }),
   z.object({ action: z.literal("remove"), slide: slideNumber }),
   z.object({ action: z.literal("move"), slide: slideNumber, to: slideNumber }),

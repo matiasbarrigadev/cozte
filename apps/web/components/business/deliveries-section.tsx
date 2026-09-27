@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { SuggestInput } from "@/components/ui/suggest-input";
@@ -100,7 +101,7 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
       <Button onClick={() => setScheduleOpen(true)}><AnimatedIcon name="plus" data-icon="inline-start" />Programar entrega</Button>
     </SectionHeader>
     {!data ? <TextShimmer className="text-sm">Cargando entregas…</TextShimmer> : <div className={cn("flex flex-col gap-6 transition-opacity", loading && "opacity-60")}>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Para hoy" value={String(summary.today)} note={summary.next7 ? `${summary.next7} en los próximos 7 días` : "Nada más esta semana"} />
         <Stat label="Atrasadas o con problema" value={String(summary.overdue + summary.failed - deliveries.filter((item) => item.status === "failed" && daysFrom(item.scheduledOn, today) < 0).length)} note={summary.failed ? `${summary.failed} no se pudieron entregar` : "Todo en fecha"} tone={summary.overdue || summary.failed ? "negative" : undefined} />
         <Stat label="Entregadas en el mes" value={String(summary.delivered)} note={summary.onTheWay ? `${summary.onTheWay} en camino ahora` : undefined} />
@@ -110,8 +111,8 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
       {!data.channels.some((channel) => channel.deliveryMethod || channel.deliveryCostPerOrderMinor) ? <Tip title="Para que las entregas se creen solas">Indica en «Cómo entrega cada canal» (abajo) la forma y el costo de entregar de tus canales. Desde ahí, cada venta por un canal que entrega aparece acá con su fecha, y puedes seguirla hasta que llega.</Tip> : null}
       <Card className="gap-4">
         <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
-          <div className="flex flex-col gap-1.5"><CardTitle>Entregas</CardTitle><CardDescription>Las del mes y todas las que siguen abiertas. Haz clic en una celda para cambiarla; el estado se elige de la lista.</CardDescription></div>
-          <MonthPicker month={month} onChange={onMonthChange} />
+          <div className="flex flex-col gap-1.5"><CardTitle>Entregas</CardTitle><CardDescription>Las del mes y todas las que siguen abiertas. <span className="hidden md:inline">Haz clic en una celda para cambiarla; el estado se elige de la lista.</span><span className="md:hidden">Cambia el estado desde cada tarjeta o toca «Editar».</span></CardDescription></div>
+          <MonthPicker month={month} today={todayFor(demo)} onChange={onMonthChange} />
         </CardHeader>
         <CardContent>
           {deliveries.length ? <DeliveriesTable directory={directory} deliveries={deliveries} channels={data.channels} demo={demo} today={today} money={money} onSave={save} onRemove={(delivery) => void remove(delivery)} onOpenSales={onOpenSales} />
@@ -121,7 +122,15 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
 
       <Card>
         <CardHeader><CardTitle>Cómo entrega cada canal</CardTitle><CardDescription>La forma y el costo habitual de entregar un pedido en cada canal. Se usan para las próximas ventas; lo que ya se vendió conserva su costo.</CardDescription></CardHeader>
-        <CardContent>{data.channels.length ? <div className="overflow-x-auto rounded-lg border"><Table className="border-separate border-spacing-0">
+        <CardContent>{data.channels.length ? <><ul className="flex flex-col gap-3 md:hidden" aria-label="Cómo entrega cada canal">{data.channels.map((channel) => <li key={channel.id} className="flex flex-col gap-2 rounded-lg border p-3">
+          <p className="text-sm font-medium">{channel.name}</p>
+          <div className="grid grid-cols-[1fr_8rem] gap-2 text-xs text-muted-foreground">
+            <span>Forma de entrega</span><span>Costo por pedido</span>
+            <EditableText value={channel.deliveryMethod} label={`Forma de entrega de ${channel.name}`} placeholder="Ej. moto propia, correo" className="h-9 rounded-md border border-input text-foreground" onCommit={(deliveryMethod) => void saveChannel(channel, { deliveryMethod })} />
+            <EditableNumber value={channel.deliveryCostPerOrderMinor} label={`Costo por pedido de ${channel.name}`} className="h-9 rounded-md border border-input text-foreground" onCommit={(deliveryCostPerOrder) => void saveChannel(channel, { deliveryCostPerOrder })} />
+          </div>
+          <p className="text-xs text-muted-foreground">{new Intl.NumberFormat("es-AR").format(channel.unitsPerOrderMilli / 1000)} unidades por pedido · {money(channel.deliveryCostPerOrderMinor / Math.max(channel.unitsPerOrderMilli / 1000, 0.001))} por unidad</p>
+        </li>)}</ul><div className="hidden overflow-x-auto rounded-lg border md:block"><Table className="border-separate border-spacing-0">
           <TableHeader><TableRow className="hover:bg-transparent"><TableHead className={sheetHead}>Canal</TableHead><TableHead className={cn(sheetHead, "min-w-56")}>Forma de entrega</TableHead><TableHead className={cn(sheetHead, "min-w-36 text-right")}>Costo por pedido</TableHead><TableHead className={cn(sheetHead, "text-right")}>Unidades por pedido</TableHead><TableHead className={cn(sheetHead, "text-right")}>Por unidad</TableHead></TableRow></TableHeader>
           <TableBody>{data.channels.map((channel) => <TableRow key={channel.id} className="hover:bg-muted/30">
             <TableCell className={cn(sheetCell, "px-3 font-medium")}>{channel.name}</TableCell>
@@ -130,7 +139,7 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
             <TableCell className={cn(sheetCell, "px-3 text-right tabular-nums")}>{new Intl.NumberFormat("es-AR").format(channel.unitsPerOrderMilli / 1000)}</TableCell>
             <TableCell className={cn(sheetCell, "px-3 text-right tabular-nums text-muted-foreground")}>{money(channel.deliveryCostPerOrderMinor / Math.max(channel.unitsPerOrderMilli / 1000, 0.001))}</TableCell>
           </TableRow>)}</TableBody>
-        </Table></div> : <p className="text-sm text-muted-foreground">Todavía no hay canales de venta. Agrégalos en Ventas o cuéntaselos a Cozte.</p>}
+        </Table></div></> : <p className="text-sm text-muted-foreground">Todavía no hay canales de venta. Agrégalos en Ventas o cuéntaselos a Cozte.</p>}
           <Tip className="mt-4">Entregar también es un costo de cada venta. Si un pedido lleva pocas unidades, el envío pesa mucho en cada una: por eso conviene mirar el costo por unidad y, si hace falta, fijar un mínimo de compra o cobrar el envío.</Tip>
         </CardContent>
       </Card>
@@ -218,7 +227,7 @@ function DeliveriesTable({ directory, deliveries, channels, demo, today, money, 
           const late = open && days < 0;
           return <TableRow key={item.id} className={cn("hover:bg-muted/30", late && "bg-red-50/60 dark:bg-red-500/5", open && days === 0 && "bg-amber-50/60 dark:bg-amber-500/5")}>
             <TableCell className={cn(sheetCell, "sticky left-0 z-10", late ? "bg-red-50 dark:bg-card" : open && days === 0 ? "bg-amber-50 dark:bg-card" : "bg-card")}><div className="flex items-center">
-              <EditableDate value={item.scheduledOn} label={`Fecha de entrega a ${item.recipient || item.sale.customer || "cliente"}`} disabled={disabled} onCommit={(scheduledOn) => void onSave(item, { scheduledOn })} className="w-36 shrink-0" />
+              <EditableDate today={today} value={item.scheduledOn} label={`Fecha de entrega a ${item.recipient || item.sale.customer || "cliente"}`} disabled={disabled} onCommit={(scheduledOn) => void onSave(item, { scheduledOn })} className="w-36 shrink-0" />
               <span className={cn("pr-3 text-xs whitespace-nowrap", late ? "font-medium text-red-700 dark:text-red-300" : days === 0 && open ? "font-medium text-amber-800 dark:text-amber-200" : "text-muted-foreground")}>{relativeDay(item.scheduledOn, today)}</span>
             </div></TableCell>
             <TableCell className={sheetCell}><EditableText value={item.timeWindow} label="Franja horaria" placeholder="—" disabled={disabled} onCommit={(timeWindow) => void onSave(item, { timeWindow })} /></TableCell>
@@ -292,7 +301,7 @@ function ScheduleDialog({ directory, state, demo, month, today, existing, onClos
         </Dropdown>
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field><FieldLabel htmlFor="schedule-date">Fecha</FieldLabel><Input id="schedule-date" name="date" type="date" required defaultValue={today} /><FieldDescription>Si ya pasó, queda como entregada.</FieldDescription></Field>
+        <Field><FieldLabel htmlFor="schedule-date">Fecha</FieldLabel><DatePicker id="schedule-date" name="date" required defaultValue={today} today={today} /><FieldDescription>Si ya pasó, queda como entregada.</FieldDescription></Field>
         <Field><FieldLabel htmlFor="schedule-window">Franja horaria</FieldLabel><Input id="schedule-window" name="window" placeholder="Ej. 9 a 13" /></Field>
         <Field><FieldLabel htmlFor="schedule-recipient">Recibe</FieldLabel><SuggestInput id="schedule-recipient" value={recipient ?? selected?.customer ?? ""} placeholder="Nombre" suggestions={[...directory.customers.map((item) => ({ value: item.name })), ...directory.recipients.map((value) => ({ value }))]} onValueChange={(value) => setRecipient(value)} /></Field>
         <Field><FieldLabel htmlFor="schedule-contact">Contacto</FieldLabel><Input id="schedule-contact" value={contact ?? known?.contact ?? ""} onChange={(event) => setContact(event.target.value)} placeholder="Teléfono" /></Field>

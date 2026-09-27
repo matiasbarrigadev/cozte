@@ -44,6 +44,11 @@ describe("presentations", () => {
     expect(moved).toEqual(["Informe", "Productos", "Días", "Ventas", "Cierre"]);
     const up = applyOperations(deck, meta, [{ action: "move", slide: 4, to: 2 }], sources).deck.slides.map((slide) => slide.title);
     expect(up).toEqual(["Informe", "Días", "Ventas", "Productos", "Cierre"]);
+    // Without a position a new slide goes last, but before the closing; an explicit position past the end is respected.
+    const added = applyOperations(deck, meta, [{ action: "add", slide: { title: "Equilibrio", chart: "break-even" } }], sources).deck.slides.map((slide) => slide.title);
+    expect(added).toEqual(["Informe", "Ventas", "Productos", "Días", "Equilibrio", "Cierre"]);
+    const last = applyOperations(deck, meta, [{ action: "add", slide: { layout: "bullets", title: "Anexo", bullets: ["Uno"] }, position: 6 }], sources).deck.slides.map((slide) => slide.title);
+    expect(last.at(-1)).toBe("Anexo");
     expect(() => applyOperations(deck, meta, [{ action: "remove", slide: 9 }], sources)).toThrow(/No existe/);
     expect(() => applyOperations(deck, meta, [{ action: "remove", slide: 2 }, { action: "update", slide: 2, set: { title: "x" } }], sources)).toThrow(/ya se quitó/);
   });

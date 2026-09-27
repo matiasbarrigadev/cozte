@@ -684,7 +684,9 @@ export function applyOperations(deck: Deck, meta: DeckMeta, operations: DeckOper
         if (next.slides.length >= MAX_SLIDES) throw new DeckError(`Una presentación puede tener hasta ${MAX_SLIDES} diapositivas.`);
         const slide = buildSlide(operation.slide, next, sources);
         // "position 5" means where slide 5 is now: the new one goes right before it; past the end, it goes last.
-        const index = operation.position === undefined || operation.position > original.length ? next.slides.length : anchor(operation.position);
+        // Without a position it goes at the end, but before the closing slide, which should stay last.
+        const beforeClosing = next.slides.at(-1)?.layout === "closing" && slide.layout !== "closing" ? next.slides.length - 1 : next.slides.length;
+        const index = operation.position === undefined ? beforeClosing : operation.position > original.length ? next.slides.length : anchor(operation.position);
         next.slides.splice(index, 0, slide);
         done.push(`Diapositiva agregada: «${slide.title}»`);
         break;

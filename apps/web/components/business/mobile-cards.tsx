@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
 import { cn } from "@/lib/utils";
@@ -40,7 +41,7 @@ export function DeliveryCards({ rows, today, money, onSave, onRemove }: { rows: 
               <p className={cn("text-sm font-semibold", late && "text-red-800 dark:text-red-200")}>{relativeDay(item.scheduledOn, today)} · {item.scheduledOn.slice(8, 10)}/{item.scheduledOn.slice(5, 7)}{item.timeWindow ? ` · ${item.timeWindow}` : ""}</p>
               <p className="truncate text-xs text-muted-foreground">{item.sale.channelName}{item.carrier ? ` · ${item.carrier}` : ""}</p>
             </div>
-            <Dropdown size="sm" aria-label="Estado de la entrega" value={item.status} className={cn("rounded-full font-medium ring-1", DELIVERY_TONE[item.status])} onChange={(event) => { const status = event.target.value as DeliveryStatus; if (status !== item.status) void onSave(item, { status }); }}>
+            <Dropdown size="sm" aria-label="Estado de la entrega" value={item.status} className={cn("shrink-0 rounded-full font-medium ring-1", DELIVERY_TONE[item.status])} onChange={(event) => { const status = event.target.value as DeliveryStatus; if (status !== item.status) void onSave(item, { status }); }}>
               {DELIVERY_STATUSES.map((status) => <DropdownOption key={status} value={status} hint={DELIVERY_STATUS_HINTS[status]}>{DELIVERY_STATUS_LABELS[status]}</DropdownOption>)}
             </Dropdown>
           </div>
@@ -152,7 +153,7 @@ function SaleEditDialog({ sale, channels, suggestions, onClose, onSave }: { sale
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}><DialogContent className="max-h-[90dvh] overflow-y-auto">
     <DialogHeader><DialogTitle>Editar venta</DialogTitle><DialogDescription>{saleItemsText(sale.items)}. El precio cobrado y el costo de cada producto quedan como estaban.</DialogDescription></DialogHeader>
     <form className="flex flex-col gap-4" onSubmit={submit}><FieldGroup>
-      <Field><FieldLabel htmlFor="edit-sold-on">Fecha</FieldLabel><Input id="edit-sold-on" name="soldOn" type="date" defaultValue={sale.soldOn} /></Field>
+      <Field><FieldLabel htmlFor="edit-sold-on">Fecha</FieldLabel><DatePicker id="edit-sold-on" name="soldOn" defaultValue={sale.soldOn} /></Field>
       <Field><FieldLabel htmlFor="edit-channel">Canal</FieldLabel><Dropdown id="edit-channel" className="w-full" value={channelId} onChange={(event) => setChannelId(event.target.value)}>{channels.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}<DropdownOption value={DIRECT_CHANNEL.id}>{DIRECT_CHANNEL.name}</DropdownOption></Dropdown></Field>
       <Field><FieldLabel htmlFor="edit-customer">Cliente</FieldLabel><SuggestInput id="edit-customer" value={customer} suggestions={suggestions} onValueChange={(value) => setCustomer(value)} placeholder="Sin cliente" /></Field>
       <Field><FieldLabel htmlFor="edit-delivery-cost">Costo de entregar</FieldLabel><Input id="edit-delivery-cost" name="deliveryCost" type="number" min="0" step="any" inputMode="decimal" defaultValue={sale.deliveryCostMinor} disabled={channelId !== (sale.channelId ?? DIRECT_CHANNEL.id)} /></Field>

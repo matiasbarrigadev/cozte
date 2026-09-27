@@ -5,6 +5,7 @@ import type { Product } from "@/lib/domain";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { MonthSelect } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { supportedCurrencies } from "@/lib/currency";
@@ -66,7 +67,7 @@ export function EntityDialog({ kind, product, products, categories, onClose, onS
       {kind === "expense" ? <FieldGroup>
         <Field><FieldLabel htmlFor="expense-name">Gasto</FieldLabel><Input id="expense-name" name="name" required minLength={2} placeholder="Ej. Electricidad" /></Field>
         <Field><FieldLabel htmlFor="expense-category">Categoría</FieldLabel><Dropdown id="expense-category" name="category" className="w-full" defaultValue={categories.find((item) => item.name === "Gastos generales")?.name ?? categories[0]?.name}>{categories.map((item) => <DropdownOption key={item.id} value={item.name}>{item.name}</DropdownOption>)}</Dropdown></Field>
-        <Field><FieldLabel htmlFor="expense-period">Período</FieldLabel><Input id="expense-period" name="period" type="month" required defaultValue={new Date().toISOString().slice(0, 7)} /></Field>
+        <Field><FieldLabel htmlFor="expense-period">Período</FieldLabel><MonthSelect id="expense-period" name="period" required defaultValue={new Date().toLocaleDateString("en-CA").slice(0, 7)} /></Field>
         <div className="grid grid-cols-[1fr_auto] gap-3"><Field><FieldLabel htmlFor="expense-amount">Importe</FieldLabel><Input id="expense-amount" name="amount" type="number" min="0" step="0.001" required /></Field><Field><FieldLabel htmlFor="expense-currency">Moneda</FieldLabel><Dropdown id="expense-currency" name="currency" defaultValue={currency}>{supportedCurrencies.map((code) => <DropdownOption key={code} value={code}>{code}</DropdownOption>)}</Dropdown></Field></div>
         <Field><FieldLabel htmlFor="allocation-basis">Base de reparto</FieldLabel><Dropdown id="allocation-basis" name="allocationBasis" className="w-full" value={expenseBasis} onChange={(event) => setExpenseBasis(event.target.value as "hours" | "units" | "manual")}><DropdownOption value="hours">Horas de producción</DropdownOption><DropdownOption value="units">Unidades del lote</DropdownOption><DropdownOption value="manual" disabled={!products.length}>Porcentajes acordados</DropdownOption></Dropdown></Field>
         {expenseBasis === "manual" ? <div className="space-y-2">{products.map((item) => <label key={item.id} className="flex items-center justify-between gap-3 text-sm"><span>{item.name}</span><div className="flex items-center gap-1"><Input className="w-24 text-right" type="number" min="0" max="100" step="0.01" value={expenseShares[item.id] ?? ""} onChange={(event) => setExpenseShares((current) => ({ ...current, [item.id]: event.target.value }))} /><span>%</span></div></label>)}<p className="text-xs text-muted-foreground">Total: {products.reduce((sum, item) => sum + Number(expenseShares[item.id] || 0), 0).toFixed(2)} %</p></div> : null}

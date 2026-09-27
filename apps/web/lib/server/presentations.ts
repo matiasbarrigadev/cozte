@@ -11,13 +11,13 @@ import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery } from "./db";
 import { loadBusinessRecords, loadDeliveries } from "./business";
 import { loadCostAnalysis } from "./cost-insights";
-import { loadState } from "./state";
+import { DEFAULT_ORGANIZATION_NAME, loadState } from "./state";
 
-type Row = { id: string; title: string; theme: string; deck_json: string; share_token: string | null; revision: number; created_at: string; updated_at: string };
+type Row = { id: string; title: string; theme: string; deck_json: string; share_token: string | null; revision: number; created_at: string; updated_at: string; org_name?: string | null };
 
 const MAX_DECK_BYTES = 90_000;
 const MAX_VERSIONS = 30;
-const COLUMNS = "id, title, theme, deck_json, share_token, revision, created_at, updated_at";
+const COLUMNS = "id, title, theme, deck_json, share_token, revision, created_at, updated_at, (SELECT name FROM organizations o WHERE o.id=presentations.organization_id) AS org_name";
 
 /** Public origin for shared links: the configured site, the production domain on Vercel, or cozte.com. */
 export function siteOrigin(): string {
@@ -33,6 +33,10 @@ export const appPresentationPath = (id: string) => `/app/presentaciones/${encode
 function toPresentation(row: Row): Presentation {
   const deck = parseDeck(row.deck_json);
   if (!deck) throw new ApiError(500, "La presentación guardada no se pudo leer");
+  // The cover shows the business's current name, also on decks saved before it was known or after a rename.
+  const name = row.org_name?.trim();
+  if (name && name !== DEFAULT_ORGANIZATION_NAME) deck.organization = name;
+  else if (deck.organization === DEFAULT_ORGANIZATION_NAME) deck.organization = "";
   return {
     id: row.id, title: row.title, theme: isDeckTheme(row.theme) ? row.theme : "cozte", deck, revision: row.revision,
     shareUrl: row.share_token ? `${siteOrigin()}${publicPath(row.share_token)}` : null, createdAt: row.created_at, updatedAt: row.updated_at,

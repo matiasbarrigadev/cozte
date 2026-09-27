@@ -9,7 +9,7 @@ import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TextShimmer } from "@/components/ui/text-shimmer";
@@ -227,7 +227,7 @@ function CostsAtCard({ currency, demo, money }: { currency: string; demo: boolea
   return <Card>
     <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
       <div className="flex max-w-2xl flex-col gap-1.5"><CardTitle>Costos en una fecha</CardTitle><CardDescription>Cómo estaba el costo de cada producto al cierre del día elegido: cada insumo con su consumo y precio, la mano de obra y la parte de cada gasto compartido.</CardDescription></div>
-      <label className="flex items-center gap-2 text-sm text-muted-foreground">Fecha<Input type="date" value={date} max={today} onChange={(event) => setDate(event.target.value)} className="w-auto" /></label>
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">Fecha<DatePicker value={date} max={today} today={today} onChange={setDate} aria-label="Fecha" className="w-40" /></div>
     </CardHeader>
     <CardContent className={cn("flex flex-col gap-3 transition-opacity", stale && "opacity-60")}>
       {!data ? <TextShimmer className="text-sm">Buscando cómo estaban tus costos ese día…</TextShimmer>

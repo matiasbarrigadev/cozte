@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
-import { MonthPicker, SectionHeader, Stat, Tip, useBusinessView, useMoney } from "./business-ui";
+import { MonthPicker, SectionHeader, Stat, Tip, todayFor, useBusinessView, useMoney } from "./business-ui";
 import { downloadCsv } from "./data-table";
 import { AnimatedIcon } from "@/components/animated-icon";
 
@@ -31,7 +31,7 @@ export function ResultSection({ state, demo, month, onMonthChange, onOpenSales, 
 
   return <>
     <SectionHeader eyebrow="Resultados" title="Resultado del mes" description="Lo que vendiste, lo que costó cada venta, los gastos fijos y lo que quedó. Sale de tus ventas y compras registradas.">
-      <MonthPicker month={month} onChange={onMonthChange} />
+      <MonthPicker month={month} today={todayFor(demo)} onChange={onMonthChange} />
       {result ? <Button variant="outline" onClick={() => downloadCsv(`resultado-${month}`, ["Concepto", "Monto"], [
         ["Ventas", result.revenue], ["Producir lo vendido (insumos y mano de obra)", -result.variableProductionCost], ["Comisiones y cargos", -result.sellingCost], ["Entregas", -result.deliveryCost],
         ["Lo que dejaron las ventas", result.contribution],
@@ -41,7 +41,7 @@ export function ResultSection({ state, demo, month, onMonthChange, onOpenSales, 
       ])}><AnimatedIcon name="cloud" data-icon="inline-start" />Descargar Excel</Button> : null}
     </SectionHeader>
     {!result ? <TextShimmer className="text-sm">Calculando el mes…</TextShimmer> : <div className={cn("flex flex-col gap-6 transition-opacity", loading && "opacity-60")}>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label={result.result >= 0 ? "Ganancia del mes" : "Pérdida del mes"} value={money(result.result)} tone={result.sales ? result.result >= 0 ? "positive" : "negative" : undefined} note={result.sales ? `Con ${result.sales} venta${result.sales === 1 ? "" : "s"} registrada${result.sales === 1 ? "" : "s"}` : "Todavía sin ventas este mes"} />
         <Stat label="Vendiste" value={money(result.revenue)} />
         <Stat label="Te dejaron las ventas" value={money(result.contribution)} note={result.revenue ? `${Math.round(result.contribution / result.revenue * 100)} % de lo vendido` : undefined} />

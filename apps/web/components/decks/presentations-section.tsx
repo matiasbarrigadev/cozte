@@ -12,6 +12,7 @@ import { CHART_GUIDE, COLOR_MEANING, DECK_CHECKLIST, DECK_STRUCTURE, LAYOUT_GUID
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { MonthSelect } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dropdown, DropdownOption, DropdownGroup } from "@/components/ui/dropdown";
@@ -282,7 +283,7 @@ function SlideForm({ slide, state, busy, onSave }: { slide: Slide; state: Domain
         <div className="grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-1">{METRIC_KEYS.map((key) => <label key={key} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={metrics.includes(key)} disabled={!metrics.includes(key) && metrics.length >= LIMITS.metrics} onChange={(event) => setMetrics((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />{METRICS[key].label}</label>)}</div>
       </fieldset> : null}
       {usesProduct ? <Field label="Producto"><Dropdown className="w-full" value={product} onChange={(event) => setProduct(event.target.value)}>{chart === "channels" && layout === "chart" ? <DropdownOption value="">Todos</DropdownOption> : null}{state.products.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}</Dropdown></Field> : null}
-      {usesMonth ? <Field label="Mes (vacío = el de la presentación)"><Input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></Field> : null}
+      {usesMonth ? <Field label="Mes (vacío = el de la presentación)"><MonthSelect value={month} onChange={setMonth} clearable placeholder="El de la presentación" /></Field> : null}
       {layout !== "comparison" ? <Field label={layout === "chart" ? "Conclusión (vacío = la automática)" : "Texto"}><Textarea rows={3} value={text} maxLength={LIMITS.text} onChange={(event) => setText(event.target.value)} /></Field> : null}
       {showBullets ? <Field label="Puntos (uno por línea)"><Textarea rows={4} value={bullets} onChange={(event) => setBullets(event.target.value)} /></Field> : null}
       {layout === "comparison" ? <>{[["Columna izquierda", left, setLeft], ["Columna derecha", right, setRight]].map(([label, column, setColumn]) => {

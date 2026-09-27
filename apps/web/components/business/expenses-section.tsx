@@ -32,7 +32,7 @@ export function ExpensesSection({ state, demo, month, onSave, onOpenProduction, 
       <Button onClick={() => setDialog({ area: "admin" })}><AnimatedIcon name="plus" data-icon="inline-start" />Agregar gasto</Button>
     </SectionHeader>
     {!structure ? <TextShimmer className="text-sm">Cargando gastos…</TextShimmer> : <div className={cn("flex flex-col gap-6 transition-opacity", loading && "opacity-60")}>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Todos los gastos fijos del mes" value={money(structure.monthlyFixedTotal)} note="Taller, entregas, ventas y administración" />
         {COMPANY_AREAS.map((area) => <Stat key={area} label={AREA_LABELS[area]} value={money(structure.areas.find((item) => item.area === area)?.monthlyTotal ?? 0)} note="por mes" />)}
       </div>
@@ -45,22 +45,22 @@ export function ExpensesSection({ state, demo, month, onSave, onOpenProduction, 
             <Button size="sm" variant="outline" onClick={() => setDialog({ area: areaKey })}><AnimatedIcon name="plus" data-icon="inline-start" />Gasto de {area.label.toLocaleLowerCase("es")}</Button>
           </CardHeader>
           <CardContent>{area.expenses.length || area.investments.length ? <div className="overflow-x-auto"><Table>
-            <TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead>Tipo</TableHead><TableHead className="text-right">Por mes</TableHead><TableHead className="w-12" /></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead className="hidden sm:table-cell">Tipo</TableHead><TableHead className="text-right">Por mes</TableHead><TableHead className="w-12" /></TableRow></TableHeader>
             <TableBody>
               {area.expenses.map((expense) => <TableRow key={expense.id}>
-                <TableCell className="font-medium">{expense.name}<div className="text-xs font-normal text-muted-foreground">{expense.category}</div></TableCell>
-                <TableCell className="text-muted-foreground">Gasto fijo</TableCell>
+                <TableCell className="font-medium whitespace-normal">{expense.name}<div className="text-xs font-normal text-muted-foreground"><span className="sm:hidden">Gasto fijo · </span>{expense.category}</div></TableCell>
+                <TableCell className="hidden text-muted-foreground sm:table-cell">Gasto fijo</TableCell>
                 <TableCell className="text-right tabular-nums">{money(expense.monthlyAmount)}</TableCell>
                 <TableCell><Button size="icon-sm" variant="ghost" aria-label={`Editar ${expense.name}`} onClick={() => setDialog({ area: areaKey, expense: expenseById.get(expense.id) })}><AnimatedIcon name="edit" /></Button></TableCell>
               </TableRow>)}
               {area.investments.map((asset) => <TableRow key={asset.id}>
-                <TableCell className="font-medium">{asset.description}<div className="text-xs font-normal text-muted-foreground">Costó {money(asset.amount)} · faltan {asset.monthsLeft} de {asset.usefulLifeMonths} meses</div></TableCell>
-                <TableCell className="text-muted-foreground">Inversión</TableCell>
+                <TableCell className="font-medium whitespace-normal">{asset.description}<div className="text-xs font-normal text-muted-foreground"><span className="sm:hidden">Inversión · </span>Costó {money(asset.amount)} · faltan {asset.monthsLeft} de {asset.usefulLifeMonths} meses</div></TableCell>
+                <TableCell className="hidden text-muted-foreground sm:table-cell">Inversión</TableCell>
                 <TableCell className="text-right tabular-nums">{money(asset.monthlyShare)}</TableCell>
                 <TableCell><ReceiptLink documentId={asset.documentId} demo={demo} /></TableCell>
               </TableRow>)}
             </TableBody>
-            <TableFooter><TableRow><TableCell colSpan={2}>Total de {area.label.toLocaleLowerCase("es")}</TableCell><TableCell className="text-right tabular-nums">{money(area.monthlyTotal)}</TableCell><TableCell /></TableRow></TableFooter>
+            <TableFooter><TableRow><TableCell className="whitespace-normal">Total de {area.label.toLocaleLowerCase("es")}</TableCell><TableCell className="hidden sm:table-cell" /><TableCell className="text-right tabular-nums">{money(area.monthlyTotal)}</TableCell><TableCell /></TableRow></TableFooter>
           </Table></div> : <p className="text-sm text-muted-foreground">Sin gastos cargados en esta área.</p>}</CardContent>
         </Card>;
       })}

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { MonthSelect } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { AnimatedIcon } from "@/components/animated-icon";
@@ -133,7 +134,7 @@ function WidgetOptions({ kind, onBack, onAdd }: { kind: WidgetKind; onBack: () =
         {meta.usesMonth ? <fieldset className="flex flex-col gap-1.5"><legend className="mb-1 font-medium">Mes</legend>
           <label className="flex items-center gap-2 text-xs"><input type="radio" name="widget-month" checked={!fixedMonth} onChange={() => setFixedMonth("")} />El mes en curso (se actualiza solo)</label>
           <label className="flex items-center gap-2 text-xs"><input type="radio" name="widget-month" checked={Boolean(fixedMonth)} onChange={() => setFixedMonth(currentMonth)} />Un mes fijo</label>
-          {fixedMonth ? <Input type="month" value={fixedMonth} onChange={(event) => { if (/^\d{4}-\d{2}$/.test(event.target.value)) setFixedMonth(event.target.value); }} aria-label="Mes del widget" /> : null}
+          {fixedMonth ? <MonthSelect value={fixedMonth} onChange={(value) => { if (value) setFixedMonth(value); }} aria-label="Mes del widget" /> : null}
           {fixedMonth ? <span className="text-[11px] text-muted-foreground">{monthLabel(fixedMonth)}</span> : null}
         </fieldset> : null}
         <label className="flex flex-col gap-1.5"><span className="font-medium">Título (opcional)</span><Input value={title} maxLength={60} placeholder={meta.label} onChange={(event) => setTitle(event.target.value)} /></label>
