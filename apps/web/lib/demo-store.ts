@@ -167,7 +167,9 @@ export function demoBusinessAction<T>(body: Body): T {
         ...item, purchasedOn: patch.purchasedOn ?? item.purchasedOn, description: patch.description ?? item.description, supplier: patch.supplier ?? item.supplier,
         amountMinor: patch.amount ?? item.amountMinor, area: patch.area ?? item.area, usefulLifeMonths: patch.usefulLifeMonths ?? item.usefulLifeMonths,
       };
-      if (!current.records.purchases.some((item) => item.id === body.id) && !current.records.investments.some((item) => item.id === body.id)) throw new DemoError("Compra no encontrada");
+      const target = [...current.records.purchases, ...current.records.investments].find((item) => item.id === body.id);
+      if (!target) throw new DemoError("Compra no encontrada");
+      if (target.kind === "investment" && target.includeInUnitCost && (patch.amount !== undefined || patch.usefulLifeMonths !== undefined || patch.area !== undefined || patch.purchasedOn !== undefined)) throw new DemoError("Esta inversión se suma al costo de cada producto: para cambiar su monto, vida útil, área o fecha, primero quítala del costo en Gastos de la empresa.");
       commit({ ...current, records: { ...current.records, purchases: current.records.purchases.map(update), investments: current.records.investments.map(update) } });
       return { ok: true } as T;
     }

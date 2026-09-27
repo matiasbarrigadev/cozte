@@ -21,6 +21,8 @@ import { cn } from "@/lib/utils";
 import { MonthPicker, SectionHeader, Stat, Tip, businessAction, notifySaved, todayFor, useBusinessView, useCustomerDirectory, useDemoVersion, useMoney } from "./business-ui";
 import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
 import { DELIVERY_TONE, relativeDay } from "./delivery-status";
+import { DeliveryCards } from "./mobile-cards";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 type DeliveryData = { deliveries: Delivery[]; channels: SalesChannel[] };
 type Patch = Partial<Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "method" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn">> & { cost?: number };
@@ -37,7 +39,7 @@ type Quick = "all" | "open" | "today" | "overdue" | "delivered" | "failed";
 type SortKey = "date" | "recipient" | "cost";
 
 /** The month's deliveries plus every open one; fetched for a workspace, built in the browser for the demo. */
-function useDeliveries(month: string, demo: boolean, revision: number) {
+export function useDeliveries(month: string, demo: boolean, revision: number) {
   const [version, setVersion] = React.useState(0);
   const [loaded, setLoaded] = React.useState<{ key: string; data: DeliveryData } | null>(null);
   const demoChanges = useDemoVersion(demo);
@@ -145,6 +147,7 @@ function DeliveriesTable({ directory, deliveries, channels, today, money, onSave
   const [channelFilter, setChannelFilter] = usePersistentState<string>("entregas:canal", "all");
   const [carrierFilter, setCarrierFilter] = usePersistentState<string>("entregas:quien", "all");
   const [sort, setSort] = React.useState<SortState<SortKey>>(null);
+  const isMobile = useIsMobile();
   const carriers = [...new Set(deliveries.map((item) => item.carrier).filter(Boolean))].sort();
   const counts: Record<Quick, number> = {
     all: deliveries.length,
@@ -187,10 +190,10 @@ function DeliveriesTable({ directory, deliveries, channels, today, money, onSave
       { id: "channel", label: "Canal", value: channelFilter, onChange: setChannelFilter, options: channelOptions },
       ...(carriers.length ? [{ id: "carrier", label: "Quién entrega", value: carrierFilter, onChange: setCarrierFilter, options: [{ value: "all", label: "Todos los que entregan" }, ...carriers.map((carrier) => ({ value: carrier, label: carrier }))] }] : []),
     ]}>{sort ? <Button type="button" size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setSort(null)}>Orden: más cercanas a hoy</Button> : null}</TableToolbar>
-    <div className="overflow-x-auto rounded-lg border">
+    {isMobile ? <DeliveryCards rows={rows} today={today} money={money} onSave={onSave} onRemove={onRemove} /> : <div className="max-h-[min(70vh,48rem)] overflow-auto rounded-lg border">
       <Table className="border-separate border-spacing-0">
-        <TableHeader><TableRow className="hover:bg-transparent">
-          <SortableHead column="date" label="Fecha" sort={sort} onSort={setSort} className="min-w-44" defaultDirection="asc" />
+        <TableHeader className="sticky top-0 z-20 bg-card"><TableRow className="hover:bg-transparent">
+          <SortableHead column="date" label="Fecha" sort={sort} onSort={setSort} className="sticky left-0 z-30 min-w-44 bg-muted" defaultDirection="asc" />
           <TableHead className={cn(sheetHead, "min-w-28")}>Franja</TableHead>
           <TableHead className={cn(sheetHead, "min-w-44")}>Estado</TableHead>
           <SortableHead column="recipient" label="Recibe" sort={sort} onSort={setSort} className="min-w-40" defaultDirection="asc" />
@@ -209,7 +212,7 @@ function DeliveriesTable({ directory, deliveries, channels, today, money, onSave
           const open = isOpenDelivery(item.status);
           const late = open && days < 0;
           return <TableRow key={item.id} className={cn("hover:bg-muted/30", late && "bg-red-50/60 dark:bg-red-500/5", open && days === 0 && "bg-amber-50/60 dark:bg-amber-500/5")}>
-            <TableCell className={sheetCell}><div className="flex items-center">
+            <TableCell className={cn(sheetCell, "sticky left-0 z-10", late ? "bg-red-50 dark:bg-card" : open && days === 0 ? "bg-amber-50 dark:bg-card" : "bg-card")}><div className="flex items-center">
               <EditableDate value={item.scheduledOn} label={`Fecha de entrega a ${item.recipient || item.sale.customer || "cliente"}`} disabled={disabled} onCommit={(scheduledOn) => void onSave(item, { scheduledOn })} className="w-36 shrink-0" />
               <span className={cn("pr-3 text-xs whitespace-nowrap", late ? "font-medium text-red-700 dark:text-red-300" : days === 0 && open ? "font-medium text-amber-800 dark:text-amber-200" : "text-muted-foreground")}>{relativeDay(item.scheduledOn, today)}</span>
             </div></TableCell>
@@ -243,7 +246,7 @@ function DeliveriesTable({ directory, deliveries, channels, today, money, onSave
           <TableCell colSpan={3} />
         </TableRow></TableFooter>
       </Table>
-    </div>
+    </div>}
   </div>;
 }
 

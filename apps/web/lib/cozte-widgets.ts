@@ -15,12 +15,12 @@ export const WIDGET_GROUPS: { id: WidgetGroup; label: string; hint: string }[] =
   { id: "purchases", label: "Compras", hint: "Lo que se compró en el mes" },
 ];
 
-type WidgetMeta = { label: string; hint: string; group: WidgetGroup; needsProduct?: boolean; productOptional?: boolean; usesMonth?: boolean; usesHistory?: boolean };
+type WidgetMeta = { label: string; hint: string; group: WidgetGroup; needsProduct?: boolean; productOptional?: boolean; usesMonth?: boolean; usesHistory?: boolean; usesDeliveries?: boolean };
 
 const CHART_GROUP: Record<ChartKind, WidgetGroup> = {
   "unit-cost": "costs", "cost-breakdown": "costs", margins: "costs", production: "costs", "cost-evolution": "costs", "expenses-by-area": "costs",
   "month-result": "month", "break-even": "month",
-  "sales-by-channel": "sales", "sales-by-product": "sales", "sales-by-day": "sales", channels: "sales", deliveries: "sales",
+  "sales-by-channel": "sales", "sales-by-product": "sales", "sales-by-day": "sales", channels: "sales", deliveries: "sales", "delivery-status": "sales", "upcoming-deliveries": "sales",
   purchases: "purchases",
 };
 
@@ -29,11 +29,11 @@ export const WIDGETS: Record<WidgetKind, WidgetMeta> = {
   kpis: { label: "Cifras clave", hint: "Hasta 4 cifras que elijas: ventas, resultado, costo por unidad, margen…", group: "month", usesMonth: true },
   ...Object.fromEntries(CHART_KIND_KEYS.map((kind) => [kind, {
     label: CHART_KINDS[kind].label, hint: CHART_KINDS[kind].hint, group: CHART_GROUP[kind],
-    needsProduct: CHART_KINDS[kind].needsProduct, productOptional: kind === "channels", usesMonth: CHART_KINDS[kind].usesMonth, usesHistory: CHART_KINDS[kind].usesHistory,
+    needsProduct: CHART_KINDS[kind].needsProduct, productOptional: kind === "channels", usesMonth: CHART_KINDS[kind].usesMonth, usesHistory: CHART_KINDS[kind].usesHistory, usesDeliveries: CHART_KINDS[kind].usesDeliveries,
   } satisfies WidgetMeta])) as Record<ChartKind, WidgetMeta>,
 };
 
-export const WIDGET_KINDS: WidgetKind[] = ["month", "kpis", "month-result", "break-even", "sales-by-channel", "sales-by-product", "sales-by-day", "channels", "deliveries", "unit-cost", "cost-breakdown", "margins", "production", "cost-evolution", "expenses-by-area", "purchases"];
+export const WIDGET_KINDS: WidgetKind[] = ["month", "kpis", "month-result", "break-even", "sales-by-channel", "sales-by-product", "sales-by-day", "channels", "upcoming-deliveries", "delivery-status", "deliveries", "unit-cost", "cost-breakdown", "margins", "production", "cost-evolution", "expenses-by-area", "purchases"];
 
 export const DEFAULT_KPI_METRICS: MetricKey[] = ["revenue", "result", "sales-count", "break-even"];
 
@@ -140,10 +140,11 @@ export function computeWidget(widget: WidgetSpec, sources: DeckSources, currentM
 }
 
 /** The months and history a set of widgets needs. */
-export function widgetNeeds(widgets: WidgetSpec[], currentMonth: string): { months: string[]; history: boolean } {
+export function widgetNeeds(widgets: WidgetSpec[], currentMonth: string): { months: string[]; history: boolean; deliveries: boolean } {
   return {
     months: [...new Set(widgets.map((widget) => widget.month ?? currentMonth))],
     history: widgets.some((widget) => WIDGETS[widget.kind].usesHistory),
+    deliveries: widgets.some((widget) => WIDGETS[widget.kind].usesDeliveries || (widget.kind === "kpis" && (widget.metrics ?? []).some((metric) => METRICS[metric].usesDeliveries))),
   };
 }
 

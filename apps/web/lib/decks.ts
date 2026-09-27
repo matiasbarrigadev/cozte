@@ -1,4 +1,4 @@
-import { AREA_LABELS, PURCHASE_KIND_LABELS, monthLessons, type BusinessView } from "./business";
+import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, PURCHASE_KIND_LABELS, daysFrom, isOpenDelivery, monthLessons, type BusinessView, type Delivery } from "./business";
 import type { CostAnalysis } from "./cost-analysis";
 import { resolveEntity } from "./cozte-cost-view";
 import { productionCostSources, type DomainState, type ProductCost } from "./domain";
@@ -32,8 +32,8 @@ export const SLIDE_LAYOUTS: Record<SlideLayout, { label: string; hint: string }>
 export const SLIDE_LAYOUT_KEYS = Object.keys(SLIDE_LAYOUTS) as SlideLayout[];
 
 export type ChartKind = "unit-cost" | "cost-breakdown" | "margins" | "production" | "channels" | "month-result" | "break-even"
-  | "sales-by-channel" | "sales-by-product" | "sales-by-day" | "deliveries" | "expenses-by-area" | "cost-evolution" | "purchases";
-export const CHART_KINDS: Record<ChartKind, { label: string; hint: string; needsProduct?: boolean; usesMonth?: boolean; usesHistory?: boolean }> = {
+  | "sales-by-channel" | "sales-by-product" | "sales-by-day" | "deliveries" | "delivery-status" | "upcoming-deliveries" | "expenses-by-area" | "cost-evolution" | "purchases";
+export const CHART_KINDS: Record<ChartKind, { label: string; hint: string; needsProduct?: boolean; usesMonth?: boolean; usesHistory?: boolean; usesDeliveries?: boolean }> = {
   "unit-cost": { label: "Costo por unidad", hint: "Cuánto cuesta hacer cada producto y en qué se va (insumos, mano de obra, gastos del taller)" },
   "cost-breakdown": { label: "Desglose del costo", hint: "Cada insumo, la mano de obra y cada gasto dentro del costo de una unidad", needsProduct: true },
   margins: { label: "Margen por producto", hint: "Precio de venta menos costo de fabricar, por unidad" },
@@ -45,6 +45,8 @@ export const CHART_KINDS: Record<ChartKind, { label: string; hint: string; needs
   "sales-by-product": { label: "Ventas por producto", hint: "Lo vendido de cada producto en el mes, con unidades", usesMonth: true },
   "sales-by-day": { label: "Ventas por día", hint: "Lo vendido cada día del mes", usesMonth: true },
   deliveries: { label: "Entregas por canal", hint: "Pedidos entregados en cada canal y lo que costó entregarlos", usesMonth: true },
+  "delivery-status": { label: "Estado de las entregas", hint: "Cuántas entregas hay pendientes, en camino, entregadas o con problema", usesMonth: true, usesDeliveries: true },
+  "upcoming-deliveries": { label: "Próximas entregas", hint: "Las entregas por hacer, la más urgente primero, con quién recibe y qué lleva", usesDeliveries: true },
   "expenses-by-area": { label: "Gastos fijos por área", hint: "La estructura mensual de producción, entregas, ventas y administración", usesMonth: true },
   "cost-evolution": { label: "Evolución del costo", hint: "Cómo cambió el costo por unidad de cada producto mes a mes", usesHistory: true },
   purchases: { label: "Compras del mes", hint: "Las compras e inversiones del mes con su tipo y área", usesMonth: true },
@@ -53,8 +55,8 @@ export const CHART_KIND_KEYS = Object.keys(CHART_KINDS) as ChartKind[];
 
 export type MetricFormat = "money" | "count" | "percent";
 export type MetricKey = "revenue" | "result" | "contribution" | "fixed-costs" | "break-even" | "sales-count" | "units-sold" | "average-ticket"
-  | "deliveries" | "delivery-cost" | "selling-cost" | "purchases-total" | "products" | "monthly-units" | "unit-cost" | "sale-price" | "unit-margin" | "margin-percent";
-export const METRICS: Record<MetricKey, { label: string; hint: string; format: MetricFormat; perProduct?: boolean; usesMonth?: boolean }> = {
+  | "deliveries" | "pending-deliveries" | "late-deliveries" | "delivery-cost" | "selling-cost" | "purchases-total" | "products" | "monthly-units" | "unit-cost" | "sale-price" | "unit-margin" | "margin-percent";
+export const METRICS: Record<MetricKey, { label: string; hint: string; format: MetricFormat; perProduct?: boolean; usesMonth?: boolean; usesDeliveries?: boolean }> = {
   revenue: { label: "Ventas del mes", hint: "Todo lo cobrado en el mes", format: "money", usesMonth: true },
   result: { label: "Resultado del mes", hint: "Ganancia o pérdida después de todos los costos del mes", format: "money", usesMonth: true },
   contribution: { label: "Lo que dejaron las ventas", hint: "Ventas menos lo que cuesta cada venta (margen de contribución)", format: "money", usesMonth: true },
@@ -63,7 +65,9 @@ export const METRICS: Record<MetricKey, { label: string; hint: string; format: M
   "sales-count": { label: "Ventas registradas", hint: "Cantidad de ventas del mes", format: "count", usesMonth: true },
   "units-sold": { label: "Unidades vendidas", hint: "Unidades de todos los productos vendidas en el mes", format: "count", usesMonth: true },
   "average-ticket": { label: "Venta promedio", hint: "Lo cobrado en promedio por venta", format: "money", usesMonth: true },
-  deliveries: { label: "Pedidos entregados", hint: "Ventas del mes con costo de entrega", format: "count", usesMonth: true },
+  deliveries: { label: "Entregas hechas", hint: "Entregas del mes que ya llegaron al cliente", format: "count", usesMonth: true, usesDeliveries: true },
+  "pending-deliveries": { label: "Entregas por hacer", hint: "Pendientes, en camino o con problema, de cualquier fecha", format: "count", usesDeliveries: true },
+  "late-deliveries": { label: "Entregas atrasadas", hint: "Por hacer con la fecha ya pasada", format: "count", usesDeliveries: true },
   "delivery-cost": { label: "Costo de entregas", hint: "Lo que costó entregar los pedidos del mes", format: "money", usesMonth: true },
   "selling-cost": { label: "Comisiones y cargos", hint: "Lo que se llevaron los canales por vender", format: "money", usesMonth: true },
   "purchases-total": { label: "Compras del mes", hint: "Todo lo comprado en el mes (insumos, gastos, pagos e inversiones)", format: "money", usesMonth: true },
@@ -176,7 +180,13 @@ export type DeckSources = {
   views: Record<string, BusinessView>;
   analysis: CostAnalysis | null;
   now: string;
+  /** The month's deliveries plus every open one, when a chart or figure needs them. */
+  deliveries?: Delivery[];
+  /** The business's calendar day (AAAA-MM-DD), for what is late or due. */
+  today?: string;
 };
+
+const sourcesToday = (sources: DeckSources) => sources.today ?? sources.now.slice(0, 10);
 
 export class DeckError extends Error {
   constructor(message: string, public options: string[] = []) { super(message); }
@@ -476,6 +486,34 @@ export function buildChart(kind: ChartKind, productId: string | null, month: str
         data: { type: "line", periods: analysis.periods.map(label), series: products.map((product) => ({ label: product.name, values: analysis.periods.map((value) => { const point = product.points.find((item) => item.period === value && !item.incomplete); return point?.unitCost == null ? null : round2(point.unitCost); }) })) },
       };
     }
+    case "delivery-status": {
+      if (!sources.deliveries) return { ...base, title: meta.label, data: empty("No hay datos de entregas cargados.") };
+      const today = sourcesToday(sources);
+      const relevant = sources.deliveries.filter((item) => item.scheduledOn.startsWith(month) || isOpenDelivery(item.status));
+      if (!relevant.length) return { ...base, title: meta.label, data: empty(`No hay entregas en ${period}.`) };
+      const rows: BarRow[] = DELIVERY_STATUSES.map((status) => ({ label: DELIVERY_STATUS_LABELS[status], value: relevant.filter((item) => item.status === status).length, ...(status === "failed" ? { tone: "negative" as const } : {}) })).filter((row) => row.value > 0);
+      const open = relevant.filter((item) => isOpenDelivery(item.status));
+      const late = open.filter((item) => daysFrom(item.scheduledOn, today) < 0).length;
+      return {
+        ...base, title: `Entregas · ${period}`, caption: "Las del mes y todas las que siguen abiertas.",
+        insight: open.length ? `Hay ${open.length} entrega${open.length === 1 ? "" : "s"} por hacer${late ? `, ${late} atrasada${late === 1 ? "" : "s"}` : ""}.` : "No hay entregas pendientes: todo lo del mes llegó.",
+        data: { type: "bars", unit: "count", rows, total: relevant.length },
+      };
+    }
+    case "upcoming-deliveries": {
+      if (!sources.deliveries) return { ...base, title: meta.label, data: empty("No hay datos de entregas cargados.") };
+      const today = sourcesToday(sources);
+      const open = sources.deliveries.filter((item) => isOpenDelivery(item.status)).sort((a, b) => a.scheduledOn.localeCompare(b.scheduledOn));
+      if (!open.length) return { ...base, title: meta.label, data: empty("No hay entregas por hacer.") };
+      const when = (date: string) => { const days = daysFrom(date, today); return days === 0 ? "Hoy" : days === 1 ? "Mañana" : days < 0 ? `Atrasada ${-days} d` : `${date.slice(8, 10)}/${date.slice(5, 7)}`; };
+      const late = open.filter((item) => daysFrom(item.scheduledOn, today) < 0).length;
+      const next = open.find((item) => daysFrom(item.scheduledOn, today) >= 0) ?? open[0];
+      return {
+        ...base, title: meta.label, caption: open.length > 8 ? `Las 8 más urgentes de ${open.length}.` : null,
+        insight: `${late ? `${late} atrasada${late === 1 ? "" : "s"}. ` : ""}La próxima: ${when(next.scheduledOn).toLowerCase()} para ${next.recipient || next.sale.customer || next.sale.channelName}.`,
+        data: { type: "table", columns: ["Cuándo", "Recibe", "Lleva", "Estado"], align: ["left", "left", "left", "left"], rows: open.slice(0, 8).map((item) => [when(item.scheduledOn), item.recipient || item.sale.customer || "—", item.sale.items, DELIVERY_STATUS_LABELS[item.status]]) },
+      };
+    }
     case "purchases": {
       const purchases = view(sources, month).purchases.filter((item) => item.purchasedOn.startsWith(month));
       const title = `Compras de ${period}`;
@@ -512,12 +550,17 @@ export function buildKpi(metric: MetricKey, productId: string | null, month: str
   const current = view(sources, month);
   const result = current.result;
   const sales = current.sales.filter((sale) => sale.soldOn.startsWith(month));
+  const deliveries = sources.deliveries;
+  const today = sourcesToday(sources);
   const values: Record<string, number | null> = {
     revenue: result.revenue, result: result.result, contribution: result.contribution,
     "fixed-costs": result.fixedTotal + result.investmentsShare, "break-even": result.breakEvenRevenue,
     "sales-count": result.sales, "units-sold": sales.reduce((sum, sale) => sum + sale.items.reduce((total, item) => total + item.quantityMilli / 1000, 0), 0),
     "average-ticket": result.sales ? result.revenue / result.sales : null,
-    deliveries: sales.filter((sale) => sale.deliveryCostMinor > 0).length, "delivery-cost": result.deliveryCost, "selling-cost": result.sellingCost,
+    deliveries: deliveries ? deliveries.filter((item) => item.status === "delivered" && item.scheduledOn.startsWith(month)).length : sales.filter((sale) => sale.deliveryCostMinor > 0).length,
+    "pending-deliveries": deliveries ? deliveries.filter((item) => isOpenDelivery(item.status)).length : null,
+    "late-deliveries": deliveries ? deliveries.filter((item) => isOpenDelivery(item.status) && daysFrom(item.scheduledOn, today) < 0).length : null,
+    "delivery-cost": result.deliveryCost, "selling-cost": result.sellingCost,
     "purchases-total": current.purchases.filter((item) => item.purchasedOn.startsWith(month)).reduce((sum, item) => sum + item.amountMinor, 0),
   };
   const value = values[metric] ?? null;
@@ -576,18 +619,21 @@ export function slideToInput(slide: Slide, sources: DeckSources): SlideInput {
 
 
 /** Months and history each operation needs, so the server loads only that. */
-export function dataNeeds(deck: Deck | null, operations: (DeckOperation | { slides: SlideInput[]; month: string })[]): { months: string[]; history: boolean } {
+export function dataNeeds(deck: Deck | null, operations: (DeckOperation | { slides: SlideInput[]; month: string })[]): { months: string[]; history: boolean; deliveries: boolean } {
   const months = new Set<string>();
   let history = false;
+  let deliveries = false;
   const addSlide = (input: SlideInput | SlideChanges, fallback: string) => {
     const month = input.month ?? fallback;
     if (isMonth(month)) months.add(month);
     if (input.chart && CHART_KINDS[input.chart].usesHistory) history = true;
+    if ((input.chart && CHART_KINDS[input.chart].usesDeliveries) || input.metrics?.some((metric) => METRICS[metric].usesDeliveries)) deliveries = true;
   };
   const addStored = (slide: Slide, fallback: string) => {
     const month = slide.chart?.month ?? slide.kpis?.find((kpi) => kpi.month)?.month ?? fallback;
     if (isMonth(month)) months.add(month);
     if (slide.chart && CHART_KINDS[slide.chart.kind].usesHistory) history = true;
+    if ((slide.chart && CHART_KINDS[slide.chart.kind].usesDeliveries) || slide.kpis?.some((kpi) => METRICS[kpi.metric].usesDeliveries)) deliveries = true;
   };
   let deckMonth = deck?.month ?? "";
   if (isMonth(deckMonth)) months.add(deckMonth);
@@ -602,7 +648,7 @@ export function dataNeeds(deck: Deck | null, operations: (DeckOperation | { slid
     if (operation.action === "settings" && operation.month && isMonth(operation.month)) { months.add(operation.month); deckMonth = operation.month; deck?.slides.forEach((slide) => addStored(slide, deckMonth)); }
     if (operation.action === "refresh") deck?.slides.forEach((slide) => addStored(slide, deckMonth));
   }
-  return { months: [...months], history };
+  return { months: [...months], history, deliveries };
 }
 
 /**
@@ -756,8 +802,10 @@ export function templateSlides(template: DeckTemplate, month: string, sources: D
     ];
     case "entregas": return [
       cover("Entregas y canales"),
-      { layout: "kpis", title: "Las entregas en cifras", metrics: ["deliveries", "delivery-cost", "sales-count"] },
-      { title: "¿Cómo llegaron los pedidos?", chart: "deliveries" },
+      { layout: "kpis", title: "Las entregas en cifras", metrics: ["deliveries", "pending-deliveries", "late-deliveries", "delivery-cost"] },
+      { title: "¿Cómo están las entregas?", chart: "delivery-status" },
+      { title: "¿Qué hay que entregar ahora?", chart: "upcoming-deliveries" },
+      { title: "¿Cómo llegaron los pedidos por canal?", chart: "deliveries" },
       { title: "¿Cuánto queda después de entregar?", chart: "channels" },
       { layout: "closing", title: "En resumen" },
     ];

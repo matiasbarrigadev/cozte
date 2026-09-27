@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildBusinessView } from "./business";
 import { calculateCosts } from "./domain";
-import { DEMO_MONTH, demoBusinessRecords, demoState } from "./demo";
-import { DECK_TEMPLATE_KEYS, applyOperations, formatMoney, newDeck, templateOutline, templateSlides, unbackedAmounts, type DeckSources } from "./decks";
+import { DEMO_MONTH, DEMO_TODAY, demoBusinessRecords, demoDeliveries, demoState } from "./demo";
+import { DECK_TEMPLATE_KEYS, applyOperations, buildChart, buildKpi, formatMoney, newDeck, templateOutline, templateSlides, unbackedAmounts, type DeckSources } from "./decks";
 
 const sources: DeckSources = {
   state: demoState, costs: calculateCosts(demoState), analysis: null, now: "2026-09-25T12:00:00Z",
@@ -53,5 +53,18 @@ describe("presentations", () => {
       { title: "Ventas", chart: "sales-by-channel", text: `Vendimos ${formatMoney(sources.views[DEMO_MONTH].result.revenue, demoState.organization.currency)} en total y la feria aportó $999.999.` },
     ] }, sources);
     expect(unbackedAmounts(deck)).toEqual(["$999.999"]);
+  });
+
+  it("shows the state of deliveries, the most urgent first, and counts what is late", () => {
+    const withDeliveries = { ...sources, deliveries: demoDeliveries(DEMO_TODAY), today: DEMO_TODAY };
+    const upcoming = buildChart("upcoming-deliveries", null, DEMO_MONTH, withDeliveries);
+    expect(upcoming.data.type === "table" && upcoming.data.rows.map((row) => row[0])).toEqual(["Atrasada 2 d", "Hoy", "28/09"]);
+    expect(upcoming.insight).toMatch(/1 atrasada/);
+    const status = buildChart("delivery-status", null, DEMO_MONTH, withDeliveries);
+    expect(status.data.type === "bars" && status.data.rows.map((row) => `${row.label}:${row.value}`)).toEqual(["Pendiente:1", "En camino:1", "Entregada:2", "No se pudo entregar:1"]);
+    expect(buildKpi("pending-deliveries", null, DEMO_MONTH, withDeliveries).value).toBe(3);
+    expect(buildKpi("late-deliveries", null, DEMO_MONTH, withDeliveries).value).toBe(1);
+    expect(buildKpi("deliveries", null, DEMO_MONTH, withDeliveries).value).toBe(2);
+    expect(buildChart("upcoming-deliveries", null, DEMO_MONTH, sources).data.type).toBe("empty");
   });
 });

@@ -9,7 +9,7 @@ import {
 } from "@/lib/decks";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery } from "./db";
-import { loadBusinessRecords } from "./business";
+import { loadBusinessRecords, loadDeliveries } from "./business";
 import { loadCostAnalysis } from "./cost-insights";
 import { loadState } from "./state";
 
@@ -47,15 +47,16 @@ export function summarize(presentation: Presentation): PresentationSummary {
 const today = () => businessToday().slice(0, 7);
 
 /** The engine data a deck needs: current costs, each month's business view and, for evolution charts, the history. */
-export async function loadDeckSources(principal: Principal, needs: { months: string[]; history: boolean }): Promise<DeckSources> {
+export async function loadDeckSources(principal: Principal, needs: { months: string[]; history: boolean; deliveries?: boolean }): Promise<DeckSources> {
   const months = [...new Set(needs.months.filter(isMonth))].slice(0, 6);
-  const [state, analysis, ...records] = await Promise.all([
+  const [state, analysis, deliveries, ...records] = await Promise.all([
     loadState(principal),
     needs.history ? loadCostAnalysis(principal, "month").catch(() => null) : Promise.resolve(null),
+    needs.deliveries ? loadDeliveries(principal, months[0] ?? today()).catch(() => undefined) : Promise.resolve(undefined),
     ...months.map((month) => loadBusinessRecords(principal, month)),
   ]);
   return {
-    state, costs: calculateCosts(state), analysis, now: new Date().toISOString(),
+    state, costs: calculateCosts(state), analysis, deliveries, now: new Date().toISOString(), today: businessToday(state.organization.currency),
     views: Object.fromEntries(months.map((month, index) => [month, buildBusinessView(state, records[index], month)])),
   };
 }

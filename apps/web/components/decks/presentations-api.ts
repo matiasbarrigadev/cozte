@@ -4,7 +4,8 @@ import { buildBusinessView } from "@/lib/business";
 import { analyzeCosts } from "@/lib/cost-analysis";
 import { calculateCosts } from "@/lib/domain";
 import { DEMO_MONTH, demoHistory, demoState } from "@/lib/demo";
-import { demoRecords } from "@/lib/demo-store";
+import { demoDeliveryList, demoRecords } from "@/lib/demo-store";
+import { DEMO_TODAY } from "@/lib/demo";
 import {
   DECK_TEMPLATES, DeckError, applyOperations, dataNeeds, fillClosing, newDeck, templateSlides,
   type DeckOperation, type DeckSources, type DeckTemplate, type DeckTheme, type Presentation, type PresentationSummary, type SlideInput,
@@ -48,11 +49,12 @@ export function summarizePresentation(presentation: Presentation): PresentationS
 }
 
 /** The demo keeps its decks in memory and computes them in the browser with the same engine. */
-function demoSources(needs: { months: string[]; history: boolean }): DeckSources {
+function demoSources(needs: { months: string[]; history: boolean; deliveries?: boolean }): DeckSources {
   const records = demoRecords();
   const months = needs.months.length ? needs.months : [DEMO_MONTH];
   return {
-    state: demoState, costs: calculateCosts(demoState), now: new Date().toISOString(),
+    state: demoState, costs: calculateCosts(demoState), now: new Date().toISOString(), today: DEMO_TODAY,
+    deliveries: needs.deliveries ? demoDeliveryList(needs.months[0] ?? DEMO_MONTH) : undefined,
     analysis: needs.history ? analyzeCosts(demoHistory(), { granularity: "month", currency: demoState.organization.currency, productNames: Object.fromEntries(demoState.products.map((product) => [product.id, product.name])) }) : null,
     views: Object.fromEntries(months.map((month) => [month, buildBusinessView(demoState, records, month)])),
   };

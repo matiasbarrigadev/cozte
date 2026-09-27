@@ -18,7 +18,7 @@ import { AREA_LABELS, PURCHASE_KIND_LABELS, channelEconomics } from "@/lib/busin
 import { archiveRecord, loadBusinessView, loadChannels, loadDeliveries, recordPurchase, recordSale, saveChannel, saveDelivery, updateSale } from "./business";
 import { DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, businessToday, daysFrom, isOpenDelivery, type DeliveryStatus } from "@/lib/business";
 import { resolveDocument } from "./documents";
-import { WIDGETS, WIDGET_KINDS, boardOutline, computeWidget, moveWidget, widgetFigures, widgetTitle, type WidgetKind, type WidgetSpec } from "@/lib/cozte-widgets";
+import { WIDGETS, WIDGET_KINDS, boardOutline, computeWidget, moveWidget, widgetFigures, widgetNeeds, widgetTitle, type WidgetKind, type WidgetSpec } from "@/lib/cozte-widgets";
 import { METRIC_KEYS, type MetricKey } from "@/lib/decks";
 import { addToBoard, loadCozteSettings, saveBoard, saveExplanationLevel } from "./cozte-settings";
 import { DECK_TEMPLATES, DeckError, deckOutline, monthLabel, templateOutline, type Presentation } from "@/lib/decks";
@@ -778,7 +778,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       }
       const widget: WidgetSpec = { kind: value.visual, productId, addedBy: "cozte", ...(value.month ? { month: value.month } : {}), ...(value.visual === "kpis" ? { metrics: value.metrics ?? ["revenue", "result", "sales-count", "break-even"] } : {}), ...(value.title ? { title: value.title } : {}) };
       const currentMonth = today().slice(0, 7);
-      const sources = await loadDeckSources(principal, { months: [value.month ?? currentMonth], history: Boolean(WIDGETS[value.visual].usesHistory) });
+      const sources = await loadDeckSources(principal, widgetNeeds([widget], currentMonth));
       const content = computeWidget(widget, sources, currentMonth);
       const pinned = value.pin ? await addToBoard(principal, widget).then(() => true) : false;
       const title = widgetTitle(widget, state.products.find((item) => item.id === productId)?.name);

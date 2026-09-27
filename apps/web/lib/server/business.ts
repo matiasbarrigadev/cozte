@@ -5,7 +5,7 @@ import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currenc
 import { calculateCosts, convertToOrganizationCurrency, type CostArea, type DomainState } from "@/lib/domain";
 import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, buildCustomerDirectory, businessToday, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
 import { ApiError, type Principal } from "./auth";
-import { dbBatch, dbQuery, type SqlStatement } from "./db";
+import { dbBatch, dbQuery, type SqlStatement, type SqlValue } from "./db";
 import { commitMutation, type Mutation } from "./mutations";
 import { loadState } from "./state";
 
@@ -81,6 +81,15 @@ export const saleInputSchema = z.object({
   delivery: deliveryFieldsSchema.optional(),
 });
 
+export const purchasePatchSchema = z.object({
+  purchasedOn: z.iso.date().optional(),
+  description: z.string().trim().min(2).max(200).optional(),
+  supplier: text(120).optional(),
+  amount: amount.optional(),
+  area: areaSchema.optional(),
+  usefulLifeMonths: z.number().int().min(1).max(600).optional(),
+});
+
 export const salePatchSchema = z.object({
   soldOn: z.iso.date().optional(),
   channelId: z.string().min(1).max(120).nullable().optional(),
@@ -94,6 +103,7 @@ export type ChannelInput = z.input<typeof channelInputSchema>;
 export type PurchaseInput = z.input<typeof purchaseInputSchema>;
 export type SaleInput = z.input<typeof saleInputSchema>;
 export type SalePatchInput = z.input<typeof salePatchSchema>;
+export type PurchasePatchInput = z.input<typeof purchasePatchSchema>;
 export type DeliveryInput = z.input<typeof deliveryInputSchema>;
 type RecordOptions = { source: "user" | "cozte"; idempotencyKey: string };
 
@@ -389,6 +399,47 @@ export async function updateSale(principal: Principal, id: string, input: SalePa
 export async function loadCustomerDirectory(principal: Principal) {
   const rows = await dbQuery<{ customer: string; sold_on: string; recipient: string | null; address: string | null; contact: string | null; carrier: string | null }>("SELECT s.customer, s.sold_on, d.recipient, d.address, d.contact, d.carrier FROM sales s LEFT JOIN deliveries d ON d.sale_id=s.id AND d.archived_at IS NULL WHERE s.organization_id=? AND s.archived_at IS NULL ORDER BY s.sold_on DESC LIMIT 2000", [principal.organizationId]);
   return buildCustomerDirectory(rows.map((row) => ({ customer: row.customer, soldOn: row.sold_on, recipient: row.recipient, address: row.address, contact: row.contact, carrier: row.carrier })));
+}
+
+/**
+ * Corrects a purchase: date, description, supplier, area, amount or useful life. An investment already spread into
+ * each unit's cost keeps its amount, life, area and date until the person takes it out of the unit cost, so product
+ * costs never move without that decision. A material purchase does not change the material's price again.
+ */
+export async function updatePurchase(principal: Principal, id: string, input: PurchasePatchInput, source: "user" | "cozte"): Promise<{ done: string[] }> {
+  assertEditor(principal);
+  const patch = purchasePatchSchema.parse(input);
+  const org = principal.organizationId;
+  const [rows, organizations] = await dbBatch<{ kind: PurchaseKind; include_in_unit_cost: number; description: string } | { currency: string }>([
+    { sql: "SELECT kind, include_in_unit_cost, description FROM purchases WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [id, org] },
+    { sql: "SELECT currency FROM organizations WHERE id=?", params: [org] },
+  ], { retrySafe: true });
+  const row = (rows as { kind: PurchaseKind; include_in_unit_cost: number; description: string }[])[0];
+  if (!row) throw new ApiError(404, "Compra no encontrada");
+  if (row.kind === "investment" && row.include_in_unit_cost === 1 && (patch.amount !== undefined || patch.usefulLifeMonths !== undefined || patch.area !== undefined || patch.purchasedOn !== undefined)) {
+    throw new ApiError(400, "Esta inversión se suma al costo de cada producto: para cambiar su monto, vida útil, área o fecha, primero quítala del costo en Gastos de la empresa.");
+  }
+  if (patch.usefulLifeMonths !== undefined && row.kind !== "investment") throw new ApiError(400, "Solo las inversiones tienen vida útil");
+  if (patch.area !== undefined && row.kind === "material" && patch.area !== "production") throw new ApiError(400, "Un insumo siempre es de producción");
+  const sets: string[] = [];
+  const params: SqlValue[] = [];
+  const set = (column: string, value: SqlValue) => { sets.push(`${column}=?`); params.push(value); };
+  if (patch.purchasedOn !== undefined) set("purchased_on", patch.purchasedOn);
+  if (patch.description !== undefined) set("description", patch.description);
+  if (patch.supplier !== undefined) set("supplier", patch.supplier);
+  if (patch.area !== undefined) set("area", patch.area);
+  if (patch.usefulLifeMonths !== undefined) set("useful_life_months", patch.usefulLifeMonths);
+  if (patch.amount !== undefined) {
+    set("amount_minor", Math.round(patch.amount));
+    set("currency", (organizations as { currency: string }[])[0]?.currency ?? "CLP");
+    set("native_amount_milli", Math.round(patch.amount * 1000));
+  }
+  if (!sets.length) return { done: [] };
+  await dbBatch([
+    { sql: `UPDATE purchases SET ${sets.join(", ")} WHERE id=? AND organization_id=? AND archived_at IS NULL`, params: [...params, id, org] },
+    audit(principal, "update-purchase", id, { patch, source }),
+  ]);
+  return { done: [`Compra «${patch.description ?? row.description}» corregida`] };
 }
 
 /** Deliveries of a month plus every open one (pending, on the way or failed), closest to today first. */

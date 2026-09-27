@@ -2,11 +2,12 @@
 
 import * as React from "react";
 import { analyzeCosts, type CostAnalysis } from "@/lib/cost-analysis";
-import { buildBusinessView, type BusinessView } from "@/lib/business";
+import { buildBusinessView, type BusinessView, type Delivery } from "@/lib/business";
 import { DeckError, monthLabel, type DeckSources } from "@/lib/decks";
 import type { DomainState, ProductCost } from "@/lib/domain";
 import { DEMO_MONTH, demoHistory } from "@/lib/demo";
-import { demoRecords } from "@/lib/demo-store";
+import { demoDeliveryList, demoRecords } from "@/lib/demo-store";
+import { DEMO_TODAY } from "@/lib/demo";
 import { useDemoVersion } from "@/components/business/business-ui";
 import { WIDGETS, WIDGET_KINDS, computeWidget, widgetNeeds, widgetTitle, type WidgetContent, type WidgetGroup, type WidgetKind, type WidgetSpec } from "@/lib/cozte-widgets";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,7 @@ type VisualData = {
   currentMonth: string;
   sources: DeckSources;
   /** Asks for the data some widgets need (a month's records, the cost history); cached until data changes. */
-  request: (needs: { months: string[]; history: boolean }) => void;
+  request: (needs: { months: string[]; history: boolean; deliveries?: boolean }) => void;
 };
 
 const VisualContext = React.createContext<VisualData | null>(null);
@@ -35,8 +36,9 @@ export function CozteVisualProvider({ state, demo, refreshKey, children }: { sta
   const currentMonth = demo ? DEMO_MONTH : new Date().toLocaleDateString("en-CA").slice(0, 7);
   const [views, setViews] = React.useState<Record<string, BusinessView>>({});
   const [analysis, setAnalysis] = React.useState<CostAnalysis | null>(null);
+  const [deliveries, setDeliveries] = React.useState<Delivery[] | undefined>(undefined);
   // What was already asked for, per data generation, so each month is fetched once until something changes.
-  const requested = React.useRef({ months: new Set<string>(), history: "" });
+  const requested = React.useRef({ months: new Set<string>(), history: "", deliveries: "" });
   // Data changed elsewhere (the sheet, a purchase, Cozte): forget what was loaded so widgets refetch.
   const demoChanges = useDemoVersion(demo);
   const generation = `${state.revision}:${refreshKey}:${demoChanges}`;
@@ -45,9 +47,15 @@ export function CozteVisualProvider({ state, demo, refreshKey, children }: { sta
     setLoadedGeneration(generation);
     setViews({});
     setAnalysis(null);
+    setDeliveries(undefined);
   }
 
-  const request = React.useCallback((needs: { months: string[]; history: boolean }) => {
+  const request = React.useCallback((needs: { months: string[]; history: boolean; deliveries?: boolean }) => {
+    if (needs.deliveries && requested.current.deliveries !== generation) {
+      requested.current.deliveries = generation;
+      if (demo) setDeliveries(demoDeliveryList(currentMonth));
+      else fetch(`/api/deliveries?month=${currentMonth}`, { cache: "no-store" }).then((response) => response.ok ? response.json() as Promise<{ deliveries: Delivery[] }> : Promise.reject(new Error())).then((data) => setDeliveries(data.deliveries)).catch(() => { requested.current.deliveries = ""; });
+    }
     for (const month of needs.months) {
       const key = `${generation}|${month}`;
       if (requested.current.months.has(key)) continue;
@@ -63,9 +71,9 @@ export function CozteVisualProvider({ state, demo, refreshKey, children }: { sta
       if (demo) setAnalysis(analyzeCosts(demoHistory(), { granularity: "month", currency: state.organization.currency, productNames: Object.fromEntries(state.products.map((product) => [product.id, product.name])) }));
       else fetch("/api/analysis?granularity=month", { cache: "no-store" }).then((response) => response.ok ? response.json() as Promise<CostAnalysis> : Promise.reject(new Error())).then(setAnalysis).catch(() => { requested.current.history = ""; });
     }
-  }, [demo, state, generation]);
+  }, [demo, state, generation, currentMonth]);
 
-  const sources = React.useMemo<DeckSources>(() => ({ state, costs: state.costs, views, analysis, now: new Date().toISOString() }), [state, views, analysis]);
+  const sources = React.useMemo<DeckSources>(() => ({ state, costs: state.costs, views, analysis, deliveries, now: new Date().toISOString(), today: demo ? DEMO_TODAY : new Date().toLocaleDateString("en-CA") }), [state, views, analysis, deliveries, demo]);
   const value = React.useMemo(() => ({ state, demo, currentMonth, sources, request }), [state, demo, currentMonth, sources, request]);
   return <VisualContext.Provider value={value}>{children}</VisualContext.Provider>;
 }
@@ -80,13 +88,14 @@ export function useVisualData() {
 export function useWidgetContent(widget: WidgetSpec): { content: WidgetContent | null; error: string | null } {
   const { sources, request, currentMonth } = useVisualData();
   const needs = widgetNeeds([widget], currentMonth);
-  const needsKey = `${needs.months.join(",")}:${needs.history}`;
+  const needsKey = `${needs.months.join(",")}:${needs.history}:${needs.deliveries}`;
   React.useEffect(() => { request(needs); }, [request, needsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   return React.useMemo(() => {
     if (needs.history && !sources.analysis) return { content: null, error: null };
+    if (needs.deliveries && !sources.deliveries) return { content: null, error: null };
     try { return { content: computeWidget(widget, sources, currentMonth), error: null }; }
     catch (error) { return error instanceof DeckError && /No hay datos cargados/.test(error.message) ? { content: null, error: null } : { content: null, error: error instanceof Error ? error.message : "No se pudo calcular" }; }
-  }, [widget, sources, currentMonth, needs.history]);
+  }, [widget, sources, currentMonth, needs.history, needs.deliveries]);
 }
 
 export type WidgetChoice = { kind: WidgetKind; label: string; hint: string; group: WidgetGroup; available: boolean; reason?: string };

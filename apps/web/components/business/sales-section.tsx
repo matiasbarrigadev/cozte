@@ -20,6 +20,8 @@ import { cn } from "@/lib/utils";
 import { MonthPicker, ReceiptLink, SectionHeader, Stat, Tip, businessAction, notifySaved, todayFor, uploadDocument, useBusinessView, useCustomerDirectory, useMoney } from "./business-ui";
 import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
 import { DeliveryStatusBadge, relativeDay } from "./delivery-status";
+import { SaleCards } from "./mobile-cards";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 const percent = (bps: number) => `${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(bps / 100)} %`;
 const leftOf = (sale: Sale) => sale.variableCostMinor === null ? null : sale.totalMinor - sale.variableCostMinor - sale.sellingCostMinor - sale.deliveryCostMinor;
@@ -159,6 +161,7 @@ function SalesTable({ month, today, customerSuggestions, sales, state, channels,
   const [channelFilter, setChannelFilter] = usePersistentState<string>("ventas:canal", "all");
   const [deliveryFilter, setDeliveryFilter] = usePersistentState<string>("ventas:entrega", "all");
   const [sort, setSort] = React.useState<SortState<SortKey>>(null);
+  const isMobile = useIsMobile();
   const channelOptions = [...channels.map((channel) => ({ value: channel.id, label: channel.name })), { value: DIRECT_CHANNEL.id, label: DIRECT_CHANNEL.name }];
   const rows = React.useMemo(() => {
     const filtered = sales.filter((sale) => {
@@ -179,10 +182,10 @@ function SalesTable({ month, today, customerSuggestions, sales, state, channels,
       { id: "channel", label: "Canal", value: channelFilter, onChange: setChannelFilter, options: [{ value: "all", label: "Todos los canales" }, ...channelOptions] },
       { id: "delivery", label: "Entrega", value: deliveryFilter, onChange: setDeliveryFilter, options: [{ value: "all", label: "Con y sin entrega" }, { value: "open", label: "Entrega por hacer", hint: "Pendiente, en camino o con problema" }, { value: "delivered", label: "Ya entregadas" }, { value: "none", label: "Sin entrega" }] },
     ]} />
-    <div className="overflow-x-auto rounded-lg border">
+    {isMobile ? <SaleCards rows={rows} today={today} channels={channels} money={money} suggestions={customerSuggestions} onUpdate={onUpdate} onArchive={onArchive} onEditItems={onEditItems} onOpenDeliveries={onOpenDeliveries} /> : <div className="max-h-[min(70vh,48rem)] overflow-auto rounded-lg border">
       <Table className="border-separate border-spacing-0">
-        <TableHeader><TableRow className="hover:bg-transparent">
-          <SortableHead column="date" label="Fecha" sort={sort} onSort={setSort} className="min-w-48" />
+        <TableHeader className="sticky top-0 z-20 bg-card"><TableRow className="hover:bg-transparent">
+          <SortableHead column="date" label="Fecha" sort={sort} onSort={setSort} className="sticky left-0 z-30 min-w-48 bg-muted" />
           <TableHead className={cn(sheetHead, "min-w-40")}>Canal</TableHead>
           <SortableHead column="customer" label="Cliente" sort={sort} onSort={setSort} className="min-w-40" defaultDirection="asc" />
           <TableHead className={cn(sheetHead, "min-w-52")}>Producto</TableHead>
@@ -202,7 +205,7 @@ function SalesTable({ month, today, customerSuggestions, sales, state, channels,
           const channelValue = sale.channelId ?? DIRECT_CHANNEL.id;
           const channelKnown = channelOptions.some((option) => option.value === channelValue);
           return <TableRow key={sale.id} className="group/row hover:bg-muted/30">
-            <TableCell className={sheetCell}><div className="flex items-center">
+            <TableCell className={cn(sheetCell, "sticky left-0 z-10 bg-card")}><div className="flex items-center">
               <EditableDate value={sale.soldOn} label={`Fecha de la venta a ${sale.customer || sale.channelName}`} disabled={disabled} onCommit={(soldOn) => void onUpdate(sale, { soldOn })} className="w-36 shrink-0" />
               <span className="pr-3 text-xs whitespace-nowrap text-muted-foreground">{relativeDay(sale.soldOn, today)}</span>
             </div></TableCell>
@@ -243,7 +246,7 @@ function SalesTable({ month, today, customerSuggestions, sales, state, channels,
           <TableCell colSpan={3} />
         </TableRow></TableFooter>
       </Table>
-    </div>
+    </div>}
     <p className="text-xs text-muted-foreground">&quot;Te dejó&quot; es lo cobrado menos insumos, mano de obra, comisiones y entrega: lo que cada venta aporta para pagar los gastos fijos del mes. Si cambias el canal se recalculan la comisión y el costo de entrega.</p>
   </div>;
 }
