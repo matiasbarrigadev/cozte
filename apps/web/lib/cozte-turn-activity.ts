@@ -43,6 +43,8 @@ const running: Record<string, string> = {
   readCustomers: "Revisando tus clientes",
   saveCustomer: "Guardando el cliente",
   saveDeliveryZone: "Guardando la zona de entrega",
+  readSuppliers: "Revisando tus proveedores",
+  saveSupplier: "Guardando el proveedor",
   askQuestions: "Preparando unas preguntas",
 };
 
@@ -79,6 +81,8 @@ const summaryVerb: Record<string, [string, string]> = {
   readCustomers: ["revisó tus clientes", "revisó tus clientes"],
   saveCustomer: ["guardó 1 cliente", "guardó {n} clientes"],
   saveDeliveryZone: ["guardó 1 zona de entrega", "guardó {n} zonas de entrega"],
+  readSuppliers: ["revisó tus proveedores", "revisó tus proveedores"],
+  saveSupplier: ["guardó 1 proveedor", "guardó {n} proveedores"],
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -107,6 +111,8 @@ export function toolOutcomeLine(name: string, output: unknown, errorText?: strin
     return { text: `Sin guardar${changes.length ? `: ${changes.join(" · ")}` : ""}`, failed: false };
   }
   if (name === "searchConversation" && Array.isArray(result.matches)) return { text: result.matches.length ? `Encontró ${result.matches.length} mensaje${result.matches.length === 1 ? "" : "s"}` : "No encontró mensajes con eso", failed: false };
+  if (name === "readSuppliers" && Array.isArray(result.suppliers)) return { text: `${result.suppliers.length} proveedor${result.suppliers.length === 1 ? "" : "es"}`, failed: false };
+  if (name === "readSuppliers" && record(result.supplier).name) return { text: `Ficha de ${String(record(result.supplier).name)}`, failed: false };
   if (name === "readCustomers" && Array.isArray(result.customers)) return { text: `${result.customers.length} cliente${result.customers.length === 1 ? "" : "s"}`, failed: false };
   if (name === "readCustomers" && record(result.customer).name) return { text: `Ficha de ${String(record(result.customer).name)}`, failed: false };
   if (name === "readBusiness") {

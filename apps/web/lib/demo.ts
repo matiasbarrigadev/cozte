@@ -2,6 +2,7 @@ import { calculateCosts, type DomainState } from "./domain";
 import { snapshotRowsFor } from "./cost-snapshots";
 import { byProximity, priceSale, saleItemsText, type BusinessRecords, type Delivery, type Purchase, type Sale, type SalesChannel } from "./business";
 import { matchZone, type DeliveryZone } from "./delivery-zones";
+import type { SupplierPurchase } from "./suppliers";
 
 export const demoState: DomainState = {
   revision: 3,
@@ -115,6 +116,24 @@ const DEMO_DELIVERY_DETAILS: Record<string, Pick<Delivery, "scheduledOn" | "time
 };
 
 /** The demo's deliveries, closest to the demo's today first. */
+/**
+ * Supplies bought before September, only for the suppliers' price history: paper rises month after month, the covers
+ * a little, the rings get cheaper, and paper was bought once from a second supplier.
+ */
+export function demoSupplierHistory(): (SupplierPurchase & { supplier: string })[] {
+  const buy = (month: string, day: string, supplier: string, materialId: string, name: string, unit: string, quantity: number, unitPrice: number): SupplierPurchase & { supplier: string } => ({
+    id: `hp-${month}-${materialId}-${supplier.slice(0, 4)}`, supplierId: null, supplier, purchasedOn: `${month}-${day}`, description: `Compra de ${name.toLowerCase()}`, kind: "material",
+    amountMinor: quantity * unitPrice, materialId, materialName: name, quantityMilli: quantity * 1000, purchaseUnit: unit,
+  });
+  return [
+    ...[["2026-04", 7800], ["2026-05", 8000], ["2026-06", 8200], ["2026-07", 8600], ["2026-08", 8800]].map(([month, price]) => buy(month as string, "03", "Papelería Sur", "papel", "Papel interior", "resma", 30, price as number)),
+    buy("2026-06", "20", "Distribuidora Andes", "papel", "Papel interior", "resma", 20, 8400),
+    ...[["2026-04", 700], ["2026-06", 720], ["2026-08", 750]].map(([month, price]) => buy(month as string, "10", "Tapas Centro", "d", "Tapas rígidas", "juego", 400, price as number)),
+    ...[["2026-05", 500], ["2026-07", 520]].map(([month, price]) => buy(month as string, "12", "Tapas Centro", "b", "Tapas blandas", "juego", 400, price as number)),
+    ...[["2026-04", 380], ["2026-06", 370], ["2026-08", 360]].map(([month, price]) => buy(month as string, "15", "Metal Sur", "anillado", "Anillado", "unidad", 300, price as number)),
+  ];
+}
+
 /** How the demo delivers: its own motorbike around Santiago, a courier to the regions, and pickup at the workshop. */
 export const DEMO_ZONES: DeliveryZone[] = [
   { id: "z-santiago", name: "Santiago centro y oriente", mode: "own", carrier: "Moto propia (Tomás)", areas: ["Providencia", "Ñuñoa", "Santiago Centro", "Las Condes"], costPerOrderMinor: 3000, weekdays: [2, 4, 6], leadDays: 0, isFallback: false, notes: "Sale del taller a las 10" },

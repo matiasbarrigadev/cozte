@@ -1,6 +1,8 @@
 import { calculateCosts, type CostArea } from "./domain";
 import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, buildCustomerDirectory, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type BusinessRecords, type CustomerDirectory, type Delivery, type Purchase, type PurchaseKind, type Sale, type SalePatch, type SalesChannel } from "./business";
-import { DEMO_TODAY, DEMO_ZONES, demoBusinessRecords, demoDeliveries, demoHistorySales, demoState } from "./demo";
+import { DEMO_TODAY, DEMO_ZONES, demoBusinessRecords, demoDeliveries, demoHistorySales, demoState, demoSupplierHistory } from "./demo";
+import { emptyTally, tallyDelivery } from "./delivery-zones";
+import { kindForPurchase, materialPrices, sortSuppliers, supplierKey, supplierMonths, supplierStats, suppliersFromHistory, type Supplier, type SupplierKind, type SupplierPurchase, type SupplierRow } from "./suppliers";
 import { ZONE_MODE_LABELS, matchZone, nextDeliveryDay, parseAreas, weekdaysFromNames, zoneCost, zoneDeliveryFields, type DeliveryZone, type ZoneMode } from "./delivery-zones";
 import { buildCustomerList, customerKey, customerMonths, customersFromHistory, customerStats, directoryFromCustomers, zoneFromAddress, type Customer, type CustomerAddress, type CustomerSale } from "./customers";
 import { monthsBack } from "./business-analytics";
@@ -10,7 +12,7 @@ import { monthsBack } from "./business-analytics";
  * the same engine as a real workspace. Nothing leaves the browser; a reload starts over.
  */
 
-type Store = { records: BusinessRecords; deliveries: Delivery[]; customers: Customer[]; history: Sale[]; zones: DeliveryZone[] };
+type Store = { records: BusinessRecords; deliveries: Delivery[]; customers: Customer[]; history: Sale[]; zones: DeliveryZone[]; suppliers: Supplier[]; supplierHistory: (SupplierPurchase & { supplier: string })[] };
 
 let store: Store | null = null;
 let version = 0;
@@ -29,9 +31,20 @@ function data(): Store {
       addresses: entry.addresses.map((address, position) => ({ id: `cl-${index + 1}-a${position + 1}`, label: "", notes: "", ...address })),
     }));
     const idOf = (name: string) => customers.find((customer) => customerKey(customer.name) === customerKey(name))?.id ?? null;
+    // The demo's suppliers, built from its purchases, supplies and carriers like a real workspace builds them the first time.
+    const earlier = demoSupplierHistory();
+    const found = suppliersFromHistory([
+      ...records.purchases.map((purchase) => ({ name: purchase.supplier, kind: kindForPurchase(purchase.kind), on: purchase.purchasedOn })),
+      ...earlier.map((purchase) => ({ name: purchase.supplier, kind: "materials" as SupplierKind, on: purchase.purchasedOn })),
+      ...demoState.materials.map((material) => ({ name: material.supplier, kind: "materials" as SupplierKind })),
+      ...DEMO_ZONES.filter((zone) => zone.mode === "carrier").map((zone) => ({ name: zone.carrier, kind: "logistics" as SupplierKind })),
+    ]);
+    const suppliers: Supplier[] = found.map((entry, index) => ({ id: `pr-${index + 1}`, name: entry.name, kind: entry.kind, contactName: "", phone: "", email: "", notes: "", source: "import", createdAt: "2026-04-01 12:00:00" }));
+    const supplierOf = (name: string) => suppliers.find((supplier) => supplierKey(supplier.name) === supplierKey(name))?.id ?? null;
+    const linked = <P extends { supplier: string }>(purchase: P) => ({ ...purchase, supplierId: supplierOf(purchase.supplier) });
     store = {
-      records: { ...records, sales: records.sales.map((sale) => ({ ...sale, delivery: undefined, customerId: idOf(sale.customer) })) },
-      deliveries, customers, history: history.map((sale) => ({ ...sale, customerId: idOf(sale.customer) })), zones: DEMO_ZONES,
+      records: { ...records, sales: records.sales.map((sale) => ({ ...sale, delivery: undefined, customerId: idOf(sale.customer) })), purchases: records.purchases.map(linked), investments: records.investments.map(linked) },
+      deliveries, customers, history: history.map((sale) => ({ ...sale, customerId: idOf(sale.customer) })), zones: DEMO_ZONES, suppliers, supplierHistory: earlier.map(linked),
     };
   }
   return store;
@@ -69,6 +82,60 @@ function demoCustomerSales(current: Store): CustomerSale[] {
 export function demoCustomerList() {
   const current = data();
   return { customers: buildCustomerList(current.customers, demoCustomerSales(current), DEMO_TODAY), today: DEMO_TODAY };
+}
+
+/** The supplier of a name in the demo: the existing one or a new one. */
+function demoResolveSupplier(current: Store, name: string | undefined, kind: SupplierKind): { suppliers: Supplier[]; id: string | null } {
+  const key = supplierKey(name ?? "");
+  if (!key) return { suppliers: current.suppliers, id: null };
+  const found = current.suppliers.find((supplier) => supplierKey(supplier.name) === key);
+  if (found) return { suppliers: current.suppliers, id: found.id };
+  const supplier: Supplier = { id: `pr-${Math.random().toString(36).slice(2, 8)}`, name: name!.trim(), kind, contactName: "", phone: "", email: "", notes: "", source: "user", createdAt: new Date().toISOString() };
+  return { suppliers: [...current.suppliers, supplier], id: supplier.id };
+}
+
+/** Every purchase with its supplier, as the suppliers' stats read them. */
+function demoSupplierPurchases(current: Store): SupplierPurchase[] {
+  const materialId = (name: string | null | undefined) => demoState.materials.find((material) => material.name === name)?.id ?? null;
+  const unitOf = (id: string | null) => demoState.materials.find((material) => material.id === id)?.purchaseUnit ?? null;
+  const seen = new Set<string>();
+  const recorded = [...current.records.purchases, ...current.records.investments].filter((purchase) => !seen.has(purchase.id) && seen.add(purchase.id)).map((purchase): SupplierPurchase => {
+    const id = materialId(purchase.materialName);
+    return { id: purchase.id, supplierId: purchase.supplierId ?? null, purchasedOn: purchase.purchasedOn, description: purchase.description, kind: purchase.kind, amountMinor: purchase.amountMinor, materialId: id, materialName: purchase.materialName ?? null, quantityMilli: purchase.quantityMilli ?? null, purchaseUnit: unitOf(id) };
+  });
+  return [...recorded, ...current.supplierHistory].sort((a, b) => b.purchasedOn.localeCompare(a.purchasedOn));
+}
+
+function demoSupplierRows(current: Store): SupplierRow[] {
+  const purchases = demoSupplierPurchases(current);
+  return current.suppliers.map((supplier) => {
+    const own = purchases.filter((purchase) => purchase.supplierId === supplier.id);
+    const prices = materialPrices(own);
+    const key = supplierKey(supplier.name);
+    const zones = current.zones.filter((zone) => zone.mode === "carrier" && supplierKey(zone.carrier) === key);
+    const carried = current.deliveries.filter((delivery) => supplierKey(delivery.carrier) === key || zones.some((zone) => zone.id === delivery.zoneId));
+    const sales = new Map(current.records.sales.map((sale) => [sale.id, sale]));
+    const tally = carried.length ? carried.reduce((sum, delivery) => tallyDelivery(sum, delivery, sales.get(delivery.saleId)?.deliveryCostMinor ?? delivery.costMinor, DEMO_TODAY), emptyTally()) : null;
+    return {
+      ...supplier, stats: supplierStats(own, DEMO_TODAY), prices,
+      materials: [...new Set([...prices.map((price) => price.name), ...demoState.materials.filter((material) => supplierKey(material.supplier) === key).map((material) => material.name)])],
+      zones: zones.map((zone) => zone.name), deliveries: tally,
+    };
+  });
+}
+
+/** The demo's suppliers, like /api/suppliers/list. */
+export function demoSupplierList() {
+  return { suppliers: sortSuppliers(demoSupplierRows(data())), today: DEMO_TODAY };
+}
+
+/** One demo supplier, like /api/suppliers/[id]. */
+export function demoSupplierDetail(id: string) {
+  const current = data();
+  const supplier = demoSupplierRows(current).find((row) => row.id === id);
+  if (!supplier) throw new DemoError("Proveedor no encontrado");
+  const purchases = demoSupplierPurchases(current).filter((purchase) => purchase.supplierId === id);
+  return { supplier, months: supplierMonths(purchases, monthsBack(DEMO_TODAY.slice(0, 7), 12)), purchases: purchases.slice(0, 60), today: DEMO_TODAY };
 }
 
 /** One demo customer, like /api/customers/[id]. */
@@ -312,10 +379,46 @@ export function demoBusinessAction<T>(body: Body): T {
         assigned += 1;
         return item.zoneId ? { ...item, zoneId: zone.id, zoneName: zone.name, ...given } : { ...item, zoneId: zone.id, zoneName: zone.name, method: item.method || given.method, carrier: item.carrier || given.carrier };
       });
-      commit({ ...current, zones, deliveries });
+      const carrier = zone.mode === "carrier" ? demoResolveSupplier(current, zone.carrier, "logistics") : null;
+      commit({ ...current, zones, deliveries, ...(carrier ? { suppliers: carrier.suppliers } : {}) });
       const done = [existing ? `Zona actualizada: ${zone.name}` : `Zona creada: ${zone.name} (${ZONE_MODE_LABELS[zone.mode].toLowerCase()})`];
       if (assigned) done.push(`${assigned} entrega${assigned === 1 ? " abierta quedó" : "s abiertas quedaron"} en ${zone.name}`);
       return { id: zone.id, created: !existing, assigned, done } as T;
+    }
+    case "save-supplier": {
+      const input = body.supplier as { id?: string; name?: string; kind?: SupplierKind; contactName?: string; phone?: string; email?: string; notes?: string };
+      const name = input.name?.trim();
+      if (name !== undefined && !supplierKey(name)) throw new DemoError("Escribe el nombre del proveedor");
+      const taken = name ? current.suppliers.find((supplier) => supplierKey(supplier.name) === supplierKey(name) && supplier.id !== input.id) : undefined;
+      if (taken) throw new DemoError(`Ya hay un proveedor llamado ${taken.name}${input.id ? ": si es el mismo, únelos" : ""}`);
+      if (!input.id) {
+        if (!name) throw new DemoError("Escribe el nombre del proveedor");
+        const supplier: Supplier = { id: `pr-${Math.random().toString(36).slice(2, 8)}`, name, kind: input.kind ?? "materials", contactName: input.contactName ?? "", phone: input.phone ?? "", email: input.email ?? "", notes: input.notes ?? "", source: "user", createdAt: new Date().toISOString() };
+        commit({ ...current, suppliers: [...current.suppliers, supplier] });
+        return { id: supplier.id, created: true, done: [`Proveedor creado: ${name}`] } as T;
+      }
+      const existing = current.suppliers.find((supplier) => supplier.id === input.id);
+      if (!existing) throw new DemoError("Proveedor no encontrado");
+      const next = { ...existing, ...Object.fromEntries(Object.entries({ ...input, name }).filter(([key, value]) => value !== undefined && key !== "id")) } as Supplier;
+      const rename = <P extends { supplierId?: string | null; supplier: string }>(purchase: P): P => purchase.supplierId === existing.id && name ? { ...purchase, supplier: name } : purchase;
+      commit({ ...current, suppliers: current.suppliers.map((supplier) => supplier.id === existing.id ? next : supplier), records: { ...current.records, purchases: current.records.purchases.map(rename), investments: current.records.investments.map(rename) }, supplierHistory: current.supplierHistory.map(rename),
+        zones: name ? current.zones.map((zone) => zone.mode === "carrier" && supplierKey(zone.carrier) === supplierKey(existing.name) ? { ...zone, carrier: name } : zone) : current.zones });
+      return { id: existing.id, created: false, done: [name && name !== existing.name ? `Proveedor renombrado: ${existing.name} → ${name}` : `Datos de ${next.name} actualizados`] } as T;
+    }
+    case "merge-suppliers": {
+      const { fromId, intoId } = body as unknown as { fromId: string; intoId: string };
+      const from = current.suppliers.find((supplier) => supplier.id === fromId);
+      const into = current.suppliers.find((supplier) => supplier.id === intoId);
+      if (!from || !into || fromId === intoId) throw new DemoError("Elige otro proveedor para unir");
+      const move = <P extends { supplierId?: string | null; supplier: string }>(purchase: P): P => purchase.supplierId === fromId ? { ...purchase, supplierId: intoId, supplier: into.name } : purchase;
+      commit({ ...current, suppliers: current.suppliers.filter((supplier) => supplier.id !== fromId), records: { ...current.records, purchases: current.records.purchases.map(move), investments: current.records.investments.map(move) }, supplierHistory: current.supplierHistory.map(move) });
+      return { done: [`${from.name} quedó unido a ${into.name}`] } as T;
+    }
+    case "archive-supplier": {
+      const { id } = body as unknown as { id: string };
+      const unlink = <P extends { supplierId?: string | null }>(purchase: P): P => purchase.supplierId === id ? { ...purchase, supplierId: null } : purchase;
+      commit({ ...current, suppliers: current.suppliers.filter((supplier) => supplier.id !== id), records: { ...current.records, purchases: current.records.purchases.map(unlink), investments: current.records.investments.map(unlink) }, supplierHistory: current.supplierHistory.map(unlink) });
+      return { ok: true } as T;
     }
     case "archive-zone": {
       const { id } = body as unknown as { id: string };
@@ -354,19 +457,23 @@ export function demoBusinessAction<T>(body: Body): T {
         area: input.area ?? (input.kind === "material" ? "production" : expense?.area ?? "production"), materialName: material?.name ?? null, quantityMilli: input.quantity ? Math.round(input.quantity * 1000) : null,
         expenseId: expense?.id ?? null, expenseName: expense?.name ?? null, usefulLifeMonths: input.usefulLifeMonths ?? null, includeInUnitCost: Boolean(input.includeInUnitCost), documentId: null, source: "user",
       };
-      commit({ ...current, records: { ...current.records, purchases: [purchase, ...current.records.purchases], investments: purchase.kind === "investment" ? [purchase, ...current.records.investments] : current.records.investments } });
-      return { id: purchase.id, duplicate: false, purchase, priceUpdated: null } as T;
+      const resolved = demoResolveSupplier(current, purchase.supplier, kindForPurchase(purchase.kind));
+      const linked = { ...purchase, supplierId: resolved.id };
+      commit({ ...current, suppliers: resolved.suppliers, records: { ...current.records, purchases: [linked, ...current.records.purchases], investments: linked.kind === "investment" ? [linked, ...current.records.investments] : current.records.investments } });
+      return { id: linked.id, duplicate: false, purchase: linked, priceUpdated: null } as T;
     }
     case "update-purchase": {
       const patch = body.patch as Partial<{ purchasedOn: string; description: string; supplier: string; amount: number; area: CostArea; usefulLifeMonths: number }>;
+      const relinked = patch.supplier !== undefined ? demoResolveSupplier(current, patch.supplier, "services") : null;
       const update = (item: Purchase): Purchase => item.id !== body.id ? item : {
         ...item, purchasedOn: patch.purchasedOn ?? item.purchasedOn, description: patch.description ?? item.description, supplier: patch.supplier ?? item.supplier,
+        ...(relinked ? { supplierId: relinked.id } : {}),
         amountMinor: patch.amount ?? item.amountMinor, area: patch.area ?? item.area, usefulLifeMonths: patch.usefulLifeMonths ?? item.usefulLifeMonths,
       };
       const target = [...current.records.purchases, ...current.records.investments].find((item) => item.id === body.id);
       if (!target) throw new DemoError("Compra no encontrada");
       if (target.kind === "investment" && target.includeInUnitCost && (patch.amount !== undefined || patch.usefulLifeMonths !== undefined || patch.area !== undefined || patch.purchasedOn !== undefined)) throw new DemoError("Esta inversión se suma al costo de cada producto: para cambiar su monto, vida útil, área o fecha, primero quítala del costo en Gastos de la empresa.");
-      commit({ ...current, records: { ...current.records, purchases: current.records.purchases.map(update), investments: current.records.investments.map(update) } });
+      commit({ ...current, ...(relinked ? { suppliers: relinked.suppliers } : {}), records: { ...current.records, purchases: current.records.purchases.map(update), investments: current.records.investments.map(update) } });
       return { ok: true } as T;
     }
     default:

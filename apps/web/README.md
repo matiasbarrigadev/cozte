@@ -43,6 +43,12 @@ Además del costo de producir, el espacio de trabajo cubre lo que cuesta vender 
   - **Ficha:** compras por mes, direcciones, ventas con su entrega, registrar venta, unir duplicados y archivar.
   - **Cozte:** usa `readCustomers` y `saveCustomer`.
   - **Demo:** trae clientes recurrentes en su historia de ejemplo.
+- **Proveedores** (`/app/proveedores`): una ficha por proveedor (migración 0031: `suppliers`, `purchases.supplier_id`, `delivery_zones.supplier_id`) con tipo (insumos, envíos, servicios u otro), contacto, teléfono, email y notas.
+  - **Alta automática:** se arman solos la primera vez con los nombres escritos en compras, el proveedor habitual de cada insumo y los transportistas de las zonas (`suppliersFromHistory`). Después, cada compra busca o crea su proveedor por nombre (`resolveSupplier`) y cada zona de transportista apunta al suyo; cambiar el proveedor de una compra la vuelve a ligar.
+  - **Precios:** el precio por unidad de compra de cada insumo cada vez que se compró con cantidad (`materialPrices`), con el primero, el último y el cambio.
+  - **Pantalla:** un treemap de a quién se le compra más (color por tipo), lo que conviene mirar (`supplierInsights`: insumos que subieron o bajaron, insumos con un solo proveedor, concentración), líneas de precio por insumo y proveedor, y tabla o tarjetas con filtros por tipo y Excel. La ficha muestra compras por mes, qué vende con sus precios, las compras y, si lleva pedidos, sus zonas, entregas, puntualidad y costo. Renombrar actualiza sus compras y zonas; se pueden unir duplicados y archivar.
+  - **Cozte:** `readSuppliers` y `saveSupplier`.
+  - **Demo:** trae compras de insumos desde abril, con el papel subiendo y el anillado bajando.
 - **Gastos de la empresa** (`/app/gastos`): gastos mensuales por área (entregas, ventas, administración). Solo los de producción se reparten en el costo de cada unidad; las inversiones se reparten en su vida útil.
 - **Compras** (`/app/compras`): compras del día a día clasificadas como insumo (actualiza su precio), gasto del mes, pago de un gasto fijo o inversión, con su comprobante.
 - **Resultado del mes** (`/app/resultado`): ventas, lo que dejó cada venta, gastos fijos, compras del mes, parte de las inversiones, resultado y punto de equilibrio.

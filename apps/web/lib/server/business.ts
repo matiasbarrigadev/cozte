@@ -10,6 +10,8 @@ import { customerAddressFor, loadCustomers, resolveCustomer, resolveCustomerEntr
 import { directoryFromCustomers } from "@/lib/customers";
 import { nextDeliveryDay, zoneCost, zoneDeliveryFields, type DeliveryZone } from "@/lib/delivery-zones";
 import { deliveryZoneFor, loadZones } from "./delivery-zones";
+import { resolveSupplier } from "./suppliers";
+import { kindForPurchase } from "@/lib/suppliers";
 import { commitMutation, type Mutation } from "./mutations";
 import { loadState } from "./state";
 
@@ -150,16 +152,16 @@ function monthBounds(value: string): [string, string] {
 }
 
 type ChannelRow = { id: string; name: string; delivery_method: string; commission_bps: number; fee_per_order_minor: number; delivery_cost_per_order_minor: number; units_per_order_milli: number; price_adjustment_bps: number };
-type PurchaseRow = { id: string; purchased_on: string; description: string; supplier: string; amount_minor: number; kind: PurchaseKind; area: CostArea; material_name: string | null; quantity_milli: number | null; expense_id: string | null; expense_name: string | null; useful_life_months: number | null; include_in_unit_cost: number; document_id: string | null; source: "user" | "cozte" };
+type PurchaseRow = { id: string; purchased_on: string; description: string; supplier: string; supplier_id: string | null; amount_minor: number; kind: PurchaseKind; area: CostArea; material_name: string | null; quantity_milli: number | null; expense_id: string | null; expense_name: string | null; useful_life_months: number | null; include_in_unit_cost: number; document_id: string | null; source: "user" | "cozte" };
 type SaleRow = { id: string; sold_on: string; channel_id: string | null; channel_name: string; customer: string; customer_id?: string | null; note: string; total_minor: number; selling_cost_minor: number; delivery_cost_minor: number; variable_cost_minor: number | null; production_cost_minor: number | null; document_id: string | null; source: "user" | "cozte" };
 type SaleDeliveryRow = { sale_id: string; id: string; status: DeliveryStatus; scheduled_on: string; delivered_on: string | null; zone_id: string | null; zone_name: string | null; carrier: string };
 type DeliveryRow = { id: string; sale_id: string; scheduled_on: string; time_window: string; status: DeliveryStatus; method: string; carrier: string; recipient: string; address: string; contact: string; tracking: string; note: string; delivered_on: string | null; zone_id: string | null; zone_name: string | null; source: "user" | "cozte"; sold_on: string; channel_id: string | null; channel_name: string; customer: string; total_minor: number; delivery_cost_minor: number };
 type SaleItemRow = { sale_id: string; product_id: string; product_name: string; quantity_milli: number; unit_price_minor: number; unit_variable_cost_minor: number | null; unit_cost_minor: number | null };
 
 const toChannel = (row: ChannelRow): SalesChannel => ({ id: row.id, name: row.name, deliveryMethod: row.delivery_method, commissionBps: row.commission_bps, feePerOrderMinor: row.fee_per_order_minor, deliveryCostPerOrderMinor: row.delivery_cost_per_order_minor, unitsPerOrderMilli: row.units_per_order_milli, priceAdjustmentBps: row.price_adjustment_bps });
-const toPurchase = (row: PurchaseRow): Purchase => ({ id: row.id, purchasedOn: row.purchased_on, description: row.description, supplier: row.supplier, amountMinor: row.amount_minor, kind: row.kind, area: row.area, materialName: row.material_name, quantityMilli: row.quantity_milli, expenseId: row.expense_id, expenseName: row.expense_name, usefulLifeMonths: row.useful_life_months, includeInUnitCost: row.include_in_unit_cost === 1, documentId: row.document_id, source: row.source });
+const toPurchase = (row: PurchaseRow): Purchase => ({ id: row.id, purchasedOn: row.purchased_on, description: row.description, supplier: row.supplier, supplierId: row.supplier_id, amountMinor: row.amount_minor, kind: row.kind, area: row.area, materialName: row.material_name, quantityMilli: row.quantity_milli, expenseId: row.expense_id, expenseName: row.expense_name, usefulLifeMonths: row.useful_life_months, includeInUnitCost: row.include_in_unit_cost === 1, documentId: row.document_id, source: row.source });
 
-const PURCHASE_COLUMNS = "p.id, p.purchased_on, p.description, p.supplier, p.amount_minor, p.kind, p.area, m.name AS material_name, p.quantity_milli, p.expense_id, e.name AS expense_name, p.useful_life_months, p.include_in_unit_cost, p.document_id, p.source FROM purchases p LEFT JOIN materials m ON m.id=p.material_id LEFT JOIN shared_expenses e ON e.id=p.expense_id";
+const PURCHASE_COLUMNS = "p.id, p.purchased_on, p.description, p.supplier, p.supplier_id, p.amount_minor, p.kind, p.area, m.name AS material_name, p.quantity_milli, p.expense_id, e.name AS expense_name, p.useful_life_months, p.include_in_unit_cost, p.document_id, p.source FROM purchases p LEFT JOIN materials m ON m.id=p.material_id LEFT JOIN shared_expenses e ON e.id=p.expense_id";
 
 export async function loadChannels(principal: Principal): Promise<SalesChannel[]> {
   const rows = await dbQuery<ChannelRow>("SELECT id, name, delivery_method, commission_bps, fee_per_order_minor, delivery_cost_per_order_minor, units_per_order_milli, price_adjustment_bps FROM sales_channels WHERE organization_id=? AND archived_at IS NULL ORDER BY created_at", [principal.organizationId]);
@@ -286,6 +288,7 @@ export async function recordPurchase(principal: Principal, input: PurchaseInput,
   if (!area) throw new ApiError(400, "Indica a qué área corresponde: producción, entregas, ventas o administración");
   const amountMinor = toOrganizationAmount(state, value.amount, currency);
   const documentId = await documentBelongs(principal, value.documentId);
+  const supplierId = await resolveSupplier(principal, value.supplier, kindForPurchase(value.kind), options.source);
 
   let priceUpdated: RecordedPurchase["priceUpdated"] = null;
   if (value.kind === "material" && material && value.quantity && value.updateMaterialPrice) {
@@ -302,8 +305,8 @@ export async function recordPurchase(principal: Principal, input: PurchaseInput,
   const id = crypto.randomUUID();
   const lifeMonths = value.kind === "investment" ? value.usefulLifeMonths ?? null : null;
   await dbBatch([
-    { sql: "INSERT INTO purchases (id, organization_id, purchased_on, description, supplier, amount_minor, currency, native_amount_milli, kind, area, material_id, quantity_milli, expense_id, useful_life_months, document_id, source, actor_id, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
-      id, principal.organizationId, value.purchasedOn, value.description, value.supplier, amountMinor, currency, toNativeMilli(value.amount), value.kind, area,
+    { sql: "INSERT INTO purchases (id, organization_id, purchased_on, description, supplier, supplier_id, amount_minor, currency, native_amount_milli, kind, area, material_id, quantity_milli, expense_id, useful_life_months, document_id, source, actor_id, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
+      id, principal.organizationId, value.purchasedOn, value.description, value.supplier, supplierId, amountMinor, currency, toNativeMilli(value.amount), value.kind, area,
       material?.id ?? null, value.quantity ? Math.round(value.quantity * 1000) : null, expense?.id ?? null, lifeMonths, documentId, options.source, principal.userId, options.idempotencyKey,
     ] },
     audit(principal, "record-purchase", id, { ...value, amountMinor, area, source: options.source }),
@@ -312,7 +315,7 @@ export async function recordPurchase(principal: Principal, input: PurchaseInput,
   if (includeInUnitCost) await commitOnce(principal, derivedKey(options.idempotencyKey, "investment"), options.source, () => ({ action: "set-investment-cost", id, include: true, allocationBasis: value.allocationBasis ?? "hours" }));
   return {
     id, duplicate: false, priceUpdated,
-    purchase: { id, purchasedOn: value.purchasedOn, description: value.description, supplier: value.supplier, amountMinor, kind: value.kind, area, materialName: material?.name ?? null, quantityMilli: value.quantity ? Math.round(value.quantity * 1000) : null, expenseId: expense?.id ?? null, expenseName: expense?.name ?? null, usefulLifeMonths: lifeMonths, includeInUnitCost, documentId, source: options.source },
+    purchase: { id, purchasedOn: value.purchasedOn, description: value.description, supplier: value.supplier, supplierId, amountMinor, kind: value.kind, area, materialName: material?.name ?? null, quantityMilli: value.quantity ? Math.round(value.quantity * 1000) : null, expenseId: expense?.id ?? null, expenseName: expense?.name ?? null, usefulLifeMonths: lifeMonths, includeInUnitCost, documentId, source: options.source },
   };
 }
 
@@ -502,7 +505,10 @@ export async function updatePurchase(principal: Principal, id: string, input: Pu
   const set = (column: string, value: SqlValue) => { sets.push(`${column}=?`); params.push(value); };
   if (patch.purchasedOn !== undefined) set("purchased_on", patch.purchasedOn);
   if (patch.description !== undefined) set("description", patch.description);
-  if (patch.supplier !== undefined) set("supplier", patch.supplier);
+  if (patch.supplier !== undefined) {
+    set("supplier", patch.supplier);
+    set("supplier_id", await resolveSupplier(principal, patch.supplier, kindForPurchase(row.kind), source));
+  }
   if (patch.area !== undefined) set("area", patch.area);
   if (patch.usefulLifeMonths !== undefined) set("useful_life_months", patch.usefulLifeMonths);
   if (patch.amount !== undefined) {

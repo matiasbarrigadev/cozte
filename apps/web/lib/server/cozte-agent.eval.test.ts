@@ -28,8 +28,9 @@ vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOS
 
 import { cozteToolSucceeded, cozteToolWrote, questionsShown } from "@/lib/cozte-tool-catalog";
 import { loadCustomers, saveCustomer, saveCustomerAddress } from "./customers";
-import { loadDeliveries, recordSale } from "./business";
+import { loadDeliveries, recordPurchase, recordSale } from "./business";
 import { loadZones } from "./delivery-zones";
+import { loadSuppliers } from "./suppliers";
 import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
 import { correctionMessage, finalAnswerStep, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
@@ -434,6 +435,34 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
     console.log(`\n[${model}] location ${JSON.stringify(checks)}\n${first.answer}\n---\n${second?.answer ?? ""}`);
     results.push({ model, scenario: "location", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "Rosario", answer: first.answer }, { user: "¿Qué necesitás?", answer: second?.answer ?? "" }] });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("tells how a supplier's price moved and saves a new supplier, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    const tools = createCozteTools(principal, crypto.randomUUID());
+    const run = async (name: keyof typeof tools, input: Record<string, unknown>) => await (tools[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<Record<string, unknown>>)(input, { toolCallId: crypto.randomUUID() });
+    await run("readCosts", {});
+    await run("saveMaterial", { name: "Soja", purchaseUnit: "kg", price: 1000, supplier: "Granos del Sur" });
+    const soy = (await loadState(principal)).materials.find((item) => item.name === "Soja")!.id;
+    for (const [date, amount] of [["2026-05-10", 50000], ["2026-07-10", 55000], ["2026-09-10", 60000]] as const) await recordPurchase(principal, { purchasedOn: date, description: "Soja", supplier: "Granos del Sur", amount, kind: "material", materialId: soy, quantity: 50 }, { source: "user", idempotencyKey: crypto.randomUUID() });
+    const history: ModelMessage[] = [];
+    const first = await productionTurn({ model, principal, history, text: "¿Cuánto me subió la soja con Granos del Sur desde la primera compra?" });
+    const second = await productionTurn({ model, principal, history, text: "Agregá el proveedor Molino Andino, me vende harina, el teléfono es 261 444 0000." });
+    const molino = (await loadSuppliers(principal)).suppliers.find((row) => /molino andino/i.test(row.name));
+    const plain = first.answer.replace(/\s/g, "");
+    const checks = {
+      readTheSupplier: first.records.some((item) => item.name === "readSuppliers" && item.ok),
+      toldThePercent: /20\s?%/.test(first.answer),
+      toldThePrices: /1\.000|1000/.test(plain) && /1\.200|1200/.test(plain),
+      savedTheSupplier: Boolean(molino) && molino!.kind === "materials" && /261/.test(molino!.phone),
+      confirmedIt: second.verified && /molino/i.test(second.answer),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] suppliers ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}`);
+    results.push({ model, scenario: "suppliers", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "soja", answer: first.answer }, { user: "molino", answer: second.answer }] });
     expect(failures).toEqual([]);
   });
 

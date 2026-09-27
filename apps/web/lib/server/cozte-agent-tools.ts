@@ -23,6 +23,8 @@ import { searchMessages } from "./cozte-messages";
 import { saveOrganizationLocation } from "./organization-location";
 import { findCustomer, loadCustomer, loadCustomers, saveCustomer, saveCustomerAddress } from "./customers";
 import { loadZonePlaces, loadZones, saveZone } from "./delivery-zones";
+import { findSupplier, loadSupplier, loadSuppliers, saveSupplier } from "./suppliers";
+import { SUPPLIER_KINDS, SUPPLIER_KIND_LABELS, supplierKey, type SupplierKind, type SupplierRow } from "@/lib/suppliers";
 import { WEEKDAY_NAMES, ZONE_MODE_LABELS, leadText, placesByZone, weekdaysText, zoneTallies, type DeliveryZone } from "@/lib/delivery-zones";
 import { CUSTOMER_STATUS_LABELS, customerKey, type CustomerStats } from "@/lib/customers";
 import { COUNTRIES, findCountry } from "@/lib/locations";
@@ -212,6 +214,20 @@ export const cozteToolInputSchemas = {
     cost: amount.optional().describe("Lo que cuesta esta entrega; se guarda en la venta y cambia el resultado del mes"),
     zone: z.string().trim().min(1).max(120).optional().describe("Zona de entrega (nombre o ID de readDeliveries), o 'ninguna' para dejarla sin zona. Toma la forma, quién la lleva y el costo de la zona, salvo lo que indiques"),
   }),
+  readSuppliers: z.object({
+    supplier: z.string().trim().min(1).max(120).optional().describe("Nombre o ID de un proveedor para ver su ficha (qué te vende con sus precios, compras por mes y últimas compras); omítelo para listar"),
+    query: z.string().trim().max(120).optional().describe("Para listar: parte del nombre, un insumo que vende, una zona o un teléfono"),
+    kind: z.enum(SUPPLIER_KINDS as [SupplierKind, ...SupplierKind[]]).optional().describe("Para listar: materials insumos, logistics envíos, services servicios, other otros"),
+  }),
+  saveSupplier: z.object({
+    supplier: z.string().trim().min(1).max(120).optional().describe("Nombre o ID del proveedor a corregir; omítelo para crear uno"),
+    name: z.string().trim().min(1).max(120).optional().describe("Nombre (para crear, o el nombre nuevo al corregir)"),
+    kind: z.enum(SUPPLIER_KINDS as [SupplierKind, ...SupplierKind[]]).optional().describe("materials: vende insumos; logistics: lleva pedidos (correo, transportista); services: cobra un servicio o gasto; other"),
+    contactName: z.string().trim().max(120).optional().describe("Con quién se habla"),
+    phone: z.string().trim().max(60).optional(),
+    email: z.string().trim().max(120).optional(),
+    notes: z.string().trim().max(1000).optional().describe("Días de pedido, forma de pago, mínimo de compra"),
+  }),
   saveDeliveryZone: z.object({
     zone: z.string().trim().min(1).max(120).optional().describe("Nombre o ID de la zona a cambiar; omítelo para crear una"),
     name: z.string().trim().min(2).max(60).optional().describe("Nombre de la zona (para crear, o el nombre nuevo)"),
@@ -326,6 +342,8 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   updateSale: "Corrige una venta ya registrada: fecha, canal, cliente, nota, productos (cantidades o precios) o costo de entrega. Conserva el precio cobrado y el costo de cada producto del día de la venta salvo que los cambies; recalcula lo que dejó y el resultado del mes.",
   updateDelivery: "Cambia una entrega (fecha, franja, estado, quién recibe, dirección, zona, contacto, quién la lleva, seguimiento, nota o costo) o crea la entrega de una venta que no la tiene. Marcar 'delivered' registra la fecha de hoy. Cambiar la zona (o una dirección que cae en otra zona) aplica el costo de esa zona.",
   readDeliveries: "Lista las entregas del mes y todas las abiertas, la más cercana a hoy primero, con su estado, fecha, quién recibe, dirección, zona, quién la lleva, costo y la venta; y las zonas de entrega con su forma, costo, días, lo que cubren, cómo les fue en el mes y los lugares de clientes que no tienen zona.",
+  readSuppliers: "Lista los proveedores con lo que les compraste en el año, qué te venden, su última compra y el cambio de precio más grande, o muestra la ficha de uno: cada insumo con su precio por unidad en cada compra (primero, último y cambio), compras por mes, últimas compras y, si lleva pedidos, sus zonas y entregas.",
+  saveSupplier: "Crea un proveedor o corrige sus datos (nombre, tipo, contacto, teléfono, email, notas). No hace falta crearlo antes de registrar una compra: se crea solo con el nombre.",
   saveDeliveryZone: "Crea o cambia una zona de entrega: reparto propio, transportista o retiro; qué barrios o ciudades cubre, costo por pedido, días que sale y cuánto tarda. Las entregas nuevas a esa zona toman su forma, quién la lleva, el próximo día de salida y su costo; las abiertas sin zona que caen en ella se suman.",
   voidRecord: "Anula una compra o venta mal registrada (queda en el historial). Después puedes registrarla bien.",
   readBusiness: "Lee cómo va un mes: canales y lo que queda por unidad en cada uno, gastos fijos por área e inversiones, compras, ventas, resultado del mes y punto de equilibrio.",
@@ -844,6 +862,61 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         note: "Ordenadas por cercanía a hoy (daysFromToday negativo = ya pasó).",
       };
     }
+    case "readSuppliers": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.readSuppliers>;
+      const priceOf = (price: SupplierRow["prices"][number]) => ({ material: price.name, unit: price.unit || undefined, first: price.first, last: price.last, changePercent: price.change === null ? null : Math.round(price.change * 100), purchases: price.points.length, lastOn: price.lastOn });
+      if (value.supplier) {
+        const found = await findSupplier(principal, value.supplier);
+        if (!found) {
+          const { suppliers } = await loadSuppliers(principal);
+          const key = supplierKey(value.supplier);
+          return notFound("el proveedor", value.supplier, suppliers.filter((row) => supplierKey([row.name, ...row.materials].join(" ")).includes(key.split(" ")[0] ?? "")).slice(0, 8).map((row) => row.name));
+        }
+        const detail = await loadSupplier(principal, found.id);
+        const row = detail.supplier;
+        return {
+          ok: true,
+          supplier: { id: row.id, name: row.name, kind: SUPPLIER_KIND_LABELS[row.kind], contactName: row.contactName || undefined, phone: row.phone || undefined, email: row.email || undefined, notes: row.notes || undefined },
+          stats: { spentLast12Months: row.stats.spent, purchases: row.stats.purchases, firstOn: row.stats.firstOn, lastOn: row.stats.lastOn, everyDays: row.stats.everyDays },
+          prices: row.prices.map(priceOf),
+          alsoUsualSupplierOf: row.materials.filter((name) => !row.prices.some((price) => price.name === name)),
+          ...(row.deliveries ? { deliveriesLast6Months: { total: row.deliveries.total, delivered: row.deliveries.delivered, onTime: row.deliveries.onTime, late: row.deliveries.late, failed: row.deliveries.failed, cost: row.deliveries.cost }, zones: row.zones } : {}),
+          months: detail.months.filter((item) => item.purchases),
+          purchases: detail.purchases.slice(0, 10).map((item) => ({ date: item.purchasedOn, description: item.description, amount: item.amountMinor, quantity: item.quantityMilli ? item.quantityMilli / 1000 : undefined, material: item.materialName ?? undefined })),
+          note: "changePercent compara el precio por unidad de la primera compra con el de la última.",
+        };
+      }
+      const { suppliers } = await loadSuppliers(principal);
+      const query = supplierKey(value.query ?? "");
+      const list = suppliers.filter((row) => (!value.kind || row.kind === value.kind) && (!query || supplierKey([row.name, row.phone, row.contactName, ...row.materials, ...row.zones].join(" ")).includes(query)));
+      return {
+        ok: true, total: list.length,
+        suppliers: list.slice(0, 25).map((row) => {
+          const move = row.prices.filter((price) => price.change !== null).sort((a, b) => Math.abs(b.change!) - Math.abs(a.change!))[0];
+          return { id: row.id, name: row.name, kind: SUPPLIER_KIND_LABELS[row.kind], spentLast12Months: row.stats.spent, purchases: row.stats.purchases, lastOn: row.stats.lastOn, sells: row.materials.length ? row.materials : undefined, zones: row.zones.length ? row.zones : undefined, biggestPriceChange: move ? priceOf(move) : undefined };
+        }),
+        ...(list.length > 25 ? { note: `Hay ${list.length}; se muestran los 25 a los que más les compraste.` } : {}),
+      };
+    }
+    case "saveSupplier": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.saveSupplier>;
+      const fields = { kind: value.kind, contactName: value.contactName, phone: value.phone, email: value.email, notes: value.notes };
+      let id: string;
+      const done: string[] = [];
+      if (value.supplier) {
+        const found = await findSupplier(principal, value.supplier);
+        if (!found) return notFound("el proveedor", value.supplier, (await loadSuppliers(principal)).suppliers.slice(0, 8).map((row) => row.name));
+        id = found.id;
+        done.push(...(await saveSupplier(principal, { id, name: value.name, ...fields }, "cozte")).done);
+      } else {
+        if (!value.name) return { ok: false, error: "Falta el nombre del proveedor" };
+        const existing = await findSupplier(principal, value.name);
+        const saved = await saveSupplier(principal, existing ? { id: existing.id, ...fields } : { name: value.name, ...fields }, "cozte");
+        id = saved.id;
+        done.push(...saved.done);
+      }
+      return done.length ? { ok: true, supplierId: id, done } : { ok: true, supplierId: id, unchanged: true };
+    }
     case "saveDeliveryZone": {
       const value = args as z.infer<typeof cozteToolInputSchemas.saveDeliveryZone>;
       const zones = await loadZones(principal);
@@ -1128,6 +1201,8 @@ export function createCozteTools(principal: Principal, runId: string) {
     readCustomers: tool({ description: describe.readCustomers, inputSchema: schemas.readCustomers, execute: execute("readCustomers") }),
     saveCustomer: tool({ description: describe.saveCustomer, inputSchema: schemas.saveCustomer, execute: execute("saveCustomer") }),
     saveDeliveryZone: tool({ description: describe.saveDeliveryZone, inputSchema: schemas.saveDeliveryZone, execute: execute("saveDeliveryZone") }),
+    readSuppliers: tool({ description: describe.readSuppliers, inputSchema: schemas.readSuppliers, execute: execute("readSuppliers") }),
+    saveSupplier: tool({ description: describe.saveSupplier, inputSchema: schemas.saveSupplier, execute: execute("saveSupplier") }),
     sharePresentation: tool({ description: describe.sharePresentation, inputSchema: schemas.sharePresentation, execute: execute("sharePresentation") }),
     askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),
   };

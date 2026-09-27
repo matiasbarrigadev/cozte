@@ -27,6 +27,7 @@ import { BusinessAnalysisView } from "./analysis/business-analysis";
 import { SalesSection } from "./business/sales-section";
 import { DeliveriesSection } from "./business/deliveries-section";
 import { CustomersSection } from "./business/customers-section";
+import { SuppliersSection } from "./business/suppliers-section";
 import { ExpensesSection } from "./business/expenses-section";
 import { PurchasesSection } from "./business/purchases-section";
 import { ResultSection } from "./business/result-section";
@@ -58,7 +59,7 @@ type NavItem = { id: View; label: string; icon: AnimatedIconName };
 const navGroups: { label: string; items: NavItem[] }[] = [
   { label: "Espacio de trabajo", items: [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "asistente", label: "Cozte AI", icon: "assistant" }] },
   { label: "Costos", items: [{ id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
-  { label: "Día a día", items: [{ id: "ventas", label: "Ventas", icon: "sales" }, { id: "entregas", label: "Entregas", icon: "truck" }, { id: "clientes", label: "Clientes", icon: "users" }, { id: "compras", label: "Compras", icon: "receipt" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
+  { label: "Día a día", items: [{ id: "ventas", label: "Ventas", icon: "sales" }, { id: "entregas", label: "Entregas", icon: "truck" }, { id: "clientes", label: "Clientes", icon: "users" }, { id: "compras", label: "Compras", icon: "receipt" }, { id: "proveedores", label: "Proveedores", icon: "boxes" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
   { label: "Evolución", items: [{ id: "analisis", label: "Análisis", icon: "chart" }, { id: "presentaciones", label: "Presentaciones", icon: "presentation" }, { id: "historial", label: "Historial", icon: "history" }] },
 ];
 
@@ -348,6 +349,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
           {view === "ventas" ? <SalesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenCozte={() => navigate("asistente")} onOpenDeliveries={() => navigate("entregas")} onDataChanged={refresh} /> : null}
 
           {view === "clientes" ? <CustomersSection state={state} demo={demo} onDataChanged={refresh} /> : null}
+          {view === "proveedores" ? <SuppliersSection state={state} demo={demo} onDataChanged={refresh} onOpenPurchases={() => navigate("compras")} /> : null}
 
           {view === "entregas" ? <DeliveriesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenSales={() => navigate("ventas")} onDataChanged={refresh} /> : null}
 

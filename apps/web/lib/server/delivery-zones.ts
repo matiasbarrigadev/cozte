@@ -4,6 +4,7 @@ import { customerKey } from "@/lib/customers";
 import { ZONE_MODES, ZONE_MODE_LABELS, matchZone, parseAreas, parseWeekdays, weekdaysFromNames, zoneDeliveryFields, type DeliveryZone, type ZoneMode } from "@/lib/delivery-zones";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement } from "./db";
+import { resolveSupplier } from "./suppliers";
 
 /**
  * Delivery zones: how each area is delivered, what an order costs there and which days it goes out. Each delivery
@@ -89,12 +90,14 @@ export async function saveZone(principal: Principal, input: ZoneInput, source: "
     id: value.id ?? crypto.randomUUID(), name: value.name, mode: value.mode, carrier: value.mode === "pickup" ? "" : value.carrier, areas,
     costPerOrderMinor: value.mode === "pickup" ? 0 : Math.round(value.costPerOrder), weekdays, leadDays: value.leadDays, isFallback: value.mode !== "pickup" && value.isFallback, notes: value.notes,
   };
-  const fields = [zone.name, nameKey, zone.mode, zone.carrier, zone.areas.join(", "), zone.costPerOrderMinor, zone.weekdays.join(","), zone.leadDays, zone.isFallback ? 1 : 0, zone.notes];
+  // A carrier zone points to its logistics supplier, found or created by name.
+  const supplierId = zone.mode === "carrier" ? await resolveSupplier(principal, zone.carrier, "logistics", source) : null;
+  const fields = [zone.name, nameKey, zone.mode, zone.carrier, zone.areas.join(", "), zone.costPerOrderMinor, zone.weekdays.join(","), zone.leadDays, zone.isFallback ? 1 : 0, zone.notes, supplierId];
   const statements: SqlStatement[] = [];
   if (zone.isFallback) statements.push({ sql: "UPDATE delivery_zones SET is_fallback=0 WHERE organization_id=? AND id<>?", params: [org, zone.id] });
   statements.push(current
-    ? { sql: "UPDATE delivery_zones SET name=?, name_key=?, mode=?, carrier=?, areas=?, cost_per_order_minor=?, weekdays=?, lead_days=?, is_fallback=?, notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?", params: [...fields, zone.id, org] }
-    : { sql: "INSERT INTO delivery_zones (name, name_key, mode, carrier, areas, cost_per_order_minor, weekdays, lead_days, is_fallback, notes, id, organization_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [...fields, zone.id, org] });
+    ? { sql: "UPDATE delivery_zones SET name=?, name_key=?, mode=?, carrier=?, areas=?, cost_per_order_minor=?, weekdays=?, lead_days=?, is_fallback=?, notes=?, supplier_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?", params: [...fields, zone.id, org] }
+    : { sql: "INSERT INTO delivery_zones (name, name_key, mode, carrier, areas, cost_per_order_minor, weekdays, lead_days, is_fallback, notes, supplier_id, id, organization_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [...fields, zone.id, org] });
   // Open deliveries without a zone, or held by the fallback zone, that now fall in this one.
   const fallback = zone.isFallback ? null : zones.find((item) => item.isFallback && item.id !== zone.id) ?? null;
   const open = await dbQuery<{ id: string; address: string; zone: string | null; method: string; carrier: string; zone_id: string | null }>(

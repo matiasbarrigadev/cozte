@@ -28,6 +28,8 @@ export type Purchase = {
   purchasedOn: string;
   description: string;
   supplier: string;
+  /** The supplier record it belongs to, found or created by name. */
+  supplierId?: string | null;
   amountMinor: number;
   kind: PurchaseKind;
   area: CostArea;
