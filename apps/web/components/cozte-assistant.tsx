@@ -34,6 +34,8 @@ import { PresentationCard } from "@/components/decks/presentation-card";
 import { CozteVisual, CozteVisualProvider } from "@/components/cozte/cozte-visuals";
 import { BoardPanel } from "@/components/cozte/board-panel";
 import { CozteLiveStatus, StreamedAnswer } from "@/components/cozte/live-status";
+import { DaySeparator, MessageTime, messageDay, scrollParent, useIsomorphicLayoutEffect } from "@/components/cozte/message-time";
+import { messageCreatedAt, withCreatedAt } from "@/lib/cozte-conversation-memory";
 import { DEFAULT_EXPLANATION_LEVEL, EXPLANATION_LEVELS, type ExplanationLevel } from "@/lib/cozte-levels";
 import { cleanWidget, parseBoard, pinWidget, widgetKey, type BoardWidget, type WidgetSpec } from "@/lib/cozte-widgets";
 import type { DomainState, ProductCost } from "@/lib/domain";
@@ -72,6 +74,12 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
   const [busyProposalId, setBusyProposalId] = React.useState<string | null>(null);
   const busyProposalIds = React.useRef(new Set<string>());
   const [loading, setLoading] = React.useState(!demo);
+  // The chat loads its latest page; older ones come in as the person scrolls up.
+  const [hasOlder, setHasOlder] = React.useState(false);
+  const [loadingOlder, setLoadingOlder] = React.useState(false);
+  const topSentinel = React.useRef<HTMLDivElement>(null);
+  const restoreScroll = React.useRef<{ element: HTMLElement; height: number; top: number } | null>(null);
+  const olderRequest = React.useRef(false);
   const [, setProposalsLoading] = React.useState(!demo);
   const transport = React.useMemo(() => new WorkflowChatTransport<UIMessage>({
     api: "/api/assistant",
@@ -92,8 +100,10 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
     },
   }), []);
   // Throttled updates: re-rendering on every streamed token froze the browser on long conversations.
-  const { messages, setMessages, sendMessage, status, error, stop } = useChat<UIMessage>({ transport, resume: resumeExistingWorkflow, throttle: 50,
+  const { messages, setMessages, sendMessage: sendChatMessage, status, error, stop } = useChat<UIMessage>({ transport, resume: resumeExistingWorkflow, throttle: 50,
     onFinish: ({ message, isError, isAbort }) => {
+      const finishedAt = new Date().toISOString();
+      setMessages((current) => current.map((item) => item.id === message.id && !messageCreatedAt(item) ? withCreatedAt(item, finishedAt) : item));
       void loadProposals(true);
       if (message.parts.some((part) => isToolUIPart(part) && part.state === "output-available" && COZTE_COST_WRITE_TOOLS.has(part.type.slice("tool-".length)) && cozteToolSucceeded(part.output))) { void onDataChanged(); setRefreshKey((current) => current + 1); }
       if (message.parts.some((part) => (part.type === "tool-setExplanationLevel" || part.type === "tool-showVisual" || part.type === "tool-manageBoard") && "state" in part && part.state === "output-available")) void loadSettings();
@@ -183,6 +193,56 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [demo]);
 
+  const sendMessage = React.useCallback((message: { text: string; files?: FileList }) => sendChatMessage({ ...message, metadata: { createdAt: new Date().toISOString() } }), [sendChatMessage]);
+
+  async function loadOlder() {
+    const first = messages[0];
+    if (demo || !hasOlder || olderRequest.current || !first) return;
+    olderRequest.current = true;
+    setLoadingOlder(true);
+    try {
+      const response = await fetch(`/api/assistant?before=${encodeURIComponent(first.id)}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los mensajes anteriores");
+      const older = Array.isArray(data.messages) ? data.messages as UIMessage[] : [];
+      // Keep the messages on screen where they are while older ones are added above.
+      const scroller = scrollParent(topSentinel.current);
+      if (scroller) restoreScroll.current = { element: scroller, height: scroller.scrollHeight, top: scroller.scrollTop };
+      setMessages((current) => { const ids = new Set(current.map((item) => item.id)); return [...older.filter((item) => !ids.has(item.id)), ...current]; });
+      if (Array.isArray(data.toolExecutions)) setToolExecutions((current) => [...data.toolExecutions, ...current]);
+      setHasOlder(Boolean(data.hasMore));
+    } catch (cause) { toast.error(cause instanceof Error ? cause.message : "No se pudieron cargar los mensajes anteriores"); }
+    finally { olderRequest.current = false; setLoadingOlder(false); }
+  }
+  useIsomorphicLayoutEffect(() => {
+    const saved = restoreScroll.current;
+    if (!saved) return;
+    restoreScroll.current = null;
+    saved.element.scrollTop = saved.element.scrollHeight - saved.height + saved.top;
+  }, [messages]);
+  // Reaching the top of the chat loads the previous page.
+  const loadOlderRef = React.useRef(loadOlder);
+  React.useEffect(() => { loadOlderRef.current = loadOlder; });
+  React.useEffect(() => {
+    const target = topSentinel.current;
+    if (!target || !hasOlder || loadingOlder) return;
+    const observer = new IntersectionObserver((entries) => { if (entries.some((entry) => entry.isIntersecting)) void loadOlderRef.current(); }, { root: scrollParent(target), rootMargin: "240px 0px 0px 0px" });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [hasOlder, loadingOlder, messages.length]);
+  // A separator goes before the first message of each day.
+  const dayStarts = React.useMemo(() => {
+    const starts = new Set<string>();
+    let previous: string | null = null;
+    for (const message of messages) {
+      const createdAt = messageCreatedAt(message);
+      if (!createdAt) continue;
+      if (previous === null || messageDay(previous) !== messageDay(createdAt)) starts.add(message.id);
+      previous = createdAt;
+    }
+    return starts;
+  }, [messages]);
+
   // Which visuals are already on the board, so a chat card says so instead of offering to pin it again.
   const pinnedKeys = React.useMemo(() => board.map(widgetKey).join("\n"), [board]);
 
@@ -195,6 +255,7 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
       if (!response.ok) throw new Error(data.error ?? "No se pudo empezar una conversación nueva");
       setMessages([]);
       setToolExecutions([]);
+      setHasOlder(false);
       toast.success("Conversación nueva. La anterior quedó archivada; tus datos y notas siguen guardados.");
     } catch (cause) { toast.error(cause instanceof Error ? cause.message : "No se pudo empezar una conversación nueva"); }
   }
@@ -239,6 +300,7 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
       const [chat, proposalData] = await Promise.all([chatResponse.json(), proposalResponse.json()]);
       if (active) {
         setMessages(chat.messages ?? []);
+        setHasOlder(Boolean(chat.hasMore));
         setToolExecutions(Array.isArray(chat.toolExecutions) ? chat.toolExecutions : []);
         setProposals(Array.isArray(proposalData.proposals) ? proposalData.proposals : []);
         setDataSources(Array.isArray(proposalData.sources) ? proposalData.sources : []);
@@ -424,7 +486,11 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
               {!messages.length ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>{state.products.length ? "¿En qué te ayudo hoy?" : "Empecemos por tu producción"}</EmptyTitle><EmptyDescription>{state.products.length ? "Pregúntame por tus costos, mándame un ticket o una venta, o pídeme un gráfico." : "¿Qué productos terminados y empacados fabrican, dónde y cómo?"}</EmptyDescription></EmptyHeader>
                 {level === null && !demo ? <div className="flex w-full max-w-xl flex-col gap-2"><p className="text-sm font-medium">¿Cómo prefieres que te explique?</p><div className="grid gap-2 sm:grid-cols-3">{EXPLANATION_LEVELS.map((item) => <button key={item.id} type="button" onClick={() => void saveSettings({ level: item.id })} className="flex flex-col gap-1 rounded-lg border bg-background p-3 text-left text-sm transition-colors hover:bg-muted"><span className="font-medium">{item.label}</span><span className="text-xs text-muted-foreground">{item.hint}</span></button>)}</div><p className="text-xs text-muted-foreground">Puedes cambiarlo cuando quieras arriba.</p></div> : null}
               </Empty> : null}
+              {messages.length ? <div ref={topSentinel} className="flex justify-center py-1 text-[11px] text-muted-foreground">
+                {loadingOlder ? <TextShimmer className="text-xs">Cargando mensajes anteriores…</TextShimmer> : hasOlder ? <button type="button" className="rounded-full px-2 py-0.5 hover:bg-muted" onClick={() => void loadOlder()}>Ver mensajes anteriores</button> : <span>Inicio de la conversación</span>}
+              </div> : null}
               {messages.map((message) => <React.Fragment key={message.id}>
+                {dayStarts.has(message.id) ? <DaySeparator iso={messageCreatedAt(message)!} /> : null}
                 <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} onAnswer={message.id === messages.at(-1)?.id ? answerQuestions : undefined} onPinVisual={pinVisual} pinnedKeys={pinnedKeys} onOpenPresentation={onOpenPresentation} />
                 {(proposalsAfterMessage.get(message.id) ?? []).map((proposal) => <ProposalTurnCard key={proposal.id} proposal={proposal} onOpen={() => setSelectedProposalId(proposal.id)} />)}
               </React.Fragment>)}
@@ -547,7 +613,10 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
   // One card per presentation, at the last tool call that touched it, so a deck edited several times shows once.
   const deckCards = message.role === "assistant" ? presentationCards(message.parts) : null;
   return<div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
-    <span className="text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}</span>
+    <span className="flex items-baseline gap-2 text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}{(() => {
+      const createdAt = messageCreatedAt(message);
+      return createdAt && !streaming ? <MessageTime iso={createdAt} className="text-[11px] font-normal tabular-nums opacity-70" /> : null;
+    })()}</span>
     {message.role === "assistant" ? (() => {
       // Work (reasoning and tools) goes in one collapsed block above the answer, like a compact trace.
       const liveToolCallIds = new Set(message.parts.filter(isToolUIPart).map((part) => part.toolCallId));
