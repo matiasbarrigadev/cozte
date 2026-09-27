@@ -26,6 +26,7 @@ export const COZTE_TOOL_LABELS = {
   editPresentation: "Editar presentación",
   readPresentation: "Revisar presentaciones",
   sharePresentation: "Compartir presentación",
+  searchConversation: "Buscar en conversaciones",
   askQuestions: "Preguntarte",
 } as const;
 

@@ -1,4 +1,5 @@
 import "server-only";
+import { archiveMessages } from "./cozte-messages";
 import { isExplanationLevel, type ExplanationLevel } from "@/lib/cozte-levels";
 import { parseBoard, pinWidget, type BoardWidget, type WidgetSpec } from "@/lib/cozte-widgets";
 import type { Principal } from "./auth";
@@ -36,12 +37,5 @@ export async function addToBoard(principal: Principal, widget: WidgetSpec): Prom
  */
 export async function archiveConversation(principal: Principal): Promise<{ archived: boolean }> {
   if (await getActiveAssistantWorkflow(principal)) throw new ApiError(409, "Cozte está respondiendo; espera a que termine para empezar una conversación nueva");
-  const rows = await dbQuery<{ messages_json: string }>("SELECT messages_json FROM assistant_conversations WHERE organization_id=? AND user_id=?", [principal.organizationId, principal.userId]);
-  const current = rows[0]?.messages_json;
-  if (!current || current === "[]") return { archived: false };
-  await dbBatch([
-    { sql: "INSERT INTO assistant_conversation_archives (id, organization_id, user_id, messages_json) VALUES (?, ?, ?, ?)", params: [crypto.randomUUID(), principal.organizationId, principal.userId, current] },
-    { sql: "UPDATE assistant_conversations SET messages_json='[]', updated_at=CURRENT_TIMESTAMP WHERE organization_id=? AND user_id=?", params: [principal.organizationId, principal.userId] },
-  ]);
-  return { archived: true };
+  return { archived: await archiveMessages(principal) };
 }

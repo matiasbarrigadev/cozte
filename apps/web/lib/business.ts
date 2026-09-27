@@ -116,7 +116,20 @@ const CURRENCY_ZONES: Record<string, string> = {
  * Without a currency it uses Buenos Aires, the timezone of most of Cozte's businesses.
  */
 export function businessToday(currency?: string, now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: (currency && CURRENCY_ZONES[currency]) || "America/Argentina/Buenos_Aires", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: businessTimeZone(currency), year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+}
+
+/** The timezone where the business is, from its currency (Buenos Aires by default). */
+export function businessTimeZone(currency?: string): string {
+  return (currency && CURRENCY_ZONES[currency]) || "America/Argentina/Buenos_Aires";
+}
+
+/** "sábado 27 de septiembre de 2026, 10:32" where the business is. */
+export function businessNowLabel(currency?: string, now = new Date()): string {
+  const zone = businessTimeZone(currency);
+  const date = new Intl.DateTimeFormat("es-AR", { timeZone: zone, weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(now);
+  const time = new Intl.DateTimeFormat("es-AR", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now);
+  return `${date}, ${time}`;
 }
 
 /** Whole days from today to a date (positive: ahead, negative: past). */

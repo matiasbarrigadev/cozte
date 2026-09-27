@@ -38,6 +38,7 @@ const running: Record<string, string> = {
   editPresentation: "Editando la presentación",
   readPresentation: "Revisando la presentación",
   sharePresentation: "Preparando el link",
+  searchConversation: "Buscando en conversaciones anteriores",
   askQuestions: "Preparando unas preguntas",
 };
 
@@ -69,6 +70,7 @@ const summaryVerb: Record<string, [string, string]> = {
   editPresentation: ["editó la presentación", "editó la presentación {n} veces"],
   readPresentation: ["revisó la presentación", "revisó las presentaciones"],
   sharePresentation: ["compartió la presentación", "compartió {n} presentaciones"],
+  searchConversation: ["buscó en conversaciones anteriores", "buscó {n} veces en conversaciones anteriores"],
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -96,6 +98,7 @@ export function toolOutcomeLine(name: string, output: unknown, errorText?: strin
     const changes = result.products.map(record).filter((item) => typeof item.unitCostAfter === "number").map((item) => `${String(item.product)} ${number(item.unitCostBefore)} → ${number(item.unitCostAfter)}`);
     return { text: `Sin guardar${changes.length ? `: ${changes.join(" · ")}` : ""}`, failed: false };
   }
+  if (name === "searchConversation" && Array.isArray(result.matches)) return { text: result.matches.length ? `Encontró ${result.matches.length} mensaje${result.matches.length === 1 ? "" : "s"}` : "No encontró mensajes con eso", failed: false };
   if (name === "readBusiness") {
     const count = (key: string) => Array.isArray(result[key]) ? (result[key] as unknown[]).length : 0;
     return { text: `${count("sales")} ventas y ${count("purchases")} compras en el mes`, failed: false };

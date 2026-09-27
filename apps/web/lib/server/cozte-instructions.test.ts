@@ -23,7 +23,14 @@ describe("Cozte instructions", () => {
     expect(text).toContain("<costos_al_inicio>");
     expect(text).toContain("Cuaderno A5 · tapa dura");
     expect(text).toContain("Los sueldos se reparten por horas");
-    expect(text).toContain("Hoy es 2026-09-24");
+    expect(text).toContain("hoy es 2026-09-24");
+    expect(text).toContain("searchConversation");
+  });
+
+  it("says what time it is where the business is and when the previous message was written", () => {
+    const text = buildCozteInstructions({ ...base, now: new Date("2026-09-24T13:32:00Z"), lastMessageAt: "2026-09-23T22:00:00Z" });
+    expect(text).toContain("Ahora es jueves, 24 de septiembre de 2026, 10:32 (hora de la empresa); hoy es 2026-09-24.");
+    expect(text).toContain("El mensaje anterior de la persona fue el mié 23/09/2026 19:00 (ayer).");
   });
 
   it("keeps facts from the previous production map without presenting them as costs", () => {

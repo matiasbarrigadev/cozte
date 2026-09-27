@@ -1,14 +1,11 @@
 import "server-only";
-import type { UIMessage } from "ai";
 import { calculateProductionCosts, changesEvaluatedProductCosts, emptyProductionProfile, evaluableProfileProducts, productionProfileReviewReason, productionProfileSchema, profileGaps, validateProfileReferences, type ProductionProfile } from "@/lib/production-profile";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery } from "./db";
 import { loadState } from "./state";
 import { profileCatalogSuggestions } from "@/lib/profile-catalog-suggestions";
-import { compactCozteConversation, COZTE_MAX_HISTORY_MESSAGES } from "@/lib/cozte-conversation-memory";
 
 type ProfileRow = { confirmed_json: string | null; draft_json: string | null; revision: number };
-type ConversationRow = { messages_json: string };
 type SnapshotRevisionRow = { revision: number };
 
 export async function loadProductionProfile(principal: Principal) {
@@ -102,17 +99,4 @@ export async function confirmProductionProfile(principal: Principal, expectedRev
   ]);
   if (!results[2]?.length) throw new ApiError(409, "La propuesta cambió. Vuelve a revisarla antes de confirmar");
   return loadProductionProfile(principal);
-}
-
-export async function loadConversation(principal: Principal): Promise<UIMessage[]> {
-  const rows = await dbQuery<ConversationRow>("SELECT messages_json FROM assistant_conversations WHERE organization_id=? AND user_id=?", [principal.organizationId, principal.userId]);
-  if (!rows[0]) return [];
-  const data: unknown = JSON.parse(rows[0].messages_json);
-  if (!Array.isArray(data)) return [];
-  return data.filter((item): item is UIMessage => !!item && typeof item === "object" && typeof item.id === "string" && (item.role === "user" || item.role === "assistant") && Array.isArray(item.parts)).slice(-COZTE_MAX_HISTORY_MESSAGES);
-}
-
-export async function saveConversation(principal: Principal, messages: UIMessage[]): Promise<void> {
-  const reduced = compactCozteConversation(messages);
-  await dbBatch([{ sql: "INSERT INTO assistant_conversations (organization_id, user_id, messages_json) VALUES (?, ?, ?) ON CONFLICT (organization_id, user_id) DO UPDATE SET messages_json=excluded.messages_json, updated_at=CURRENT_TIMESTAMP", params: [principal.organizationId, principal.userId, JSON.stringify(reduced)] }]);
 }

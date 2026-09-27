@@ -4,13 +4,13 @@ import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
 import { COZTE_TOOL_NAMES, cozteToolSucceeded, cozteToolWrote, questionsShown } from "@/lib/cozte-tool-catalog";
-import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory } from "@/lib/cozte-conversation-memory";
+import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory, withCreatedAt } from "@/lib/cozte-conversation-memory";
 import { cleanLegacyWording, correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import { QUALITY_QUESTIONS, actionableFlags, qualityFeedback, qualityLine, qualityMode, qualityState, summarizeQuality, type QualityAnswers, type QualityMode, type QualitySummary } from "@/lib/cozte-quality";
 import type { ExplanationLevel } from "@/lib/cozte-levels";
 import { discardedDraftMetadata, qualityNoteMetadata } from "@/lib/cozte-turn-activity";
 import type { Principal } from "./auth";
-import { loadConversation, saveConversation } from "./production-profile";
+import { loadRecentMessages, saveMessages } from "./cozte-messages";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked, reopenAssistantRunAsFailed } from "./assistant-trace";
 import { cozteToolJsonSchema, createCozteTools } from "./cozte-agent-tools";
 import { loadState } from "./state";
@@ -93,6 +93,12 @@ function toolFailure(step: StepLike, toolCallId: string): string {
   return text.slice(0, 1_500);
 }
 
+/** Stores the turn's answer (the person's message was stored when it arrived), stamped with when it finished. */
+async function saveAnswer(input: FinalizeInput): Promise<void> {
+  const answer = input.messages.at(-1);
+  if (answer?.role === "assistant") await saveMessages(input.principal, [withCreatedAt(answer, new Date().toISOString())]);
+}
+
 async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   "use step";
   // Claim the turn first. If it was already closed as stalled, a late answer is still kept when the
@@ -100,14 +106,14 @@ async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   const claimed = await finishAssistantRun(input.runId, input.status, input.error);
   if (!claimed) {
     const turnMessageId = input.messages.findLast((message) => message.role === "user")?.id;
-    const stored = await loadConversation(input.principal);
+    const stored = await loadRecentMessages(input.principal, 1);
     const unchanged = input.status === "completed" && turnMessageId !== undefined && stored.at(-1)?.id === turnMessageId;
-    if (unchanged) await saveConversation(input.principal, input.messages);
+    if (unchanged) await saveAnswer(input);
     await addAssistantEvent(input.runId, unchanged ? "late_finish_saved" : "late_finish_ignored", { outcome: input.status }).catch(() => {});
     return;
   }
   try {
-    if (input.status === "completed") await saveConversation(input.principal, input.messages);
+    if (input.status === "completed") await saveAnswer(input);
     await addAssistantEvent(input.runId, "stream_finished", { outcome: input.status, response: input.responseText?.slice(0, 8_000) ?? "", emptyResponse: !input.responseText?.trim() });
   } catch (error) {
     console.error("Cozte workflow completion save failed", input.runId, errorDetails(error));

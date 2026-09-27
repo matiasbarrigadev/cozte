@@ -5,6 +5,13 @@ import { cleanLegacyWording } from "./cozte-response-verifier";
 
 export const COZTE_MAX_HISTORY_MESSAGES = 80;
 export const COZTE_MAX_HISTORY_BYTES = 90_000;
+/** What Cozte reads of the conversation each turn: the latest messages, within a size budget. */
+export const COZTE_MODEL_HISTORY_MESSAGES = 30;
+export const COZTE_MODEL_HISTORY_BYTES = 60_000;
+/** Messages per page when the chat loads, and each time the person scrolls up for more. */
+export const COZTE_CHAT_PAGE_SIZE = 20;
+/** Largest stored message: a D1 value must stay under 100 KB. */
+const MAX_MESSAGE_BYTES = 90_000;
 
 const knownTools = new Set<string>(COZTE_TOOL_NAMES);
 
@@ -91,5 +98,72 @@ export function modelHistory(messages: UIMessage[]): UIMessage[] {
     // Verified turns carry the prefix; earlier verified turns are recognizable by their real tool receipts.
     if (message.id.startsWith(COZTE_ASSISTANT_ID_PREFIX) || tools.length) return [message];
     return [];
+  });
+}
+
+/** When a stored message was written (ISO 8601), if known. */
+export function messageCreatedAt(message: Pick<UIMessage, "metadata">): string | null {
+  const value = (message.metadata as { createdAt?: unknown } | undefined)?.createdAt;
+  return typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : null;
+}
+
+/** The same message with the time it was written. */
+export function withCreatedAt(message: UIMessage, createdAt: string): UIMessage {
+  return { ...message, metadata: { ...(message.metadata as Record<string, unknown> | undefined), createdAt } };
+}
+
+/** Lowercase text without accents or extra spaces, so a search for "reunion" finds "Reunión". */
+export function normalizeSearch(text: string): string {
+  return text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** What a stored message is found by: the person's text, or Cozte's answer (not its notes, reasoning or tools). */
+export function messageSearchText(message: UIMessage): string {
+  const answer = message.role === "assistant" ? answerTextIndexes(message.parts as ActivityPart[]) : null;
+  const text = message.parts.flatMap((part, index) => part.type === "text" && (!answer || answer.has(index)) ? [part.text] : []).join(" ");
+  return normalizeSearch(text).slice(0, 6_000);
+}
+
+/** A message as it is stored: compact parts, within the size of one database value. Null when nothing is left. */
+export function storableMessage(message: UIMessage): UIMessage | null {
+  const encoder = new TextEncoder();
+  let parts = message.parts.map(compactPart).filter((part): part is Part => part !== null);
+  if (encoder.encode(JSON.stringify(parts)).byteLength > MAX_MESSAGE_BYTES) parts = parts.filter((part) => part.type === "text" || part.type === "reasoning");
+  if (encoder.encode(JSON.stringify(parts)).byteLength > MAX_MESSAGE_BYTES) parts = parts.filter((part) => part.type === "text").map((part) => ({ ...part, text: (part as { text: string }).text.slice(0, 20_000) }) as Part);
+  return parts.length ? { id: message.id, role: message.role, parts, ...(message.metadata ? { metadata: message.metadata } : {}) } : null;
+}
+
+/** The latest messages Cozte reads each turn, within the message and size budget, starting at a message of the person. */
+export function modelWindow(messages: UIMessage[]): UIMessage[] {
+  const encoder = new TextEncoder();
+  const window: UIMessage[] = [];
+  let bytes = 0;
+  for (const message of messages.slice(-COZTE_MODEL_HISTORY_MESSAGES).reverse()) {
+    const size = encoder.encode(JSON.stringify(message.parts)).byteLength;
+    if (window.length && bytes + size > COZTE_MODEL_HISTORY_BYTES) break;
+    bytes += size;
+    window.unshift(message);
+  }
+  while (window.length > 1 && window[0].role !== "user") window.shift();
+  return window;
+}
+
+/** "sáb 27/09/2026 10:32" in the business's timezone. */
+export function messageTimeLabel(iso: string, timeZone: string): string {
+  const date = new Date(iso);
+  const day = new Intl.DateTimeFormat("es-AR", { timeZone, weekday: "short", day: "2-digit", month: "2-digit", year: "numeric" }).format(date).replace(",", "");
+  const time = new Intl.DateTimeFormat("es-AR", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(date);
+  return `${day} ${time}`;
+}
+
+/**
+ * Each message of the person starts, for the model only, with when it was written, so "mañana" in yesterday's
+ * message reads as today. Cozte's own messages are left as they are, so it does not start imitating the mark.
+ */
+export function withMessageTimes(messages: UIMessage[], timeZone: string): UIMessage[] {
+  return messages.map((message) => {
+    const createdAt = messageCreatedAt(message);
+    if (message.role !== "user" || !createdAt) return message;
+    return { ...message, parts: [{ type: "text", text: `[Escrito el ${messageTimeLabel(createdAt, timeZone)}]` } as Part, ...message.parts] };
   });
 }

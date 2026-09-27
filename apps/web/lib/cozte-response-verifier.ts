@@ -55,6 +55,8 @@ export function stripForeignScript(text: string): string {
  */
 export function cleanLegacyWording(text: string): string {
   return text
+    // The time mark that starts each of the person's messages is context for the model, never part of an answer.
+    .replace(/^\s*\[(?:Escrito el )?[^\]\n]{0,40}\d{1,2}:\d{2}\]\s*/u, "")
     .replace(/(?<![\p{L}])(guardad[oa]s?|cread[oa]s?|aplicad[oa]s?|registrad[oa]s?|est[aá]n?|qued[oó]|quedaron)\s+en\s+firme(?![\p{L}])/giu, "$1")
     .replace(/\s+en\s+firme(?![\p{L}])/giu, "")
     .replace(/(?<![\p{L}])(productos|insumos|gastos|costos)\s+vivos(?![\p{L}])/giu, "$1");
@@ -99,7 +101,7 @@ function sourceFigures(texts: string[]): Set<number> {
 
 const identifierPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
 
-const internalNames = /\b(?:readCosts|saveProduct|saveMaterial|saveRecipe|saveExpense|saveCategory|removeItem|saveNote|askQuestions|saveChannel|recordPurchase|recordSale|updateSale|updateDelivery|readDeliveries|setInvestmentCost|voidRecord|readBusiness|showVisual|manageBoard|setExplanationLevel|createPresentation|editPresentation|readPresentation|sharePresentation|calculate|simulate|inspectCostBase|applyCostAction|updateMaterialPrice|updateExpenseAmount|updateProductionMap|upsertProductDraft|calculateCostRule|findMaterial|create-product|create-material|create-expense|set-component|bulk-prices|quantityMilli|\w+Minor|\w+Milli|toolCallId|null)\b/u;
+const internalNames = /\b(?:readCosts|saveProduct|saveMaterial|saveRecipe|saveExpense|saveCategory|removeItem|saveNote|askQuestions|saveChannel|recordPurchase|recordSale|updateSale|updateDelivery|readDeliveries|setInvestmentCost|voidRecord|readBusiness|showVisual|manageBoard|setExplanationLevel|createPresentation|editPresentation|readPresentation|sharePresentation|searchConversation|calculate|simulate|inspectCostBase|applyCostAction|updateMaterialPrice|updateExpenseAmount|updateProductionMap|upsertProductDraft|calculateCostRule|findMaterial|create-product|create-material|create-expense|set-component|bulk-prices|quantityMilli|\w+Minor|\w+Milli|toolCallId|null)\b/u;
 
 /** Sentence markers for actions from earlier turns ("antes guardé…"), which a fresh read can confirm. */
 const earlierTurn = /(?<![\p{L}\p{N}])(?:antes|anteriormente|previamente|hace un rato|ayer|la vez pasada|en (?:esta|la) (?:charla|conversación)|en (?:el|los) mensajes? anteriores?|más temprano)(?![\p{L}\p{N}])/iu;

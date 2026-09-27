@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UIMessage } from "ai";
-import { compactCozteConversation, compactToolOutputForHistory, COZTE_MAX_HISTORY_BYTES } from "./cozte-conversation-memory";
+import { compactCozteConversation, compactToolOutputForHistory, COZTE_MAX_HISTORY_BYTES, COZTE_MODEL_HISTORY_MESSAGES, messageSearchText, modelWindow, withCreatedAt, withMessageTimes } from "./cozte-conversation-memory";
+import { cleanLegacyWording } from "./cozte-response-verifier";
 
 const turn = (index: number, content: string): UIMessage => ({ id: `turn-${index}`, role: index % 2 ? "assistant" : "user", parts: [{ type: "text", text: content }] });
 
@@ -67,5 +68,33 @@ describe("model history", () => {
     // The stored turn keeps the draft and its marker so the trace can show it after a reload.
     const [stored] = compactCozteConversation([turn]);
     expect(stored.parts[0]).toMatchObject({ type: "reasoning", providerMetadata: { cozte: { kind: "discarded" } } });
+  });
+
+  it("marks when each of the person's messages was written, for the model only", () => {
+    const said = withCreatedAt({ id: "u1", role: "user", parts: [{ type: "text", text: "Nos vemos mañana" }] }, "2026-09-26T23:10:00Z");
+    const answer = withCreatedAt({ id: "a1", role: "assistant", parts: [{ type: "text", text: "¡Dale, nos vemos mañana!" }] }, "2026-09-26T23:11:00Z");
+    const [user, assistant] = withMessageTimes([said, answer], "America/Argentina/Buenos_Aires");
+    expect(user.parts[0]).toEqual({ type: "text", text: "[Escrito el sáb 26/09/2026 20:10]" });
+    expect(assistant.parts).toEqual(answer.parts);
+    // If the model ever echoes the mark, it never reaches the person.
+    expect(cleanLegacyWording("[Escrito el sáb 26/09/2026 20:10] ¡Hola de nuevo!")).toBe("¡Hola de nuevo!");
+  });
+
+  it("gives the model the latest messages, starting with one of the person's", () => {
+    const messages = Array.from({ length: 50 }, (_, index) => turn(index, `Mensaje ${index}`));
+    const window = modelWindow(messages);
+    expect(window.length).toBeLessThanOrEqual(COZTE_MODEL_HISTORY_MESSAGES);
+    expect(window.at(-1)?.id).toBe(messages.at(-1)?.id);
+    expect(window[0].role).toBe("user");
+  });
+
+  it("finds a message by its words without accents, and an answer by its answer only", () => {
+    expect(messageSearchText({ id: "u", role: "user", parts: [{ type: "text", text: "¿Cuándo es la REUNIÓN con el proveedor?" }] })).toBe("¿cuando es la reunion con el proveedor?");
+    const assistant = { id: "a", role: "assistant" as const, parts: [
+      { type: "text" as const, text: "Voy a revisar." },
+      { type: "tool-readCosts", toolCallId: "r", state: "output-available", input: {}, output: { ok: true } } as never,
+      { type: "text" as const, text: "El tofu cuesta $3.010." },
+    ] };
+    expect(messageSearchText(assistant)).toBe("el tofu cuesta $3.010.");
   });
 });

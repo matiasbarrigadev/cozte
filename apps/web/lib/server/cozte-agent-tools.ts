@@ -17,8 +17,10 @@ import { createMutationProposal } from "./assistant-proposals";
 import { archiveCozteNote, loadCozteNotes, saveCozteNote } from "./cozte-notes";
 import { AREA_LABELS, PURCHASE_KIND_LABELS, channelEconomics } from "@/lib/business";
 import { archiveRecord, loadBusinessView, loadChannels, loadDeliveries, recordPurchase, recordSale, saveChannel, saveDelivery, updateSale } from "./business";
-import { DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, businessToday, daysFrom, isOpenDelivery, type DeliveryStatus } from "@/lib/business";
+import { DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, businessTimeZone, businessToday, daysFrom, isOpenDelivery, type DeliveryStatus } from "@/lib/business";
 import { resolveDocument } from "./documents";
+import { searchMessages } from "./cozte-messages";
+import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { WIDGETS, WIDGET_KINDS, boardOutline, computeWidget, moveWidget, widgetFigures, widgetNeeds, widgetTitle, type WidgetKind, type WidgetSpec } from "@/lib/cozte-widgets";
 import { METRIC_KEYS, type MetricKey } from "@/lib/decks";
 import { addToBoard, loadCozteSettings, saveBoard, saveExplanationLevel } from "./cozte-settings";
@@ -243,6 +245,11 @@ export const cozteToolInputSchemas = {
   readPresentation: z.object({
     presentation: reference.optional().describe("Título o ID para ver sus diapositivas; omítelo para listar las presentaciones"),
   }),
+  searchConversation: z.object({
+    query: z.string().trim().min(2).max(120).describe("Palabras clave de lo que buscas (un nombre, un producto, un tema); se buscan todas, sin importar tildes ni mayúsculas"),
+    from: isoDateToolInputSchema.optional().describe("Solo mensajes desde esta fecha (AAAA-MM-DD)"),
+    to: isoDateToolInputSchema.optional().describe("Solo mensajes hasta esta fecha (AAAA-MM-DD)"),
+  }),
   sharePresentation: z.object({
     presentation: reference.optional().describe("Título o ID; por defecto la última editada"),
     public: z.boolean().describe("true crea el link público (o devuelve el que ya existe); false lo desactiva y deja de funcionar"),
@@ -283,6 +290,7 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   createPresentation: `Crea una presentación de diapositivas con los datos reales del negocio y la guarda. Parte de una plantilla o de diapositivas a medida. Cada plantilla ya trae: ${(Object.keys(DECK_TEMPLATES) as (keyof typeof DECK_TEMPLATES)[]).map((key) => `${key} = ${templateOutline(key)}`).join("; ")}. Con plantilla, slides agrega diapositivas NUEVAS antes del cierre: no repitas las que ya trae; para cambiar sus títulos o textos usa después editPresentation con update. Los gráficos y cifras los calcula el motor: tú eliges cuáles y escribes títulos, conclusiones y puntos. La persona la ve en el chat y puede presentarla, editarla o compartirla.`,
   editPresentation: "Modifica una presentación guardada: agrega, cambia, quita, mueve o duplica diapositivas; cambia título, estilo o mes; recalcula los datos; o deshace el último cambio. Todos los números de diapositiva de una llamada se refieren a la presentación como estaba ANTES de la llamada (como la ves en el último resultado): puedes quitar 2 y 7 y agregar antes de la 9 en una sola llamada. Cada cambio queda en el historial y se puede deshacer.",
   readPresentation: "Lista las presentaciones guardadas o muestra las diapositivas de una (número, diseño, título, textos, gráfico con su conclusión y cifras).",
+  searchConversation: "Busca en toda la conversación con esta persona, también en la parte que ya no ves y en conversaciones archivadas: devuelve los mensajes que contienen las palabras, con fecha, quién lo dijo y un fragmento. Úsala cuando la persona se refiera a algo dicho antes que no está en los mensajes que ves. Los números del negocio no se buscan acá: léelos con las herramientas, que están al día.",
   sharePresentation: "Crea o desactiva el link público de una presentación: cualquiera con el link la ve sin cuenta, sin las notas de quien presenta ni otros datos de la empresa.",
   askQuestions: "Muestra a la persona de 1 a 4 preguntas con opciones para elegir; siempre puede responder con texto libre. Úsala cuando necesites datos o decisiones que solo ella conoce. Termina tu turno: las respuestas llegan en su próximo mensaje, así que no escribas nada después de llamarla.",
 };
@@ -857,6 +865,17 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       const found = await resolvePresentation(principal, value.presentation);
       return { ...deckReceipt(found, []), note: "Diapositivas actuales, numeradas desde 1." };
     }
+    case "searchConversation": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.searchConversation>;
+      const [organization] = await dbQuery<{ currency: string }>("SELECT currency FROM organizations WHERE id=?", [principal.organizationId]);
+      const zone = businessTimeZone(organization?.currency);
+      const matches = await searchMessages(principal, { query: value.query, from: value.from, to: value.to });
+      return {
+        ok: true,
+        matches: matches.map((match) => ({ when: match.createdAt ? messageTimeLabel(match.createdAt, zone) : "fecha desconocida", who: match.role === "user" ? "la persona" : "Cozte", conversation: match.archived ? "anterior (archivada)" : "actual", text: match.text })),
+        note: matches.length ? "Mensajes más recientes primero. Son lo que se dijo entonces: los datos del negocio pueden haber cambiado desde esa fecha." : "No hay mensajes con esas palabras. Prueba con otras (un sinónimo, el nombre de un producto o cliente) o sin fechas.",
+      };
+    }
     case "sharePresentation": {
       const value = args as z.infer<typeof cozteToolInputSchemas.sharePresentation>;
       const target = await resolvePresentation(principal, value.presentation);
@@ -933,6 +952,7 @@ export function createCozteTools(principal: Principal, runId: string) {
     createPresentation: tool({ description: describe.createPresentation, inputSchema: schemas.createPresentation, execute: execute("createPresentation") }),
     editPresentation: tool({ description: describe.editPresentation, inputSchema: schemas.editPresentation, execute: execute("editPresentation") }),
     readPresentation: tool({ description: describe.readPresentation, inputSchema: schemas.readPresentation, execute: execute("readPresentation") }),
+    searchConversation: tool({ description: describe.searchConversation, inputSchema: schemas.searchConversation, execute: execute("searchConversation") }),
     sharePresentation: tool({ description: describe.sharePresentation, inputSchema: schemas.sharePresentation, execute: execute("sharePresentation") }),
     askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),
   };

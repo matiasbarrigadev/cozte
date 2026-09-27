@@ -27,6 +27,8 @@ vi.mock("./assistant-trace", async (original) => ({ ...(await original<typeof im
 vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOString(), rates: { USD: 1 }, source: "FXRatesAPI" }), quotesFor: () => ({}) }));
 
 import { cozteToolSucceeded, cozteToolWrote, questionsShown } from "@/lib/cozte-tool-catalog";
+import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
+import { businessTimeZone } from "@/lib/business";
 import { correctionMessage, finalAnswerStep, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
 import { createCozteTools } from "./cozte-agent-tools";
 import { buildCozteInstructions } from "./cozte-instructions";
@@ -70,12 +72,13 @@ const results: Record<string, unknown>[] = [];
 
 type Principal = { userId: string; organizationId: string; role: "owner" };
 /** One turn as production runs it: the agent, then the verifier and, if needed, one correction pass. */
-async function productionTurn(input: { model: string; principal: Principal; history: ModelMessage[]; text: string; level?: "simple" | "medium" | "advanced" }) {
+async function productionTurn(input: { model: string; principal: Principal; history: ModelMessage[]; text: string; level?: "simple" | "medium" | "advanced"; now?: Date; lastMessageAt?: string }) {
   const settings = { ...cozteAgentSettings(), model: input.model };
   const state = await loadState(input.principal);
-  const instructions = buildCozteInstructions({ state, notes: await loadCozteNotes(input.principal), legacyProfile: null, level: input.level ?? "simple", board: (await loadCozteSettings(input.principal)).board, channels: await loadChannels(input.principal) });
+  const instructions = buildCozteInstructions({ state, notes: await loadCozteNotes(input.principal), legacyProfile: null, level: input.level ?? "simple", board: (await loadCozteSettings(input.principal)).board, channels: await loadChannels(input.principal), now: input.now, lastMessageAt: input.lastMessageAt });
   const tools = createCozteTools(input.principal, crypto.randomUUID());
-  input.history.push({ role: "user", content: input.text });
+  // As in production, the person's message starts with when it was written.
+  input.history.push({ role: "user", content: input.now ? `[Escrito el ${messageTimeLabel(input.now.toISOString(), businessTimeZone(state.organization.currency))}] ${input.text}` : input.text });
   const pass = (messages: ModelMessage[]) => generateText({ model: input.model, system: instructions, messages, tools, stopWhen: [isStepCount(settings.maxSteps), questionsShown], maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings) });
   let result = await pass(input.history);
   const collect = (list: typeof result.steps) => list.map((step) => ({ text: step.text, toolCalls: step.toolCalls.map((call) => ({ toolName: call.toolName, input: call.input })), toolResults: step.toolResults.map((item) => ({ toolName: item.toolName, output: item.output })) }));
@@ -380,6 +383,32 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     for (const [name, passed] of Object.entries(checks)) if (!passed) failures.push(`estado final: ${name}`);
     console.log(`\n[${model}] decks ${JSON.stringify(checks)}\n${deck?.slides.map((slide, index) => `${index + 1}. [${slide.layout}${slide.chart ? `:${slide.chart.kind}` : ""}] ${slide.title}`).join("\n")}`);
     results.push({ model, scenario: "presentations", failures: failures.length, failureDetails: failures, ...checks, slides: deck?.slides.map((slide) => ({ layout: slide.layout, title: slide.title, chart: slide.chart?.kind })), transcript });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("knows that yesterday's 'see you tomorrow' is today, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    const state = await loadState(principal);
+    const zone = businessTimeZone(state.organization.currency);
+    // The exchange from a real conversation: last night they said goodbye until "tomorrow"; this is that tomorrow.
+    const yesterday = "2026-09-26T23:30:00.000Z";
+    const now = new Date("2026-09-27T13:00:00.000Z");
+    const history: ModelMessage[] = [
+      { role: "user", content: `[Escrito el ${messageTimeLabel(yesterday, zone)}] Bueno, por hoy termino. Mañana te paso los precios nuevos de la soja. ¡Nos vemos mañana!` },
+      { role: "assistant", content: "¡Dale! Mañana me pasás los precios de la soja y los cargamos. ¡Nos vemos mañana! 👋" },
+    ];
+    const turn = await productionTurn({ model, principal, history, text: "Hola, ya volví.", now, lastMessageAt: yesterday });
+    const answer = turn.answer.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+    const checks = {
+      notStuckInYesterday: !/nos vemos manana|hasta manana|manana me pasas|manana seguimos/.test(answer),
+      picksUpThePlan: /soja|precio/.test(answer),
+      noTimeMark: !/escrito el/.test(answer),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] time ${JSON.stringify(checks)}\n${turn.answer}`);
+    results.push({ model, scenario: "time", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "Hola, ya volví.", answer: turn.answer }] });
     expect(failures).toEqual([]);
   });
 
