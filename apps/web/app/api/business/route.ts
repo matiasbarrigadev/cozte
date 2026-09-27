@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { businessToday } from "@/lib/business";
 import { ApiError, apiFailure, requirePrincipal } from "@/lib/server/auth";
 import { archiveRecord, channelInputSchema, deliveryInputSchema, loadBusinessView, purchaseInputSchema, recordPurchase, recordSale, saleInputSchema, salePatchSchema, saveChannel, saveDelivery, updateSale } from "@/lib/server/business";
 
 export const runtime = "nodejs";
 
-const currentMonth = () => new Date().toISOString().slice(0, 7);
+const currentMonth = () => businessToday().slice(0, 7);
 
 /** Sales channels, purchases, sales, the company's structure and the month's result. */
 export async function GET(request: Request) {

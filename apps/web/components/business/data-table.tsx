@@ -3,6 +3,7 @@
 import * as React from "react";
 import { ArrowDown, ArrowUp, ArrowUpDown, Search, X } from "lucide-react";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
+import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
 import { Input } from "@/components/ui/input";
 import { TableHead } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
@@ -96,3 +97,49 @@ export function matches(query: string, fields: (string | null | undefined)[]): b
   const haystack = normalize(fields.filter(Boolean).join(" "));
   return terms.every((term) => haystack.includes(term));
 }
+
+/** A text cell that suggests values used before; picking one saves it right away. */
+export function EditableSuggest(props: CommitProps<string> & { suggestions: Suggestion[]; onPick?: (suggestion: Suggestion) => void }) {
+  return <EditableSuggestCell key={props.value} {...props} />;
+}
+
+function EditableSuggestCell({ value, label, onCommit, disabled, className, placeholder, suggestions, onPick }: CommitProps<string> & { suggestions: Suggestion[]; onPick?: (suggestion: Suggestion) => void }) {
+  const [text, setText] = React.useState(value);
+  const latest = React.useRef(value);
+  const committed = React.useRef(value);
+  const commit = (next: string) => {
+    const clean = next.trim();
+    if (clean === committed.current) return;
+    committed.current = clean;
+    onCommit(clean);
+  };
+  return <SuggestInput variant="cell" value={text} suggestions={suggestions} aria-label={label} title={value || undefined} placeholder={placeholder} disabled={disabled} className={className}
+    onPick={onPick}
+    onValueChange={(next, picked) => { setText(next); latest.current = next; if (picked) commit(next); }}
+    onBlur={() => commit(latest.current)}
+    onKeyDown={(event) => {
+      if (event.key === "Escape") { setText(committed.current); latest.current = committed.current; }
+      if (event.key === "Enter") { const target = event.currentTarget; window.setTimeout(() => target.blur(), 0); }
+    }} />;
+}
+
+/**
+ * State remembered per section in this browser (filters, chosen tab), so coming back finds it as it was.
+ * Storage can be unavailable (private windows, blocked site data): then it simply is not remembered.
+ */
+export function usePersistentState<T extends string>(key: string, initial: T, allowed?: readonly T[]): [T, (value: T) => void] {
+  const [value, setValue] = React.useState<T>(initial);
+  const [loaded, setLoaded] = React.useState(false);
+  if (!loaded && typeof window !== "undefined") {
+    setLoaded(true);
+    try { const stored = window.localStorage.getItem(`cozte:${key}`) as T | null; if (stored !== null && (!allowed || allowed.includes(stored))) setValue(stored); } catch { /* Not remembered. */ }
+  }
+  const update = React.useCallback((next: T) => {
+    setValue(next);
+    try { window.localStorage.setItem(`cozte:${key}`, next); } catch { /* Not remembered. */ }
+  }, [key]);
+  return [value, update];
+}
+
+/** The month's name for totals: "septiembre". */
+export const monthName = (month: string) => new Intl.DateTimeFormat("es-AR", { month: "long", timeZone: "UTC" }).format(new Date(`${month}-15T12:00:00Z`));

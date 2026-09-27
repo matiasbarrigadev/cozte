@@ -29,7 +29,6 @@ export function PurchasesSection({ state, demo, month, onMonthChange, onOpenCozt
   const byKind = (kind: PurchaseKind) => purchases.filter((item) => item.kind === kind).reduce((sum, item) => sum + item.amountMinor, 0);
 
   async function archive(id: string) {
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return; }
     try { await businessAction({ action: "archive", kind: "purchase", id }); toast.success("Compra anulada"); reload(); }
     catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo anular"); }
   }
@@ -87,12 +86,11 @@ function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: Domai
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return; }
     const data = new FormData(event.currentTarget);
     const text = (name: string) => String(data.get(name) ?? "").trim();
     setBusy(true);
     try {
-      const documentId = file ? await uploadDocument(file) : undefined;
+      const documentId = file && !demo ? await uploadDocument(file) : undefined;
       await businessAction({ action: "record-purchase", idempotencyKey, purchase: {
         purchasedOn: text("date"), description: text("description"), supplier: text("supplier"), amount: Number(text("amount")), kind,
         ...(areaLocked ? {} : { area }),
@@ -100,7 +98,7 @@ function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: Domai
         ...(kind === "fixed_payment" ? { expenseId: text("expense") } : {}),
         ...(kind === "investment" ? { usefulLifeMonths: Number(text("life")), ...(area === "production" ? { includeInUnitCost: data.get("includeInUnitCost") === "on" } : {}) } : {}),
         documentId,
-      } });
+      } }, demo);
       toast.success("Compra registrada");
       onSaved();
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo registrar"); }

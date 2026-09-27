@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { calculateCosts, convertToOrganizationCurrency, type CostArea, type DomainState } from "@/lib/domain";
-import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, businessToday, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
+import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, buildCustomerDirectory, businessToday, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement } from "./db";
 import { commitMutation, type Mutation } from "./mutations";
@@ -383,6 +383,12 @@ export async function updateSale(principal: Principal, id: string, input: SalePa
     audit(principal, "update-sale", id, { before: sale, patch, source }),
   ]);
   return { ...sale, ...next };
+}
+
+/** Customers, recipients, addresses and carriers used in the last sales, for suggestions. */
+export async function loadCustomerDirectory(principal: Principal) {
+  const rows = await dbQuery<{ customer: string; sold_on: string; recipient: string | null; address: string | null; contact: string | null; carrier: string | null }>("SELECT s.customer, s.sold_on, d.recipient, d.address, d.contact, d.carrier FROM sales s LEFT JOIN deliveries d ON d.sale_id=s.id AND d.archived_at IS NULL WHERE s.organization_id=? AND s.archived_at IS NULL ORDER BY s.sold_on DESC LIMIT 2000", [principal.organizationId]);
+  return buildCustomerDirectory(rows.map((row) => ({ customer: row.customer, soldOn: row.sold_on, recipient: row.recipient, address: row.address, contact: row.contact, carrier: row.carrier })));
 }
 
 /** Deliveries of a month plus every open one (pending, on the way or failed), closest to today first. */

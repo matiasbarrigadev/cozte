@@ -2,15 +2,32 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { buildBusinessView, type BusinessView } from "@/lib/business";
+import { buildBusinessView, type BusinessView, type CustomerDirectory } from "@/lib/business";
 import type { DomainState } from "@/lib/domain";
-import { demoBusinessRecords } from "@/lib/demo";
+import { DEMO_TODAY } from "@/lib/demo";
+import { demoBusinessAction, demoCustomerDirectory, demoRecords, demoVersion, subscribeDemo } from "@/lib/demo-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 /** Today on the person's own clock (not UTC), as AAAA-MM-DD. */
 export const todayIso = () => new Date().toLocaleDateString("en-CA");
+
+/** Today for a section: the person's clock, or the demo's own clock so its dates never age. */
+export const todayFor = (demo: boolean) => demo ? DEMO_TODAY : todayIso();
+
+/** Re-renders when the demo's in-memory records change. */
+export function useDemoVersion(demo: boolean) {
+  return React.useSyncExternalStore(subscribeDemo, () => demo ? demoVersion() : 0, () => 0);
+}
+
+/**
+ * One quiet notice per change, replaced by the next instead of stacking, with "Deshacer" when the change can be
+ * reverted. Errors keep their own notice.
+ */
+export function notifySaved(message: string, undo?: () => void) {
+  toast.success(message, { id: "cozte-edit", duration: undo ? 6000 : 2500, ...(undo ? { action: { label: "Deshacer", onClick: undo } } : {}) });
+}
 
 /** Whole amounts for reading: tables, totals and lessons. */
 export function useMoney(currency: string) {
@@ -24,7 +41,8 @@ export function useMoney(currency: string) {
 export function useBusinessView(month: string, demo: boolean, state: DomainState, refreshKey = 0) {
   const [version, setVersion] = React.useState(0);
   const [loaded, setLoaded] = React.useState<{ month: string; version: number; view: BusinessView } | null>(null);
-  const demoView = React.useMemo(() => demo ? buildBusinessView(state, demoBusinessRecords(), month) : null, [demo, state, month]);
+  const demoChanges = useDemoVersion(demo);
+  const demoView = React.useMemo(() => demo ? buildBusinessView(state, demoRecords(), month) : null, [demo, state, month, demoChanges]); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(() => {
     if (demo) return;
     let active = true;
@@ -40,7 +58,25 @@ export function useBusinessView(month: string, demo: boolean, state: DomainState
   return { view, loading, reload: React.useCallback(() => setVersion((current) => current + 1), []) };
 }
 
-export async function businessAction<T = unknown>(body: Record<string, unknown>): Promise<T> {
+/** Calls the business API; in the demo the same action runs on the in-memory records. */
+const EMPTY_DIRECTORY: CustomerDirectory = { customers: [], recipients: [], addresses: [], carriers: [] };
+
+/** Customers, recipients, addresses and carriers used before; refetched when `refreshKey` changes. */
+export function useCustomerDirectory(demo: boolean, refreshKey: unknown = 0): CustomerDirectory {
+  const demoChanges = useDemoVersion(demo);
+  const [loaded, setLoaded] = React.useState<CustomerDirectory>(EMPTY_DIRECTORY);
+  React.useEffect(() => {
+    if (demo) return;
+    let active = true;
+    fetch("/api/customers", { cache: "no-store" }).then((response) => response.ok ? response.json() as Promise<CustomerDirectory> : null).then((data) => { if (active && data) setLoaded(data); }).catch(() => {});
+    return () => { active = false; };
+  }, [demo, refreshKey]);
+  const demoData = React.useMemo(() => demo ? demoCustomerDirectory() : null, [demo, demoChanges]); // eslint-disable-line react-hooks/exhaustive-deps
+  return demoData ?? loaded;
+}
+
+export async function businessAction<T = unknown>(body: Record<string, unknown> & { action: string }, demo = false): Promise<T> {
+  if (demo) return demoBusinessAction<T>(body);
   const response = await fetch("/api/business", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error ?? "No se pudo guardar");

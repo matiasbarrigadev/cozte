@@ -522,3 +522,38 @@ export function buildBusinessView(state: DomainState, records: BusinessRecords, 
 }
 
 export type BusinessView = ReturnType<typeof buildBusinessView>;
+
+export type CustomerEntry = { name: string; address: string; contact: string; recipient: string; lastOn: string; sales: number };
+export type CustomerDirectory = { customers: CustomerEntry[]; recipients: string[]; addresses: string[]; carriers: string[] };
+export type DirectoryRow = { customer: string; soldOn: string; recipient?: string | null; address?: string | null; contact?: string | null; carrier?: string | null };
+
+/**
+ * What was already typed in sales and deliveries, most recent first: each customer with their last address and
+ * contact, and the recipients, addresses and carriers used. Feeds the suggestions so nothing is typed twice.
+ */
+export function buildCustomerDirectory(rows: DirectoryRow[]): CustomerDirectory {
+  const key = (value: string) => value.normalize("NFD").replace(/\p{Diacritic}/gu, "").trim().toLowerCase();
+  const customers = new Map<string, CustomerEntry>();
+  const lists = { recipients: new Map<string, string>(), addresses: new Map<string, string>(), carriers: new Map<string, string>() };
+  for (const row of [...rows].sort((a, b) => b.soldOn.localeCompare(a.soldOn))) {
+    const name = row.customer.trim();
+    if (name) {
+      const entry = customers.get(key(name)) ?? { name, address: "", contact: "", recipient: "", lastOn: row.soldOn, sales: 0 };
+      entry.sales += 1;
+      entry.address ||= row.address?.trim() ?? "";
+      entry.contact ||= row.contact?.trim() ?? "";
+      entry.recipient ||= row.recipient?.trim() && key(row.recipient) !== key(name) ? row.recipient.trim() : "";
+      customers.set(key(name), entry);
+    }
+    for (const [list, value] of [[lists.recipients, row.recipient], [lists.addresses, row.address], [lists.carriers, row.carrier]] as const) {
+      const clean = value?.trim();
+      if (clean && !list.has(key(clean))) list.set(key(clean), clean);
+    }
+  }
+  return {
+    customers: [...customers.values()].slice(0, 400),
+    recipients: [...lists.recipients.values()].slice(0, 400),
+    addresses: [...lists.addresses.values()].slice(0, 400),
+    carriers: [...lists.carriers.values()].slice(0, 100),
+  };
+}

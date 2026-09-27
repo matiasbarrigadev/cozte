@@ -3,7 +3,8 @@
 import { buildBusinessView } from "@/lib/business";
 import { analyzeCosts } from "@/lib/cost-analysis";
 import { calculateCosts } from "@/lib/domain";
-import { DEMO_MONTH, demoBusinessRecords, demoHistory, demoState } from "@/lib/demo";
+import { DEMO_MONTH, demoHistory, demoState } from "@/lib/demo";
+import { demoRecords } from "@/lib/demo-store";
 import {
   DECK_TEMPLATES, DeckError, applyOperations, dataNeeds, fillClosing, newDeck, templateSlides,
   type DeckOperation, type DeckSources, type DeckTemplate, type DeckTheme, type Presentation, type PresentationSummary, type SlideInput,
@@ -48,7 +49,7 @@ export function summarizePresentation(presentation: Presentation): PresentationS
 
 /** The demo keeps its decks in memory and computes them in the browser with the same engine. */
 function demoSources(needs: { months: string[]; history: boolean }): DeckSources {
-  const records = demoBusinessRecords();
+  const records = demoRecords();
   const months = needs.months.length ? needs.months : [DEMO_MONTH];
   return {
     state: demoState, costs: calculateCosts(demoState), now: new Date().toISOString(),

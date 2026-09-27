@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { DIRECT_CHANNEL, channelPrice, needsDelivery, saleItemsText, type ChannelEconomics, type Sale, type SalePatch, type SalesChannel } from "@/lib/business";
+import { DIRECT_CHANNEL, channelPrice, needsDelivery, saleItemsText, type ChannelEconomics, type CustomerDirectory, type Sale, type SalePatch, type SalesChannel } from "@/lib/business";
 import type { DomainState } from "@/lib/domain";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Badge } from "@/components/ui/badge";
@@ -13,17 +13,30 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/u
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
+import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
-import { MonthPicker, ReceiptLink, SectionHeader, Stat, Tip, businessAction, todayIso, uploadDocument, useBusinessView, useMoney } from "./business-ui";
-import { EditableDate, EditableNumber, EditableText, SortableHead, TableToolbar, matches, sheetCell, sheetHead, type SortState } from "./data-table";
-import { DeliveryStatusBadge } from "./delivery-status";
+import { MonthPicker, ReceiptLink, SectionHeader, Stat, Tip, businessAction, notifySaved, todayFor, uploadDocument, useBusinessView, useCustomerDirectory, useMoney } from "./business-ui";
+import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
+import { DeliveryStatusBadge, relativeDay } from "./delivery-status";
 
 const percent = (bps: number) => `${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(bps / 100)} %`;
 const leftOf = (sale: Sale) => sale.variableCostMinor === null ? null : sale.totalMinor - sale.variableCostMinor - sale.sellingCostMinor - sale.deliveryCostMinor;
 
 type SortKey = "date" | "customer" | "total" | "left";
+
+/** The change that puts a sale back as it was before an edit. */
+function inverseSalePatch(sale: Sale, patch: SalePatch): SalePatch {
+  const back: SalePatch = {};
+  if (patch.soldOn !== undefined) back.soldOn = sale.soldOn;
+  if (patch.customer !== undefined) back.customer = sale.customer;
+  if (patch.note !== undefined) back.note = sale.note;
+  if (patch.channelId !== undefined) { back.channelId = sale.channelId; back.deliveryCost = sale.deliveryCostMinor; }
+  if (patch.deliveryCost !== undefined) back.deliveryCost = sale.deliveryCostMinor;
+  if (patch.items !== undefined) back.items = sale.items.map((item) => ({ productId: item.productId, quantity: item.quantityMilli / 1000, unitPrice: item.unitPriceMinor }));
+  return back;
+}
 
 export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, onOpenDeliveries, onDataChanged }: { state: DomainState; demo: boolean; month: string; onMonthChange: (month: string) => void; onOpenCozte: () => void; onOpenDeliveries?: () => void; onDataChanged?: () => void }) {
   const { view, loading, reload } = useBusinessView(month, demo, state);
@@ -31,20 +44,34 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
   const [channelDialog, setChannelDialog] = React.useState<SalesChannel | "new" | null>(null);
   const [saleOpen, setSaleOpen] = React.useState(false);
   const [itemsSale, setItemsSale] = React.useState<Sale | null>(null);
+  const directory = useCustomerDirectory(demo, view?.sales.length);
+  React.useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (event.key.toLowerCase() !== "n" || event.metaKey || event.ctrlKey || event.altKey || target?.closest("input, textarea, select, [contenteditable], [role=combobox], [role=dialog]")) return;
+      event.preventDefault();
+      setSaleOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const customerSuggestions = React.useMemo<Suggestion[]>(() => directory.customers.map((item) => ({ value: item.name, hint: [item.address, item.sales > 1 ? `${item.sales} compras` : ""].filter(Boolean).join(" · ") || undefined })), [directory]);
 
+  const today = todayFor(demo);
   async function archive(kind: "channel" | "sale", id: string) {
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return; }
-    try { await businessAction({ action: "archive", kind, id }); toast.success(kind === "channel" ? "Canal quitado" : "Venta anulada"); reload(); onDataChanged?.(); }
+    try { await businessAction({ action: "archive", kind, id }, demo); notifySaved(kind === "channel" ? "Canal quitado" : "Venta anulada"); reload(); onDataChanged?.(); }
     catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo quitar"); }
   }
-  async function update(sale: Sale, patch: SalePatch, message = "Venta actualizada") {
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return false; }
-    try { await businessAction({ action: "update-sale", id: sale.id, patch }); toast.success(message); reload(); onDataChanged?.(); return true; }
-    catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo guardar el cambio"); return false; }
+  async function update(sale: Sale, patch: SalePatch, message = "Venta actualizada", undoable = true) {
+    try {
+      await businessAction({ action: "update-sale", id: sale.id, patch }, demo);
+      notifySaved(message, undoable ? () => void update(sale, inverseSalePatch(sale, patch), "Cambio deshecho", false) : undefined);
+      reload(); onDataChanged?.();
+      return true;
+    } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo guardar el cambio"); return false; }
   }
   async function scheduleDelivery(sale: Sale) {
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return; }
-    try { await businessAction({ action: "save-delivery", delivery: { saleId: sale.id, scheduledOn: sale.soldOn >= todayIso() ? sale.soldOn : todayIso(), status: "pending" } }); toast.success("Entrega creada: complétala en Entregas"); reload(); }
+    try { await businessAction({ action: "save-delivery", delivery: { saleId: sale.id, scheduledOn: sale.soldOn >= today ? sale.soldOn : today, status: "pending" } }, demo); notifySaved("Entrega creada: complétala en Entregas"); reload(); }
     catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo crear la entrega"); }
   }
 
@@ -56,7 +83,7 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
   return <>
     <SectionHeader eyebrow="Vender" title="Ventas" description="Todas tus ventas en una tabla que puedes editar y filtrar, la más reciente primero. Cada cambio recalcula lo que te dejó la venta y el resultado del mes, y Cozte lo ve al instante.">
       <Button variant="outline" onClick={() => setChannelDialog("new")}><AnimatedIcon name="plus" data-icon="inline-start" />Agregar canal</Button>
-      <Button onClick={() => setSaleOpen(true)}><AnimatedIcon name="plus" data-icon="inline-start" />Registrar venta</Button>
+      <Button onClick={() => setSaleOpen(true)} title="Atajo: tecla N"><AnimatedIcon name="plus" data-icon="inline-start" />Registrar venta<kbd className="ml-1 hidden rounded border border-current/30 px-1 text-[10px] opacity-70 sm:inline">N</kbd></Button>
     </SectionHeader>
     {!view || !result ? <TextShimmer className="text-sm">Cargando ventas…</TextShimmer> : <div className={cn("flex flex-col gap-6 transition-opacity", loading && "opacity-60")}>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -72,8 +99,10 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
           <MonthPicker month={month} onChange={onMonthChange} />
         </CardHeader>
         <CardContent>
-          {sales.length ? <SalesTable sales={sales} state={state} channels={view.channels} demo={demo} money={money} onUpdate={update} onArchive={(sale) => void archive("sale", sale.id)} onEditItems={setItemsSale} onSchedule={(sale) => void scheduleDelivery(sale)} onOpenDeliveries={onOpenDeliveries} />
-            : <Empty className="py-6"><EmptyHeader><EmptyTitle>No hay ventas registradas este mes</EmptyTitle><EmptyDescription>Regístralas acá o mándale a Cozte la foto del remito o factura.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={onOpenCozte}>Enviar un remito a Cozte</Button></Empty>}
+          {!state.products.length ? <Empty className="py-6"><EmptyHeader><EmptyTitle>Primero, tus productos</EmptyTitle><EmptyDescription>Para registrar ventas, Cozte necesita saber qué vendes y cuánto cuesta hacerlo. Cárgalos en Costos de producción o cuéntaselos a Cozte.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={onOpenCozte}>Contarle a Cozte qué fabrico</Button></Empty>
+            : sales.length ? <SalesTable month={month} today={today} customerSuggestions={customerSuggestions} sales={sales} state={state} channels={view.channels} demo={demo} money={money} onUpdate={update} onArchive={(sale) => void archive("sale", sale.id)} onEditItems={setItemsSale} onSchedule={(sale) => void scheduleDelivery(sale)} onOpenDeliveries={onOpenDeliveries} />
+            : <Empty className="py-6"><EmptyHeader><EmptyTitle>No hay ventas registradas en {monthName(month)}</EmptyTitle><EmptyDescription>Regístralas acá o mándale a Cozte la foto del remito o factura.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={onOpenCozte}>Enviar un remito a Cozte</Button></Empty>}
+          {state.products.length ? <QuickSale key={view.sales.length} state={state} channels={view.channels} demo={demo} today={today} month={month} suggestions={customerSuggestions} onSaved={() => { reload(); onDataChanged?.(); }} /> : null}
         </CardContent>
       </Card>
 
@@ -116,19 +145,19 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
       </Card>
     </div>}
     {channelDialog ? <ChannelDialog channel={channelDialog === "new" ? null : channelDialog} demo={demo} onClose={() => setChannelDialog(null)} onSaved={() => { setChannelDialog(null); reload(); onDataChanged?.(); }} /> : null}
-    {saleOpen && view ? <SaleDialog state={state} channels={view.channels} demo={demo} month={month} onClose={() => setSaleOpen(false)} onSaved={() => { setSaleOpen(false); reload(); onDataChanged?.(); }} /> : null}
+    {saleOpen && view ? <SaleDialog directory={directory} state={state} channels={view.channels} demo={demo} month={month} onClose={() => setSaleOpen(false)} onSaved={() => { setSaleOpen(false); reload(); onDataChanged?.(); }} /> : null}
     {itemsSale ? <SaleItemsDialog sale={itemsSale} state={state} onClose={() => setItemsSale(null)} onSave={async (items) => { if (await update(itemsSale, { items }, "Productos de la venta actualizados")) setItemsSale(null); }} /> : null}
   </>;
 }
 
 /** The month's sales as an editable sheet: search and filters on top, most recent first unless sorted by a column. */
-function SalesTable({ sales, state, channels, demo, money, onUpdate, onArchive, onEditItems, onSchedule, onOpenDeliveries }: {
-  sales: Sale[]; state: DomainState; channels: SalesChannel[]; demo: boolean; money: (value: number) => string;
+function SalesTable({ month, today, customerSuggestions, sales, state, channels, demo, money, onUpdate, onArchive, onEditItems, onSchedule, onOpenDeliveries }: {
+  month: string; today: string; customerSuggestions: Suggestion[]; sales: Sale[]; state: DomainState; channels: SalesChannel[]; demo: boolean; money: (value: number) => string;
   onUpdate: (sale: Sale, patch: SalePatch, message?: string) => Promise<boolean>; onArchive: (sale: Sale) => void; onEditItems: (sale: Sale) => void; onSchedule: (sale: Sale) => void; onOpenDeliveries?: () => void;
 }) {
   const [search, setSearch] = React.useState("");
-  const [channelFilter, setChannelFilter] = React.useState("all");
-  const [deliveryFilter, setDeliveryFilter] = React.useState("all");
+  const [channelFilter, setChannelFilter] = usePersistentState<string>("ventas:canal", "all");
+  const [deliveryFilter, setDeliveryFilter] = usePersistentState<string>("ventas:entrega", "all");
   const [sort, setSort] = React.useState<SortState<SortKey>>(null);
   const channelOptions = [...channels.map((channel) => ({ value: channel.id, label: channel.name })), { value: DIRECT_CHANNEL.id, label: DIRECT_CHANNEL.name }];
   const rows = React.useMemo(() => {
@@ -144,7 +173,7 @@ function SalesTable({ sales, state, channels, demo, money, onUpdate, onArchive, 
     return [...filtered].sort((a, b) => { const x = value(a), y = value(b); return (x < y ? -1 : x > y ? 1 : 0) * (sort ? direction : -1); });
   }, [sales, search, channelFilter, deliveryFilter, sort]);
   const totals = rows.reduce((sum, sale) => ({ total: sum.total + sale.totalMinor, selling: sum.selling + sale.sellingCostMinor, delivery: sum.delivery + sale.deliveryCostMinor, left: sum.left + (leftOf(sale) ?? 0) }), { total: 0, selling: 0, delivery: 0, left: 0 });
-  const disabled = demo;
+  const disabled = false;
   return <div className="flex flex-col gap-3">
     <TableToolbar search={search} onSearch={setSearch} placeholder="Buscar cliente, producto, canal o nota" shown={rows.length} total={sales.length} filters={[
       { id: "channel", label: "Canal", value: channelFilter, onChange: setChannelFilter, options: [{ value: "all", label: "Todos los canales" }, ...channelOptions] },
@@ -153,7 +182,7 @@ function SalesTable({ sales, state, channels, demo, money, onUpdate, onArchive, 
     <div className="overflow-x-auto rounded-lg border">
       <Table className="border-separate border-spacing-0">
         <TableHeader><TableRow className="hover:bg-transparent">
-          <SortableHead column="date" label="Fecha" sort={sort} onSort={setSort} className="min-w-36" />
+          <SortableHead column="date" label="Fecha" sort={sort} onSort={setSort} className="min-w-48" />
           <TableHead className={cn(sheetHead, "min-w-40")}>Canal</TableHead>
           <SortableHead column="customer" label="Cliente" sort={sort} onSort={setSort} className="min-w-40" defaultDirection="asc" />
           <TableHead className={cn(sheetHead, "min-w-52")}>Producto</TableHead>
@@ -173,14 +202,17 @@ function SalesTable({ sales, state, channels, demo, money, onUpdate, onArchive, 
           const channelValue = sale.channelId ?? DIRECT_CHANNEL.id;
           const channelKnown = channelOptions.some((option) => option.value === channelValue);
           return <TableRow key={sale.id} className="group/row hover:bg-muted/30">
-            <TableCell className={sheetCell}><EditableDate value={sale.soldOn} label={`Fecha de la venta a ${sale.customer || sale.channelName}`} disabled={disabled} onCommit={(soldOn) => void onUpdate(sale, { soldOn })} /></TableCell>
+            <TableCell className={sheetCell}><div className="flex items-center">
+              <EditableDate value={sale.soldOn} label={`Fecha de la venta a ${sale.customer || sale.channelName}`} disabled={disabled} onCommit={(soldOn) => void onUpdate(sale, { soldOn })} className="w-36 shrink-0" />
+              <span className="pr-3 text-xs whitespace-nowrap text-muted-foreground">{relativeDay(sale.soldOn, today)}</span>
+            </div></TableCell>
             <TableCell className={sheetCell}>
               <Dropdown variant="cell" aria-label="Canal de la venta" value={channelValue} disabled={disabled} onChange={(event) => { if (event.target.value !== channelValue) void onUpdate(sale, { channelId: event.target.value === DIRECT_CHANNEL.id ? null : event.target.value }, "Canal cambiado: se recalcularon comisión y entrega"); }}>
                 {channelKnown ? null : <DropdownOption value={channelValue} disabled>{sale.channelName}</DropdownOption>}
                 {channelOptions.map((option) => <DropdownOption key={option.value} value={option.value}>{option.label}</DropdownOption>)}
               </Dropdown>
             </TableCell>
-            <TableCell className={sheetCell}><EditableText value={sale.customer} label="Cliente" placeholder="Sin cliente" disabled={disabled} onCommit={(customer) => void onUpdate(sale, { customer })} /></TableCell>
+            <TableCell className={sheetCell}><EditableSuggest suggestions={customerSuggestions} value={sale.customer} label="Cliente" placeholder="Sin cliente" disabled={disabled} onCommit={(customer) => void onUpdate(sale, { customer })} /></TableCell>
             <TableCell className={sheetCell}>{single ? <Dropdown variant="cell" aria-label="Producto vendido" value={single.productId} disabled={disabled} onChange={(event) => { if (event.target.value !== single.productId) void onUpdate(sale, { items: [{ productId: event.target.value, quantity: single.quantityMilli / 1000 }] }, "Producto cambiado"); }}>
               {state.products.some((product) => product.id === single.productId) ? null : <DropdownOption value={single.productId} disabled>{single.productName}</DropdownOption>}
               {state.products.map((product) => <DropdownOption key={product.id} value={product.id}>{product.name}</DropdownOption>)}
@@ -203,7 +235,7 @@ function SalesTable({ sales, state, channels, demo, money, onUpdate, onArchive, 
           </TableRow>;
         })}</TableBody>
         <TableFooter><TableRow>
-          <TableCell colSpan={6} className="px-3 text-sm">{rows.length === sales.length ? "Total del mes" : "Total de lo filtrado"} · {rows.length} venta{rows.length === 1 ? "" : "s"}</TableCell>
+          <TableCell colSpan={6} className="px-3 text-sm">{rows.length === sales.length ? `Total de ${monthName(month)}` : `Lo filtrado de ${monthName(month)}`} · {rows.length} venta{rows.length === 1 ? "" : "s"}</TableCell>
           <TableCell className="px-3 text-right tabular-nums">{money(totals.total)}</TableCell>
           <TableCell className="px-3 text-right tabular-nums">{money(totals.selling)}</TableCell>
           <TableCell className="px-3 text-right tabular-nums">{money(totals.delivery)}</TableCell>
@@ -214,6 +246,38 @@ function SalesTable({ sales, state, channels, demo, money, onUpdate, onArchive, 
     </div>
     <p className="text-xs text-muted-foreground">&quot;Te dejó&quot; es lo cobrado menos insumos, mano de obra, comisiones y entrega: lo que cada venta aporta para pagar los gastos fijos del mes. Si cambias el canal se recalculan la comisión y el costo de entrega.</p>
   </div>;
+}
+
+/** A sale in one line under the table: date, channel, product, quantity and customer, at the channel's price. */
+function QuickSale({ state, channels, demo, today, month, suggestions, onSaved }: { state: DomainState; channels: SalesChannel[]; demo: boolean; today: string; month: string; suggestions: Suggestion[]; onSaved: () => void }) {
+  const [soldOn, setSoldOn] = React.useState(today.startsWith(month) ? today : `${month}-01`);
+  const [channelId, setChannelId] = React.useState(channels[0]?.id ?? DIRECT_CHANNEL.id);
+  const [productId, setProductId] = React.useState(state.products[0]?.id ?? "");
+  const [quantity, setQuantity] = React.useState("1");
+  const [customer, setCustomer] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const idempotencyKey = React.useMemo(() => crypto.randomUUID(), []);
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!productId || !(Number(quantity) > 0)) return;
+    setBusy(true);
+    try {
+      await businessAction({ action: "record-sale", idempotencyKey, sale: { soldOn, channelId: channelId === DIRECT_CHANNEL.id ? null : channelId, items: [{ productId, quantity: Number(quantity) }], customer: customer.trim() } }, demo);
+      notifySaved("Venta registrada");
+      onSaved();
+    } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo registrar"); }
+    finally { setBusy(false); }
+  }
+  return <form onSubmit={submit} className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-dashed bg-muted/30 p-2" aria-label="Carga rápida de una venta">
+    <span className="px-1 text-xs font-medium text-muted-foreground">Carga rápida</span>
+    <Input type="date" value={soldOn} onChange={(event) => setSoldOn(event.target.value)} aria-label="Fecha" className="h-8 w-36" required />
+    <Dropdown aria-label="Canal" value={channelId} onChange={(event) => setChannelId(event.target.value)}>{channels.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}<DropdownOption value={DIRECT_CHANNEL.id}>{DIRECT_CHANNEL.name}</DropdownOption></Dropdown>
+    <Dropdown aria-label="Producto" value={productId} onChange={(event) => setProductId(event.target.value)}>{state.products.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}</Dropdown>
+    <Input type="number" min="0.001" step="any" value={quantity} onChange={(event) => setQuantity(event.target.value)} aria-label="Cantidad" className="h-8 w-20 text-right" required />
+    <div className="w-44"><SuggestInput value={customer} onValueChange={(value) => setCustomer(value)} suggestions={suggestions} placeholder="Cliente (opcional)" aria-label="Cliente" /></div>
+    <Button type="submit" size="sm" disabled={busy}>{busy ? "Guardando…" : "Agregar"}</Button>
+    <span className="text-[11px] text-muted-foreground">Al precio del canal; para varios productos o entrega con dirección usa «Registrar venta».</span>
+  </form>;
 }
 
 type ItemLine = { key: number; productId: string; quantity: string; price: string };
@@ -250,7 +314,6 @@ export function ChannelDialog({ channel, demo, onClose, onSaved }: { channel: Sa
   const [busy, setBusy] = React.useState(false);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return; }
     const data = new FormData(event.currentTarget);
     const number = (name: string) => Number(data.get(name) || 0);
     setBusy(true);
@@ -259,8 +322,8 @@ export function ChannelDialog({ channel, demo, onClose, onSaved }: { channel: Sa
         id: channel?.id, name: String(data.get("name") ?? "").trim(), deliveryMethod: String(data.get("deliveryMethod") ?? "").trim(),
         commissionPercent: number("commission"), feePerOrder: number("fee"), deliveryCostPerOrder: number("delivery"),
         unitsPerOrder: number("units") || 1, priceAdjustmentPercent: number("adjustment"),
-      } });
-      toast.success(channel ? "Canal actualizado" : "Canal creado");
+      } }, demo);
+      notifySaved(channel ? "Canal actualizado" : "Canal creado");
       onSaved();
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo guardar"); }
     finally { setBusy(false); }
@@ -284,7 +347,18 @@ export function ChannelDialog({ channel, demo, onClose, onSaved }: { channel: Sa
 
 type Line = { key: number; productId: string; quantity: string; price: string };
 
-function SaleDialog({ state, channels, demo, month, onClose, onSaved }: { state: DomainState; channels: SalesChannel[]; demo: boolean; month: string; onClose: () => void; onSaved: () => void }) {
+function SaleDialog({ directory, state, channels, demo, month, onClose, onSaved }: { directory: CustomerDirectory; state: DomainState; channels: SalesChannel[]; demo: boolean; month: string; onClose: () => void; onSaved: () => void }) {
+  const [customer, setCustomer] = React.useState("");
+  const [address, setAddress] = React.useState("");
+  const [recipient, setRecipient] = React.useState("");
+  const [contact, setContact] = React.useState("");
+  const pickCustomer = (name: string) => {
+    const known = directory.customers.find((item) => item.name === name);
+    if (!known) return;
+    if (known.address) setAddress(known.address);
+    if (known.contact) setContact(known.contact);
+    if (known.recipient) setRecipient(known.recipient);
+  };
   const money = useMoney(state.organization.currency);
   const idempotencyKey = React.useMemo(() => crypto.randomUUID(), []);
   const [channelId, setChannelId] = React.useState(channels[0]?.id ?? DIRECT_CHANNEL.id);
@@ -294,26 +368,26 @@ function SaleDialog({ state, channels, demo, month, onClose, onSaved }: { state:
   const channel = channels.find((item) => item.id === channelId) ?? DIRECT_CHANNEL;
   const [addDelivery, setAddDelivery] = React.useState(false);
   const delivers = needsDelivery(channel) || addDelivery;
-  const defaultDate = todayIso().startsWith(month) ? todayIso() : `${month}-01`;
+  const today = todayFor(demo);
+  const defaultDate = today.startsWith(month) ? today : `${month}-01`;
   const update = (key: number, change: Partial<Line>) => setLines((current) => current.map((line) => line.key === key ? { ...line, ...change } : line));
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return; }
     const data = new FormData(event.currentTarget);
     setBusy(true);
     try {
-      const documentId = file ? await uploadDocument(file) : undefined;
+      const documentId = file && !demo ? await uploadDocument(file) : undefined;
       const delivery = String(data.get("delivery") ?? "").trim();
       const field = (name: string) => String(data.get(name) ?? "").trim();
-      const deliveryDetails = delivers ? { scheduledOn: field("deliveryDate") || undefined, address: field("address"), recipient: field("recipient") || undefined, timeWindow: field("timeWindow") } : undefined;
+      const deliveryDetails = delivers ? { scheduledOn: field("deliveryDate") || undefined, address: address.trim(), recipient: recipient.trim() || undefined, contact: contact.trim(), timeWindow: field("timeWindow") } : undefined;
       await businessAction({ action: "record-sale", idempotencyKey, sale: {
         soldOn: String(data.get("date")), channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id,
         items: lines.filter((line) => line.productId && Number(line.quantity) > 0).map((line) => ({ productId: line.productId, quantity: Number(line.quantity), ...(line.price ? { unitPrice: Number(line.price) } : {}) })),
-        ...(delivery ? { deliveryCost: Number(delivery) } : {}), customer: String(data.get("customer") ?? "").trim(), documentId,
+        ...(delivery ? { deliveryCost: Number(delivery) } : {}), customer: customer.trim(), documentId,
         ...(deliveryDetails ? { delivery: deliveryDetails } : {}),
-      } });
-      toast.success("Venta registrada");
+      } }, demo);
+      notifySaved("Venta registrada");
       onSaved();
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo registrar"); }
     finally { setBusy(false); }
@@ -342,15 +416,16 @@ function SaleDialog({ state, channels, demo, month, onClose, onSaved }: { state:
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field><FieldLabel htmlFor="sale-delivery">Costo de entrega</FieldLabel><Input id="sale-delivery" name="delivery" type="number" min="0" step="1" placeholder={money(channel.deliveryCostPerOrderMinor)} /><FieldDescription>Déjalo vacío para usar el habitual del canal.</FieldDescription></Field>
-        <Field><FieldLabel htmlFor="sale-customer">Cliente</FieldLabel><Input id="sale-customer" name="customer" placeholder="Opcional" /></Field>
+        <Field><FieldLabel htmlFor="sale-customer">Cliente</FieldLabel><SuggestInput id="sale-customer" value={customer} placeholder="Opcional" suggestions={directory.customers.map((item) => ({ value: item.name, hint: item.address || undefined }))} onValueChange={(value, picked) => { setCustomer(value); if (picked) pickCustomer(value); }} /></Field>
       </div>
       {delivers ? <fieldset className="flex flex-col gap-3 rounded-lg border p-3">
         <legend className="px-1 text-sm font-medium">Entrega</legend>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field><FieldLabel htmlFor="sale-delivery-date">Fecha de entrega</FieldLabel><Input id="sale-delivery-date" name="deliveryDate" type="date" defaultValue={defaultDate} /><FieldDescription>Si ya pasó, queda como entregada.</FieldDescription></Field>
           <Field><FieldLabel htmlFor="sale-window">Franja horaria</FieldLabel><Input id="sale-window" name="timeWindow" placeholder="Ej. 9 a 13" /></Field>
-          <Field><FieldLabel htmlFor="sale-address">Dirección</FieldLabel><Input id="sale-address" name="address" placeholder="Calle, número, ciudad" /></Field>
-          <Field><FieldLabel htmlFor="sale-recipient">Recibe</FieldLabel><Input id="sale-recipient" name="recipient" placeholder="Si es otra persona que el cliente" /></Field>
+          <Field><FieldLabel htmlFor="sale-address">Dirección</FieldLabel><SuggestInput id="sale-address" value={address} placeholder="Calle, número, ciudad" suggestions={directory.addresses.map((value) => ({ value }))} onValueChange={(value) => setAddress(value)} /></Field>
+          <Field><FieldLabel htmlFor="sale-recipient">Recibe</FieldLabel><SuggestInput id="sale-recipient" value={recipient} placeholder="Si es otra persona que el cliente" suggestions={directory.recipients.map((value) => ({ value }))} onValueChange={(value) => setRecipient(value)} /></Field>
+          <Field><FieldLabel htmlFor="sale-contact">Contacto</FieldLabel><Input id="sale-contact" value={contact} onChange={(event) => setContact(event.target.value)} placeholder="Teléfono" /></Field>
         </div>
         {!needsDelivery(channel) ? <Button type="button" size="sm" variant="ghost" className="self-start" onClick={() => setAddDelivery(false)}>Sin entrega</Button> : null}
       </fieldset> : <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => setAddDelivery(true)}><AnimatedIcon name="plus" data-icon="inline-start" />Agregar entrega</Button>}

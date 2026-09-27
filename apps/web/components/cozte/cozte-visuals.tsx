@@ -5,7 +5,9 @@ import { analyzeCosts, type CostAnalysis } from "@/lib/cost-analysis";
 import { buildBusinessView, type BusinessView } from "@/lib/business";
 import { DeckError, monthLabel, type DeckSources } from "@/lib/decks";
 import type { DomainState, ProductCost } from "@/lib/domain";
-import { DEMO_MONTH, demoBusinessRecords, demoHistory } from "@/lib/demo";
+import { DEMO_MONTH, demoHistory } from "@/lib/demo";
+import { demoRecords } from "@/lib/demo-store";
+import { useDemoVersion } from "@/components/business/business-ui";
 import { WIDGETS, WIDGET_KINDS, computeWidget, widgetNeeds, widgetTitle, type WidgetContent, type WidgetGroup, type WidgetKind, type WidgetSpec } from "@/lib/cozte-widgets";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -30,13 +32,14 @@ const VisualContext = React.createContext<VisualData | null>(null);
  * needs it, the cost history. Everything is computed by the engine, never taken from the model's text.
  */
 export function CozteVisualProvider({ state, demo, refreshKey, children }: { state: Dashboard; demo: boolean; refreshKey: number; children: React.ReactNode }) {
-  const currentMonth = demo ? DEMO_MONTH : new Date().toISOString().slice(0, 7);
+  const currentMonth = demo ? DEMO_MONTH : new Date().toLocaleDateString("en-CA").slice(0, 7);
   const [views, setViews] = React.useState<Record<string, BusinessView>>({});
   const [analysis, setAnalysis] = React.useState<CostAnalysis | null>(null);
   // What was already asked for, per data generation, so each month is fetched once until something changes.
   const requested = React.useRef({ months: new Set<string>(), history: "" });
   // Data changed elsewhere (the sheet, a purchase, Cozte): forget what was loaded so widgets refetch.
-  const generation = `${state.revision}:${refreshKey}`;
+  const demoChanges = useDemoVersion(demo);
+  const generation = `${state.revision}:${refreshKey}:${demoChanges}`;
   const [loadedGeneration, setLoadedGeneration] = React.useState(generation);
   if (loadedGeneration !== generation) {
     setLoadedGeneration(generation);
@@ -49,7 +52,7 @@ export function CozteVisualProvider({ state, demo, refreshKey, children }: { sta
       const key = `${generation}|${month}`;
       if (requested.current.months.has(key)) continue;
       requested.current.months.add(key);
-      if (demo) { setViews((current) => ({ ...current, [month]: buildBusinessView(state, demoBusinessRecords(), month) })); continue; }
+      if (demo) { setViews((current) => ({ ...current, [month]: buildBusinessView(state, demoRecords(), month) })); continue; }
       fetch(`/api/business?month=${month}`, { cache: "no-store" })
         .then((response) => response.ok ? response.json() as Promise<BusinessView> : Promise.reject(new Error()))
         .then((view) => setViews((current) => ({ ...current, [month]: view })))

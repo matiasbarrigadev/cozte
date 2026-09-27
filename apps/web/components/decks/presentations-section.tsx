@@ -52,7 +52,7 @@ export function PresentationsSection(props: Props) {
 
 function PresentationList({ demo, onOpen, onAskCozte, api }: Props & { api: PresentationsApi }) {
   const [items, setItems] = React.useState<PresentationSummary[] | null>(null);
-  const [month, setMonth] = React.useState(demo ? DEMO_MONTH : new Date().toISOString().slice(0, 7));
+  const [month, setMonth] = React.useState(demo ? DEMO_MONTH : new Date().toLocaleDateString("en-CA").slice(0, 7));
   const [creating, setCreating] = React.useState<DeckTemplate | null>(null);
   const [idea, setIdea] = React.useState("");
   React.useEffect(() => {

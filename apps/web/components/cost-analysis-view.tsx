@@ -206,7 +206,7 @@ const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Pick a day and see every product's cost as it stood then, line by line. */
 function CostsAtCard({ currency, demo, money }: { currency: string; demo: boolean; money: (value: number) => string }) {
-  const today = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const today = React.useMemo(() => new Date().toLocaleDateString("en-CA"), []);
   const [date, setDate] = React.useState(today);
   const [fetched, setFetched] = React.useState<CostsAt | null>(null);
   const valid = ISO_DAY.test(date);

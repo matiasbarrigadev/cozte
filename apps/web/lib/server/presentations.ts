@@ -1,6 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import { buildBusinessView } from "@/lib/business";
+import { buildBusinessView, businessToday } from "@/lib/business";
 import { calculateCosts } from "@/lib/domain";
 import { normalizeName } from "@/lib/cozte-cost-view";
 import {
@@ -44,7 +44,7 @@ export function summarize(presentation: Presentation): PresentationSummary {
   return { ...presentation, deck, slideCount: slides.length, cover: slides[0] ?? null };
 }
 
-const today = () => new Date().toISOString().slice(0, 7);
+const today = () => businessToday().slice(0, 7);
 
 /** The engine data a deck needs: current costs, each month's business view and, for evolution charts, the history. */
 export async function loadDeckSources(principal: Principal, needs: { months: string[]; history: boolean }): Promise<DeckSources> {

@@ -4,7 +4,7 @@ import * as React from "react";
 import { toast } from "sonner";
 import { DELIVERY_STATUSES, DELIVERY_STATUS_HINTS, DELIVERY_STATUS_LABELS, byProximity, daysFrom, deliverySummary, isOpenDelivery, saleItemsText, type Delivery, type DeliveryStatus, type SalesChannel } from "@/lib/business";
 import type { DomainState } from "@/lib/domain";
-import { demoBusinessRecords, demoDeliveries } from "@/lib/demo";
+import { demoDeliveryList, demoRecords } from "@/lib/demo-store";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,15 +13,26 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/u
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
+import { SuggestInput } from "@/components/ui/suggest-input";
+import type { CustomerDirectory } from "@/lib/business";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
-import { MonthPicker, SectionHeader, Stat, Tip, businessAction, todayIso, useBusinessView, useMoney } from "./business-ui";
-import { EditableDate, EditableNumber, EditableText, SortableHead, TableToolbar, matches, sheetCell, sheetHead, type SortState } from "./data-table";
+import { MonthPicker, SectionHeader, Stat, Tip, businessAction, notifySaved, todayFor, useBusinessView, useCustomerDirectory, useDemoVersion, useMoney } from "./business-ui";
+import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
 import { DELIVERY_TONE, relativeDay } from "./delivery-status";
 
 type DeliveryData = { deliveries: Delivery[]; channels: SalesChannel[] };
-type Patch = Partial<Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "method" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note">> & { cost?: number };
+type Patch = Partial<Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "method" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn">> & { cost?: number };
+
+/** The change that puts a delivery back as it was before an edit (including when it was delivered). */
+function inverseDeliveryPatch(delivery: Delivery, patch: Patch): Patch {
+  const back: Patch = {};
+  for (const key of ["scheduledOn", "timeWindow", "method", "carrier", "recipient", "address", "contact", "tracking", "note"] as const) if (patch[key] !== undefined) back[key] = delivery[key];
+  if (patch.status !== undefined) { back.status = delivery.status; back.deliveredOn = delivery.deliveredOn; }
+  if (patch.cost !== undefined) back.cost = delivery.costMinor;
+  return back;
+}
 type Quick = "all" | "open" | "today" | "overdue" | "delivered" | "failed";
 type SortKey = "date" | "recipient" | "cost";
 
@@ -29,7 +40,8 @@ type SortKey = "date" | "recipient" | "cost";
 function useDeliveries(month: string, demo: boolean, revision: number) {
   const [version, setVersion] = React.useState(0);
   const [loaded, setLoaded] = React.useState<{ key: string; data: DeliveryData } | null>(null);
-  const demoData = React.useMemo<DeliveryData | null>(() => demo ? { deliveries: demoDeliveries(todayIso()), channels: demoBusinessRecords().channels } : null, [demo]);
+  const demoChanges = useDemoVersion(demo);
+  const demoData = React.useMemo<DeliveryData | null>(() => demo ? { deliveries: demoDeliveryList(month), channels: demoRecords().channels } : null, [demo, month, demoChanges]); // eslint-disable-line react-hooks/exhaustive-deps
   const key = `${month}:${version}:${revision}`;
   React.useEffect(() => {
     if (demo) return;
@@ -51,37 +63,35 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
   const { data, loading, reload } = useDeliveries(month, demo, state.revision);
   const money = useMoney(state.organization.currency);
   const [scheduleOpen, setScheduleOpen] = React.useState(false);
-  const today = todayIso();
+  const today = todayFor(demo);
 
-  async function save(delivery: Delivery | null, patch: Patch & { saleId?: string }, message?: string) {
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return false; }
+  async function save(delivery: Delivery | null, patch: Patch & { saleId?: string }, message?: string, undoable = true) {
     try {
-      const result = await businessAction<{ done: string[] }>({ action: "save-delivery", delivery: { ...(delivery ? { id: delivery.id } : {}), ...patch } });
-      toast.success(message ?? result.done[0] ?? "Entrega actualizada");
+      const result = await businessAction<{ done: string[] }>({ action: "save-delivery", delivery: { ...(delivery ? { id: delivery.id } : {}), ...patch } }, demo);
+      notifySaved(message ?? result.done[0] ?? "Entrega actualizada", delivery && undoable ? () => void save(delivery, inverseDeliveryPatch(delivery, patch), "Cambio deshecho", false) : undefined);
       reload();
       if (patch.cost !== undefined) onDataChanged?.();
       return true;
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo guardar"); return false; }
   }
   async function remove(delivery: Delivery) {
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return; }
-    try { await businessAction({ action: "archive", kind: "delivery", id: delivery.id }); toast.success("Entrega quitada; la venta sigue registrada"); reload(); }
+    try { await businessAction({ action: "archive", kind: "delivery", id: delivery.id }, demo); notifySaved("Entrega quitada; la venta sigue registrada"); reload(); }
     catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo quitar"); }
   }
   async function saveChannel(channel: SalesChannel, change: { deliveryMethod?: string; deliveryCostPerOrder?: number }) {
-    if (demo) { toast.info("Demostración: los cambios no se guardan"); return; }
     try {
       await businessAction({ action: "save-channel", channel: {
         id: channel.id, name: channel.name, deliveryMethod: change.deliveryMethod ?? channel.deliveryMethod, commissionPercent: channel.commissionBps / 100, feePerOrder: channel.feePerOrderMinor,
         deliveryCostPerOrder: change.deliveryCostPerOrder ?? channel.deliveryCostPerOrderMinor, unitsPerOrder: channel.unitsPerOrderMilli / 1000, priceAdjustmentPercent: channel.priceAdjustmentBps / 100,
-      } });
-      toast.success(`${channel.name}: entrega actualizada para las próximas ventas`);
+      } }, demo);
+      notifySaved(`${channel.name}: entrega actualizada para las próximas ventas`);
       reload(); onDataChanged?.();
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo guardar"); }
   }
 
   const deliveries = data?.deliveries ?? [];
   const summary = deliverySummary(deliveries, today, month);
+  const directory = useCustomerDirectory(demo, deliveries.length);
   return <>
     <SectionHeader eyebrow="Logística" title="Entregas" description="Cada pedido que tiene que llegar al cliente: cuándo, a dónde, quién lo lleva y cuánto cuesta. La más cercana a hoy aparece primero; lo que cambies acá actualiza el costo de la venta y el resultado del mes.">
       <Button onClick={() => setScheduleOpen(true)}><AnimatedIcon name="plus" data-icon="inline-start" />Programar entrega</Button>
@@ -94,14 +104,15 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
         <Stat label="Costo de entregar en el mes" value={money(summary.cost)} note={summary.averageCost !== null ? `${money(summary.averageCost)} por entrega` : undefined} />
       </div>
 
+      {!data.channels.some((channel) => channel.deliveryMethod || channel.deliveryCostPerOrderMinor) ? <Tip title="Para que las entregas se creen solas">Indica en «Cómo entrega cada canal» (abajo) la forma y el costo de entregar de tus canales. Desde ahí, cada venta por un canal que entrega aparece acá con su fecha, y puedes seguirla hasta que llega.</Tip> : null}
       <Card className="gap-4">
         <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
           <div className="flex flex-col gap-1.5"><CardTitle>Entregas</CardTitle><CardDescription>Las del mes y todas las que siguen abiertas. Haz clic en una celda para cambiarla; el estado se elige de la lista.</CardDescription></div>
           <MonthPicker month={month} onChange={onMonthChange} />
         </CardHeader>
         <CardContent>
-          {deliveries.length ? <DeliveriesTable deliveries={deliveries} channels={data.channels} demo={demo} today={today} money={money} onSave={save} onRemove={(delivery) => void remove(delivery)} onOpenSales={onOpenSales} />
-            : <Empty className="py-6"><EmptyHeader><EmptyTitle>No hay entregas este mes</EmptyTitle><EmptyDescription>Cuando registras una venta por un canal que entrega (o con dirección), su entrega aparece acá. También puedes programar una para una venta que ya tengas.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={() => setScheduleOpen(true)}>Programar entrega</Button></Empty>}
+          {deliveries.length ? <DeliveriesTable directory={directory} deliveries={deliveries} channels={data.channels} demo={demo} today={today} money={money} onSave={save} onRemove={(delivery) => void remove(delivery)} onOpenSales={onOpenSales} />
+            : <Empty className="py-6"><EmptyHeader><EmptyTitle>No hay entregas en {monthName(month)}</EmptyTitle><EmptyDescription>Cuando registras una venta por un canal que entrega (o con dirección), su entrega aparece acá. También puedes programar una para una venta que ya tengas.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={() => setScheduleOpen(true)}>Programar entrega</Button></Empty>}
         </CardContent>
       </Card>
 
@@ -111,8 +122,8 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
           <TableHeader><TableRow className="hover:bg-transparent"><TableHead className={sheetHead}>Canal</TableHead><TableHead className={cn(sheetHead, "min-w-56")}>Forma de entrega</TableHead><TableHead className={cn(sheetHead, "min-w-36 text-right")}>Costo por pedido</TableHead><TableHead className={cn(sheetHead, "text-right")}>Unidades por pedido</TableHead><TableHead className={cn(sheetHead, "text-right")}>Por unidad</TableHead></TableRow></TableHeader>
           <TableBody>{data.channels.map((channel) => <TableRow key={channel.id} className="hover:bg-muted/30">
             <TableCell className={cn(sheetCell, "px-3 font-medium")}>{channel.name}</TableCell>
-            <TableCell className={sheetCell}><EditableText value={channel.deliveryMethod} label={`Forma de entrega de ${channel.name}`} placeholder="Ej. moto propia, correo, retiro" disabled={demo} onCommit={(deliveryMethod) => void saveChannel(channel, { deliveryMethod })} /></TableCell>
-            <TableCell className={sheetCell}><EditableNumber value={channel.deliveryCostPerOrderMinor} label={`Costo por pedido de ${channel.name}`} disabled={demo} onCommit={(deliveryCostPerOrder) => void saveChannel(channel, { deliveryCostPerOrder })} /></TableCell>
+            <TableCell className={sheetCell}><EditableText value={channel.deliveryMethod} label={`Forma de entrega de ${channel.name}`} placeholder="Ej. moto propia, correo, retiro" onCommit={(deliveryMethod) => void saveChannel(channel, { deliveryMethod })} /></TableCell>
+            <TableCell className={sheetCell}><EditableNumber value={channel.deliveryCostPerOrderMinor} label={`Costo por pedido de ${channel.name}`} onCommit={(deliveryCostPerOrder) => void saveChannel(channel, { deliveryCostPerOrder })} /></TableCell>
             <TableCell className={cn(sheetCell, "px-3 text-right tabular-nums")}>{new Intl.NumberFormat("es-AR").format(channel.unitsPerOrderMilli / 1000)}</TableCell>
             <TableCell className={cn(sheetCell, "px-3 text-right tabular-nums text-muted-foreground")}>{money(channel.deliveryCostPerOrderMinor / Math.max(channel.unitsPerOrderMilli / 1000, 0.001))}</TableCell>
           </TableRow>)}</TableBody>
@@ -121,18 +132,18 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
         </CardContent>
       </Card>
     </div>}
-    {scheduleOpen ? <ScheduleDialog state={state} demo={demo} month={month} existing={new Set(deliveries.map((item) => item.saleId))} onClose={() => setScheduleOpen(false)} onSave={async (saleId, patch) => { if (await save(null, { saleId, ...patch })) setScheduleOpen(false); }} /> : null}
+    {scheduleOpen ? <ScheduleDialog directory={directory} state={state} demo={demo} month={month} today={today} existing={new Set(deliveries.map((item) => item.saleId))} onClose={() => setScheduleOpen(false)} onSave={async (saleId, patch) => { if (await save(null, { saleId, ...patch })) setScheduleOpen(false); }} /> : null}
   </>;
 }
 
-function DeliveriesTable({ deliveries, channels, demo, today, money, onSave, onRemove, onOpenSales }: {
-  deliveries: Delivery[]; channels: SalesChannel[]; demo: boolean; today: string; money: (value: number) => string;
+function DeliveriesTable({ directory, deliveries, channels, today, money, onSave, onRemove, onOpenSales }: {
+  directory: CustomerDirectory; deliveries: Delivery[]; channels: SalesChannel[]; demo: boolean; today: string; money: (value: number) => string;
   onSave: (delivery: Delivery, patch: Patch, message?: string) => Promise<boolean>; onRemove: (delivery: Delivery) => void; onOpenSales?: () => void;
 }) {
   const [search, setSearch] = React.useState("");
-  const [quick, setQuick] = React.useState<Quick>("all");
-  const [channelFilter, setChannelFilter] = React.useState("all");
-  const [carrierFilter, setCarrierFilter] = React.useState("all");
+  const [quick, setQuick] = usePersistentState<Quick>("entregas:estado", "all", ["all", "open", "today", "overdue", "delivered", "failed"]);
+  const [channelFilter, setChannelFilter] = usePersistentState<string>("entregas:canal", "all");
+  const [carrierFilter, setCarrierFilter] = usePersistentState<string>("entregas:quien", "all");
   const [sort, setSort] = React.useState<SortState<SortKey>>(null);
   const carriers = [...new Set(deliveries.map((item) => item.carrier).filter(Boolean))].sort();
   const counts: Record<Quick, number> = {
@@ -161,7 +172,10 @@ function DeliveriesTable({ deliveries, channels, demo, today, money, onSave, onR
   }, [deliveries, search, quick, channelFilter, carrierFilter, sort, today]);
   const channelOptions = [{ value: "all", label: "Todos los canales" }, ...channels.map((channel) => ({ value: channel.id, label: channel.name })), ...(deliveries.some((item) => !item.sale.channelId) ? [{ value: "direct", label: "Venta directa" }] : [])];
   const quickChips: { id: Quick; label: string }[] = [{ id: "all", label: "Todas" }, { id: "open", label: "Por entregar" }, { id: "today", label: "Hoy" }, { id: "overdue", label: "Atrasadas" }, { id: "failed", label: "Con problema" }, { id: "delivered", label: "Entregadas" }];
-  const disabled = demo;
+  const disabled = false;
+  const recipientSuggestions = [...directory.customers.map((item) => ({ value: item.name, hint: item.address || undefined })), ...directory.recipients.map((value) => ({ value }))];
+  const addressSuggestions = directory.addresses.map((value) => ({ value }));
+  const carrierSuggestions = directory.carriers.map((value) => ({ value }));
   return <div className="flex flex-col gap-3">
     <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filtrar por estado">
       {quickChips.map((chip) => <button key={chip.id} type="button" role="tab" aria-selected={quick === chip.id} onClick={() => setQuick(chip.id)}
@@ -205,10 +219,10 @@ function DeliveriesTable({ deliveries, channels, demo, today, money, onSave, onR
                 {DELIVERY_STATUSES.map((status) => <DropdownOption key={status} value={status} hint={DELIVERY_STATUS_HINTS[status]}>{DELIVERY_STATUS_LABELS[status]}</DropdownOption>)}
               </Dropdown>
             </TableCell>
-            <TableCell className={sheetCell}><EditableText value={item.recipient} label="Recibe" placeholder={item.sale.customer || "—"} disabled={disabled} onCommit={(recipient) => void onSave(item, { recipient })} /></TableCell>
-            <TableCell className={sheetCell}><EditableText value={item.address} label="Dirección" placeholder="Sin dirección" disabled={disabled} onCommit={(address) => void onSave(item, { address })} /></TableCell>
+            <TableCell className={sheetCell}><EditableSuggest suggestions={recipientSuggestions} value={item.recipient} label="Recibe" placeholder={item.sale.customer || "—"} disabled={disabled} onCommit={(recipient) => void onSave(item, { recipient })} /></TableCell>
+            <TableCell className={sheetCell}><EditableSuggest suggestions={addressSuggestions} value={item.address} label="Dirección" placeholder="Sin dirección" disabled={disabled} onCommit={(address) => void onSave(item, { address })} /></TableCell>
             <TableCell className={sheetCell}><EditableText value={item.contact} label="Contacto" placeholder="—" disabled={disabled} onCommit={(contact) => void onSave(item, { contact })} /></TableCell>
-            <TableCell className={sheetCell}><EditableText value={item.carrier} label="Quién entrega" placeholder="—" disabled={disabled} onCommit={(carrier) => void onSave(item, { carrier })} /></TableCell>
+            <TableCell className={sheetCell}><EditableSuggest suggestions={carrierSuggestions} value={item.carrier} label="Quién entrega" placeholder="—" disabled={disabled} onCommit={(carrier) => void onSave(item, { carrier })} /></TableCell>
             <TableCell className={sheetCell}><EditableText value={item.method} label="Forma de entrega" placeholder="—" disabled={disabled} onCommit={(method) => void onSave(item, { method })} /></TableCell>
             <TableCell className={sheetCell}><EditableText value={item.tracking} label="Código de seguimiento" placeholder="—" disabled={disabled} onCommit={(tracking) => void onSave(item, { tracking })} /></TableCell>
             <TableCell className={sheetCell}><EditableNumber value={item.costMinor} label="Costo de la entrega" disabled={disabled} onCommit={(cost) => void onSave(item, { cost }, "Costo de entrega actualizado en la venta")} /></TableCell>
@@ -234,13 +248,18 @@ function DeliveriesTable({ deliveries, channels, demo, today, money, onSave, onR
 }
 
 /** Schedules a delivery for a sale of the month that does not have one yet. */
-function ScheduleDialog({ state, demo, month, existing, onClose, onSave }: { state: DomainState; demo: boolean; month: string; existing: Set<string>; onClose: () => void; onSave: (saleId: string, patch: Patch) => Promise<void> }) {
+function ScheduleDialog({ directory, state, demo, month, today, existing, onClose, onSave }: { directory: CustomerDirectory; state: DomainState; demo: boolean; month: string; today: string; existing: Set<string>; onClose: () => void; onSave: (saleId: string, patch: Patch) => Promise<void> }) {
   const { view } = useBusinessView(month, demo, state);
   const money = useMoney(state.organization.currency);
   const candidates = (view?.sales ?? []).filter((sale) => !sale.delivery && !existing.has(sale.id));
   const [saleId, setSaleId] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const selected = candidates.find((sale) => sale.id === saleId) ?? candidates[0];
+  const known = directory.customers.find((item) => item.name === selected?.customer);
+  const [recipient, setRecipient] = React.useState<string | null>(null);
+  const [address, setAddress] = React.useState<string | null>(null);
+  const [carrier, setCarrier] = React.useState("");
+  const [contact, setContact] = React.useState<string | null>(null);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selected) return;
@@ -250,7 +269,7 @@ function ScheduleDialog({ state, demo, month, existing, onClose, onSave }: { sta
     setBusy(true);
     try {
       await onSave(selected.id, {
-        scheduledOn: field("date") || todayIso(), timeWindow: field("window"), recipient: field("recipient") || selected.customer, address: field("address"), contact: field("contact"), carrier: field("carrier"), note: field("note"),
+        scheduledOn: field("date") || today, timeWindow: field("window"), recipient: (recipient ?? selected.customer).trim(), address: (address ?? known?.address ?? "").trim(), contact: (contact ?? known?.contact ?? "").trim(), carrier: carrier.trim(), note: field("note"),
         ...(cost ? { cost: Number(cost) } : {}),
       });
     } finally { setBusy(false); }
@@ -264,14 +283,14 @@ function ScheduleDialog({ state, demo, month, existing, onClose, onSave }: { sta
         </Dropdown>
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field><FieldLabel htmlFor="schedule-date">Fecha</FieldLabel><Input id="schedule-date" name="date" type="date" required defaultValue={todayIso()} /><FieldDescription>Si ya pasó, queda como entregada.</FieldDescription></Field>
+        <Field><FieldLabel htmlFor="schedule-date">Fecha</FieldLabel><Input id="schedule-date" name="date" type="date" required defaultValue={today} /><FieldDescription>Si ya pasó, queda como entregada.</FieldDescription></Field>
         <Field><FieldLabel htmlFor="schedule-window">Franja horaria</FieldLabel><Input id="schedule-window" name="window" placeholder="Ej. 9 a 13" /></Field>
-        <Field><FieldLabel htmlFor="schedule-recipient">Recibe</FieldLabel><Input id="schedule-recipient" name="recipient" defaultValue={selected?.customer} placeholder="Nombre" /></Field>
-        <Field><FieldLabel htmlFor="schedule-contact">Contacto</FieldLabel><Input id="schedule-contact" name="contact" placeholder="Teléfono" /></Field>
+        <Field><FieldLabel htmlFor="schedule-recipient">Recibe</FieldLabel><SuggestInput id="schedule-recipient" value={recipient ?? selected?.customer ?? ""} placeholder="Nombre" suggestions={[...directory.customers.map((item) => ({ value: item.name })), ...directory.recipients.map((value) => ({ value }))]} onValueChange={(value) => setRecipient(value)} /></Field>
+        <Field><FieldLabel htmlFor="schedule-contact">Contacto</FieldLabel><Input id="schedule-contact" value={contact ?? known?.contact ?? ""} onChange={(event) => setContact(event.target.value)} placeholder="Teléfono" /></Field>
       </div>
-      <Field><FieldLabel htmlFor="schedule-address">Dirección</FieldLabel><Input id="schedule-address" name="address" placeholder="Calle, número, ciudad" /></Field>
+      <Field><FieldLabel htmlFor="schedule-address">Dirección</FieldLabel><SuggestInput id="schedule-address" value={address ?? known?.address ?? ""} placeholder="Calle, número, ciudad" suggestions={directory.addresses.map((value) => ({ value }))} onValueChange={(value) => setAddress(value)} /></Field>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field><FieldLabel htmlFor="schedule-carrier">Quién entrega</FieldLabel><Input id="schedule-carrier" name="carrier" placeholder="Ej. moto propia, correo" /></Field>
+        <Field><FieldLabel htmlFor="schedule-carrier">Quién entrega</FieldLabel><SuggestInput id="schedule-carrier" value={carrier} placeholder="Ej. moto propia, correo" suggestions={directory.carriers.map((value) => ({ value }))} onValueChange={(value) => setCarrier(value)} /></Field>
         <Field><FieldLabel htmlFor="schedule-cost">Costo</FieldLabel><Input id="schedule-cost" name="cost" type="number" min="0" step="1" placeholder={selected ? money(selected.deliveryCostMinor) : ""} /><FieldDescription>Vacío: el de la venta.</FieldDescription></Field>
       </div>
       <Field><FieldLabel htmlFor="schedule-note">Nota</FieldLabel><Input id="schedule-note" name="note" placeholder="Timbre, horario, referencias" /></Field>

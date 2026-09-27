@@ -58,7 +58,7 @@ const formatMoney = (value: number | null, currency: string) => value === null ?
 /** Whole amounts for reading, not for editing: lessons, totals and tooltips. */
 const plainMoney = (value: number, currency: string) => new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: Math.abs(value) < 100 && currency !== "CLP" ? 2 : 0 }).format(value);
 const formatPercent = (value: number | null) => value === null ? "—" : `${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 1 }).format(value)}%`;
-const emptyDraft = (): Draft => ({ materials: {}, expenses: {}, materialCurrencies: {}, expenseCurrencies: {}, source: "", effectiveDate: new Date().toISOString().slice(0, 10) });
+const emptyDraft = (): Draft => ({ materials: {}, expenses: {}, materialCurrencies: {}, expenseCurrencies: {}, source: "", effectiveDate: new Date().toLocaleDateString("en-CA") });
 
 export function CostosApp({ initial, demo = false, initialSection }: { initial: Dashboard; demo?: boolean; initialSection?: string[] }) {
   const [state, setState] = React.useState<Dashboard>(initial);
@@ -85,7 +85,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
   const [profileSnapshots, setProfileSnapshots] = React.useState<ProfileSnapshotRow[]>([]);
   const [decision, setDecision] = React.useState("");
   // One month for all business sections, so moving between them keeps the same period.
-  const [businessMonth, setBusinessMonth] = React.useState(demo ? DEMO_MONTH : new Date().toISOString().slice(0, 7));
+  const [businessMonth, setBusinessMonth] = React.useState(demo ? DEMO_MONTH : new Date().toLocaleDateString("en-CA").slice(0, 7));
   const currency = state.organization.currency;
   const product = state.products.find((item) => item.id === selected) ?? state.products[0];
   const currentCost = state.costs.find((item) => item.productId === product?.id);

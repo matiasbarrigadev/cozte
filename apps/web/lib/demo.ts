@@ -62,6 +62,9 @@ export function demoHistory() {
 /** The month the demo's purchases and sales belong to. */
 export const DEMO_MONTH = "2026-09";
 
+/** The demo runs on its own clock, so its "today", "tomorrow" and "late" stay true whenever it is visited. */
+export const DEMO_TODAY = "2026-09-26";
+
 /** Example sales channels, purchases and sales for the demo's business sections. */
 export function demoBusinessRecords(): BusinessRecords {
   const costs = calculateCosts(demoState);
@@ -95,7 +98,7 @@ export function demoBusinessRecords(): BusinessRecords {
       sale("v5", "2026-09-04", librerias, [{ productId: "dura", quantity: 60 }, { productId: "blanda", quantity: 60 }]),
     ].map((item) => {
       const delivery = DEMO_DELIVERY_DETAILS[item.id];
-      return delivery ? { ...item, delivery: { id: `e-${item.id}`, status: delivery.status, scheduledOn: delivery.scheduledOn } } : item;
+      return delivery ? { ...item, customer: delivery.recipient, delivery: { id: `e-${item.id}`, status: delivery.status, scheduledOn: delivery.scheduledOn } } : item;
     }),
   };
 }
@@ -110,7 +113,7 @@ const DEMO_DELIVERY_DETAILS: Record<string, Pick<Delivery, "scheduledOn" | "time
 };
 
 /** The demo's deliveries, closest to the demo's today first. */
-export function demoDeliveries(today = "2026-09-26"): Delivery[] {
+export function demoDeliveries(today = DEMO_TODAY): Delivery[] {
   const records = demoBusinessRecords();
   const list = records.sales.flatMap((sale): Delivery[] => {
     const details = DEMO_DELIVERY_DETAILS[sale.id];
