@@ -103,3 +103,12 @@ describe("active quality review", () => {
     expect(activityHeadline(items)).toBe("Registró 1 compra · mejoró la respuesta");
   });
 });
+
+describe("verifier and absence", () => {
+  it("does not read a description of what is missing as a claim of a save", async () => {
+    const { verifyCozteResponse } = await import("./cozte-response-verifier");
+    const read = [{ name: "showVisual", ok: true, write: false, output: { ok: true } }];
+    expect(verifyCozteResponse("No hay mano de obra cargada al lote, por eso el costo es solo insumos y luz.", read).issues.map((issue) => issue.code)).not.toContain("unbacked-write-claim");
+    expect(verifyCozteResponse("Tranquila, ya quedó cargada la receta.", read).issues.map((issue) => issue.code)).toContain("unbacked-write-claim");
+  });
+});

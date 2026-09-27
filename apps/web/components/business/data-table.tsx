@@ -143,3 +143,24 @@ export function usePersistentState<T extends string>(key: string, initial: T, al
 
 /** The month's name for totals: "septiembre". */
 export const monthName = (month: string) => new Intl.DateTimeFormat("es-AR", { month: "long", timeZone: "UTC" }).format(new Date(`${month}-15T12:00:00Z`));
+
+/**
+ * Downloads rows as a CSV that Excel in Spanish opens directly: semicolon separator, decimal comma, UTF-8 with BOM
+ * so accents survive. Dates stay as AAAA-MM-DD, which Excel reads as dates.
+ */
+export function downloadCsv(filename: string, headers: string[], rows: (string | number | null | undefined)[][]) {
+  const cell = (value: string | number | null | undefined) => {
+    if (value === null || value === undefined) return "";
+    const text = typeof value === "number" ? String(Math.round(value * 100) / 100).replace(".", ",") : value;
+    return /[";\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const content = "﻿" + [headers, ...rows].map((row) => row.map(cell).join(";")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename.endsWith(".csv") ? filename : `${filename}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

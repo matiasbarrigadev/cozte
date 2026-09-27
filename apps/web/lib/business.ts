@@ -169,7 +169,14 @@ export function deliverySummary(deliveries: Delivery[], today: string, month: st
   };
 }
 
-export type SalePatch = { soldOn?: string; channelId?: string | null; customer?: string; note?: string; items?: SaleRequest[]; deliveryCost?: number };
+/** `fillMissingCosts` completes, with today's cost, the products that had no complete cost when the sale was recorded. */
+export type SalePatch = { soldOn?: string; channelId?: string | null; customer?: string; note?: string; items?: SaleRequest[]; deliveryCost?: number; fillMissingCosts?: boolean };
+
+/** Whether a sale was recorded without a product's full cost and today's costs could complete it. */
+export function canFillSaleCosts(sale: Pick<Sale, "items">, costs: ProductCost[]): boolean {
+  return sale.items.some((item) => item.unitVariableCostMinor === null || item.unitCostMinor === null)
+    && sale.items.every((item) => item.unitVariableCostMinor !== null && item.unitCostMinor !== null || Boolean(costs.find((cost) => cost.productId === item.productId)?.perUnit && costs.find((cost) => cost.productId === item.productId)?.unitMinor !== null));
+}
 
 /**
  * A corrected sale. Prices charged and each product's cost at the time of the sale are kept unless the person
@@ -182,12 +189,12 @@ export function repriceSale(sale: Sale, patch: SalePatch, state: Pick<DomainStat
   const channel = channelId ? channels.find((item) => item.id === channelId) : DIRECT_CHANNEL;
   if (!channel && (channelChanged || patch.items)) return { sale: { ...sale }, problems: ["Ese canal no existe"] };
   const recorded = new Map(sale.items.map((item) => [item.productId, item]));
-  const itemsChanged = Boolean(patch.items);
+  const itemsChanged = Boolean(patch.items) || Boolean(patch.fillMissingCosts);
   let lines = sale.items;
   let totalMinor = sale.totalMinor;
   let sellingCostMinor = sale.sellingCostMinor;
   let problems: string[] = [];
-  if ((itemsChanged || channelChanged) && channel) {
+  if ((Boolean(patch.items) || channelChanged) && channel) {
     const requests: SaleRequest[] = (patch.items ?? sale.items.map((item): SaleRequest => ({ productId: item.productId, quantity: item.quantityMilli / 1000 })))
       .map((item) => ({ ...item, unitPrice: item.unitPrice ?? recorded.get(item.productId)?.unitPriceMinor }));
     const priced = priceSale(state, costs, channel, requests);
@@ -198,6 +205,18 @@ export function repriceSale(sale: Sale, patch: SalePatch, state: Pick<DomainStat
     });
     totalMinor = priced.totalMinor;
     sellingCostMinor = priced.sellingCostMinor;
+  }
+  if (patch.fillMissingCosts) {
+    // Only the missing costs are completed; what was known when the sale was recorded stays.
+    lines = lines.map((line) => {
+      if (line.unitVariableCostMinor !== null && line.unitCostMinor !== null) return line;
+      const cost = costs.find((item) => item.productId === line.productId);
+      return {
+        ...line,
+        unitVariableCostMinor: line.unitVariableCostMinor ?? (cost?.perUnit ? cost.perUnit.materialMinor + cost.perUnit.laborMinor : null),
+        unitCostMinor: line.unitCostMinor ?? cost?.unitMinor ?? null,
+      };
+    });
   }
   const quantity = (line: SaleItem) => line.quantityMilli / 1000;
   const sumOf = (pick: (line: SaleItem) => number | null) => lines.every((line) => pick(line) !== null) ? Math.round(lines.reduce((sum, line) => sum + quantity(line) * pick(line)!, 0)) : null;
@@ -556,4 +575,47 @@ export function buildCustomerDirectory(rows: DirectoryRow[]): CustomerDirectory 
     addresses: [...lists.addresses.values()].slice(0, 400),
     carriers: [...lists.carriers.values()].slice(0, 100),
   };
+}
+
+export type HistoryEvent = { id: string; at: string; who: string; byCozte: boolean; title: string; lines: string[] };
+
+const FIELD_LABELS: Record<string, string> = {
+  soldOn: "Fecha", channelId: "Canal", customer: "Cliente", note: "Nota", items: "Productos", deliveryCost: "Costo de entrega",
+  scheduledOn: "Fecha de entrega", timeWindow: "Franja", status: "Estado", method: "Forma de entrega", carrier: "Quién entrega", recipient: "Recibe",
+  address: "Dirección", contact: "Contacto", tracking: "Seguimiento", deliveredOn: "Entregada el", cost: "Costo de entrega",
+  purchasedOn: "Fecha", description: "Descripción", supplier: "Proveedor", amount: "Monto", area: "Área", usefulLifeMonths: "Vida útil (meses)",
+};
+
+const TITLES: Record<string, string> = {
+  "record-sale": "Venta registrada", "update-sale": "Venta corregida", "archive-sale": "Venta anulada",
+  "create-delivery": "Entrega creada", "update-delivery": "Entrega actualizada", "archive-delivery": "Entrega quitada",
+  "record-purchase": "Compra registrada", "update-purchase": "Compra corregida", "archive-purchase": "Compra anulada",
+};
+
+/** One change in plain words: what happened and, field by field, what it became (and what it was, when known). */
+export function describeHistoryEvent(action: string, details: Record<string, unknown>, money: (value: number) => string): { title: string; lines: string[] } {
+  const show = (key: string, value: unknown): string => {
+    if (value === null || value === undefined || value === "") return "vacío";
+    if (key === "status" && typeof value === "string" && value in DELIVERY_STATUS_LABELS) return DELIVERY_STATUS_LABELS[value as DeliveryStatus];
+    if (key === "area" && typeof value === "string" && value in AREA_LABELS) return AREA_LABELS[value as CostArea];
+    if ((key === "amount" || key === "deliveryCost" || key === "cost") && typeof value === "number") return money(value);
+    if (key === "channelId") return value === null ? "Venta directa" : "otro canal";
+    if (key === "items" && Array.isArray(value)) return value.map((item) => { const line = item as { quantity?: number; productName?: string; productId?: string; quantityMilli?: number }; return `${line.quantity ?? (line.quantityMilli ?? 0) / 1000} × ${line.productName ?? "producto"}`; }).join(", ");
+    return String(value);
+  };
+  const lines: string[] = [];
+  const before = (details.before ?? null) as Record<string, unknown> | null;
+  const patch = (details.patch ?? (action.startsWith("update") || action === "create-delivery" ? details : null)) as Record<string, unknown> | null;
+  if (patch) {
+    for (const [key, value] of Object.entries(patch)) {
+      if (!(key in FIELD_LABELS) || value === undefined) continue;
+      const beforeKey = key === "deliveryCost" ? "deliveryCostMinor" : key;
+      const previous = before ? before[beforeKey] : undefined;
+      lines.push(previous !== undefined && key !== "items" && key !== "channelId" ? `${FIELD_LABELS[key]}: ${show(key, previous)} → ${show(key, value)}` : `${FIELD_LABELS[key]}: ${show(key, value)}`);
+    }
+  }
+  if (action === "record-sale" && typeof details.totalMinor === "number") lines.push(`Total: ${money(details.totalMinor)}${typeof details.channel === "string" ? ` por ${details.channel}` : ""}`);
+  if (action === "record-purchase" && typeof details.amount === "number") lines.push(`${typeof details.description === "string" ? details.description : "Compra"}: ${money(details.amount)}`);
+  if (action.startsWith("archive") && typeof details.reason === "string" && details.reason) lines.push(`Motivo: ${details.reason}`);
+  return { title: TITLES[action] ?? action, lines };
 }

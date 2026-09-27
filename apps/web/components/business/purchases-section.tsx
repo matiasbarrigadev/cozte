@@ -17,7 +17,8 @@ import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, Table
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
 import { MonthPicker, ReceiptLink, SectionHeader, Stat, Tip, businessAction, notifySaved, todayFor, todayIso, uploadDocument, useBusinessView, useMoney } from "./business-ui";
-import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
+import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, downloadCsv, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
+import { RecordHistory } from "./record-history";
 import { relativeDay } from "./delivery-status";
 
 type PurchasePatch = Partial<{ purchasedOn: string; description: string; supplier: string; amount: number; area: CostArea; usefulLifeMonths: number }>;
@@ -96,11 +97,15 @@ function PurchasesTable({ purchases, month, today, demo, money, onUpdate, onArch
     return [...filtered].sort((x, y) => { const a = value(x), b = value(y); return (a < b ? -1 : a > b ? 1 : 0) * (sort ? direction : -1); });
   }, [purchases, kind, area, search, sort]);
   const locked = (item: Purchase) => item.kind === "investment" && item.includeInUnitCost;
+  const [history, setHistory] = React.useState<Purchase | null>(null);
+  const exportRows = () => downloadCsv(`compras-${month}`, ["Fecha", "Qué se compró", "Proveedor", "Tipo", "Área", "Monto", "Vida útil (meses)", "Insumo", "Cantidad", "Gasto que paga", "Registrada por"],
+    rows.map((item) => [item.purchasedOn, item.description, item.supplier, PURCHASE_KIND_LABELS[item.kind], AREA_LABELS[item.area], item.amountMinor, item.usefulLifeMonths ?? null, item.materialName ?? "", item.quantityMilli ? item.quantityMilli / 1000 : null, item.expenseName ?? "", item.source === "cozte" ? "Cozte" : "Persona"]));
   return <div className="flex flex-col gap-3">
     <TableToolbar search={search} onSearch={setSearch} placeholder="Buscar compra, proveedor o insumo" shown={rows.length} total={purchases.length} filters={[
       { id: "kind", label: "Tipo", value: kind, onChange: setKind, options: [{ value: "all", label: "Todos los tipos" }, ...KINDS.map((item) => ({ value: item, label: PURCHASE_KIND_LABELS[item], hint: PURCHASE_KIND_HINTS[item] }))] },
       { id: "area", label: "Área", value: area, onChange: setArea, options: [{ value: "all", label: "Todas las áreas" }, ...AREAS.map((item) => ({ value: item, label: AREA_LABELS[item] }))] },
-    ]} />
+    ]}><Button type="button" size="sm" variant="outline" className="h-8" onClick={exportRows} title="Descarga lo que ves (con los filtros aplicados)"><AnimatedIcon name="cloud" data-icon="inline-start" size={14} />Descargar Excel</Button></TableToolbar>
+    {history ? <RecordHistory kind="purchase" id={history.id} title={history.description} demo={demo} onClose={() => setHistory(null)} /> : null}
     <div className="max-h-[min(70vh,48rem)] overflow-auto rounded-lg border">
       <Table className="border-separate border-spacing-0">
         <TableHeader className="sticky top-0 z-20 bg-card"><TableRow className="hover:bg-transparent">
@@ -135,6 +140,7 @@ function PurchasesTable({ purchases, month, today, demo, money, onUpdate, onArch
           ].filter(Boolean).join(" · ") || "—"}</TableCell>
           <TableCell className={cn(sheetCell, "px-1")}><div className="flex items-center justify-end gap-0.5">
             <ReceiptLink documentId={item.documentId} demo={demo} label="Ticket" />
+            <Button size="icon-sm" variant="ghost" aria-label={`Historial de ${item.description}`} title="Historial" onClick={() => setHistory(item)}><AnimatedIcon name="history" size={14} /></Button>
             <Button size="icon-sm" variant="ghost" aria-label={`Anular ${item.description}`} title="Anular compra" onClick={() => onArchive(item)}><AnimatedIcon name="delete" size={14} /></Button>
           </div></TableCell>
         </TableRow>)}</TableBody>

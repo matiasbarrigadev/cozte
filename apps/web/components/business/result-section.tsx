@@ -9,6 +9,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
 import { MonthPicker, SectionHeader, Stat, Tip, useBusinessView, useMoney } from "./business-ui";
+import { downloadCsv } from "./data-table";
+import { AnimatedIcon } from "@/components/animated-icon";
 
 const AREAS: CostArea[] = ["production", "delivery", "sales", "admin"];
 
@@ -30,6 +32,13 @@ export function ResultSection({ state, demo, month, onMonthChange, onOpenSales, 
   return <>
     <SectionHeader eyebrow="Resultados" title="Resultado del mes" description="Lo que vendiste, lo que costó cada venta, los gastos fijos y lo que quedó. Sale de tus ventas y compras registradas.">
       <MonthPicker month={month} onChange={onMonthChange} />
+      {result ? <Button variant="outline" onClick={() => downloadCsv(`resultado-${month}`, ["Concepto", "Monto"], [
+        ["Ventas", result.revenue], ["Producir lo vendido (insumos y mano de obra)", -result.variableProductionCost], ["Comisiones y cargos", -result.sellingCost], ["Entregas", -result.deliveryCost],
+        ["Lo que dejaron las ventas", result.contribution],
+        ...AREAS.map((area): [string, number] => [`Gastos fijos · ${AREA_LABELS[area]}`, -result.fixedByArea[area]]),
+        ["Gastos del mes (compras que se consumen)", -result.oneOffTotal], ["Parte del mes de las inversiones", -result.investmentsShare],
+        ["Resultado del mes", result.result], ["Punto de equilibrio (ventas para no perder)", result.breakEvenRevenue], ["Insumos comprados en el mes (informativo)", result.purchasedMaterials],
+      ])}><AnimatedIcon name="cloud" data-icon="inline-start" />Descargar Excel</Button> : null}
     </SectionHeader>
     {!result ? <TextShimmer className="text-sm">Calculando el mes…</TextShimmer> : <div className={cn("flex flex-col gap-6 transition-opacity", loading && "opacity-60")}>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

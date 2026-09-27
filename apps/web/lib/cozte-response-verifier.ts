@@ -69,6 +69,9 @@ const waitsForPerson = /\?\s*$|(?<![\p{L}\p{N}])(?:cuando|apenas|en cuanto|si me
 
 const negatedContext = /(?:(?<![\p{L}\p{N}])(?:no|nada|ni|aún no|todavía no|nunca|sin|antes de|para|puedo|podemos|podría|voy a|vamos a|quieres que|quer[eé]s que|si|cuando)\s+|¿\s*)(?:\S+\s+){0,2}$/iu;
 
+/** Describing that something is missing ("no hay mano de obra cargada", "no tiene precio cargado") is not a claim of a save. */
+const absentContext = /(?<![\p{L}\p{N}])(?:no\s+hay|no\s+tiene|no\s+tienen|no\s+tenés|no\s+tienes|no\s+figura|no\s+figuran|no\s+aparece|no\s+aparecen)\s+(?:\S+\s+){0,4}$/iu;
+
 /** Money figures: a number next to "$" or a currency code, in either order. */
 const moneyFigure = /(?:\$|(?<!\p{L})(?:ARS|CLP|USD|EUR|BRL|MXN|COP|PEN|UYU|PYG|BOB|CRC|DOP|GTQ|HNL|NIO|PAB|BZD)(?!\p{L}))\s*(\d[\d.,]*)|(\d[\d.,]*)\s*(?:\$|(?<!\p{L})(?:ARS|CLP|USD|EUR|BRL|MXN|COP|PEN|UYU|PYG|BOB|CRC|DOP|GTQ|HNL|NIO|PAB|BZD)(?!\p{L}))/gu;
 
@@ -113,7 +116,7 @@ function claims(text: string, pattern: RegExp, allowEarlierTurns = false): strin
   const found: string[] = [];
   for (const match of text.matchAll(pattern)) {
     const index = match.index ?? 0;
-    if (negatedContext.test(text.slice(Math.max(0, index - 40), index))) continue;
+    if (negatedContext.test(text.slice(Math.max(0, index - 40), index)) || absentContext.test(text.slice(Math.max(0, index - 60), index))) continue;
     if (allowEarlierTurns && earlierTurn.test(sentenceAround(text, index))) continue;
     found.push(match[0]);
   }

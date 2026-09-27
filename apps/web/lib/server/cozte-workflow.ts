@@ -25,6 +25,8 @@ export type CozteAgentSettings = {
   maxOutputTokens: number;
   /** Jev review of each answer: "revise" rewrites clear failures once, "observe" only scores, "off" skips it. */
   qualityMode?: QualityMode;
+  /** Past this many milliseconds a turn is only scored, never rewritten, so a long turn does not wait even longer. */
+  qualityMaxMs?: number;
 };
 
 /** Reads the model configuration outside the workflow sandbox, where environment variables are available. */
@@ -39,6 +41,7 @@ export function cozteAgentSettings(env: Record<string, string | undefined> = pro
     maxSteps: 24,
     maxOutputTokens: thinkingBudget + 8_000,
     qualityMode: qualityMode(env.COZTE_QUALITY),
+    qualityMaxMs: Number(env.COZTE_QUALITY_MAX_MS) > 0 ? Number(env.COZTE_QUALITY_MAX_MS) : 40_000,
   };
 }
 
@@ -141,6 +144,12 @@ async function readCostOverview(principal: Principal): Promise<Record<string, un
   "use step";
   const state = await loadState(principal);
   return { ok: true, ...buildCostOverview(state) };
+}
+
+/** The time, read in a step so a replayed workflow sees the same clock. */
+async function clock(): Promise<number> {
+  "use step";
+  return Date.now();
 }
 
 async function recordCozteEvent(runId: string, kind: string, payload: unknown): Promise<void> {
@@ -289,6 +298,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     await finalizeCozteRun({ principal: input.principal, runId: input.runId, messages: input.persistedMessages, status: "failed", error: "workflow_link_missing" });
     return;
   }
+  const startedAt = await clock();
   const writable = getWritable<ModelCallStreamPart>();
   const { settings } = input;
   const agent = new WorkflowAgent({
@@ -359,7 +369,10 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     // rewrite that must pass the verifier again; otherwise the verified original stays.
     const qualityAfter = new Map<number, QualityNote[]>();
     let finalQuality: QualityNote | null = null;
-    if (!receiptText && text.trim() && settings.qualityMode !== "off") {
+    const answeredAt = await clock();
+    // A turn that already took long is scored but not rewritten: the person should not wait even more.
+    const turnMode = settings.qualityMode === "revise" && answeredAt - startedAt > (settings.qualityMaxMs ?? 40_000) ? "observe" : settings.qualityMode;
+    if (!receiptText && text.trim() && turnMode !== "off") {
       const level = input.level ?? "simple";
       const review = (answer: string, pass: "first" | "revised") => evaluateAnswer({
         runId: input.runId, level, userMessage: lastUserText(input.messages), answer: cleanLegacyWording(answer), pass,
@@ -371,7 +384,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
       const firstReview = await review(text, "first");
       // A turn that ends with questions shows a form Jev cannot see: it is scored, never rewritten.
       const askedQuestions = steps[finalAnswerStep(steps)]?.toolCalls.some((call) => call.toolName === "askQuestions") ?? false;
-      const flags = firstReview && settings.qualityMode === "revise" && !askedQuestions ? actionableFlags(firstReview, { wrote: records.some((item) => item.write && item.ok) }) : [];
+      const flags = firstReview && turnMode === "revise" && !askedQuestions ? actionableFlags(firstReview, { wrote: records.some((item) => item.write && item.ok) }) : [];
       const original = flags.length ? answerDraft(input.runId, steps, retracted, `Revisión de calidad: ${flags.join(", ")}`) : null;
       if (firstReview && original) {
         const firstNote = { id: `quality-${input.runId}-first`, summary: firstReview, revised: false };
@@ -406,6 +419,11 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
       if (finalQuality) await writeQualityNote(writable, finalQuality);
     }
     await closeCozteStream(writable);
+    const closedAt = await clock();
+    await recordCozteEvent(input.runId, "turn_timing", {
+      totalMs: closedAt - startedAt, answerMs: answeredAt - startedAt, qualityMs: closedAt - answeredAt,
+      steps: steps.length, tools: records.length, qualityMode: turnMode, skippedRewrite: turnMode !== settings.qualityMode,
+    }).catch(() => {});
     const assistantMessage = assistantTurn(input.runId, steps, retracted, receiptText, { after: qualityAfter, final: finalQuality });
     await finalizeCozteRun({
       principal: input.principal, runId: input.runId,

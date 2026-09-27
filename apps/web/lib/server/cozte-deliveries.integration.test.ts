@@ -7,7 +7,7 @@ vi.mock("./assistant-trace", async (original) => ({ ...(await original<typeof im
 vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOString(), rates: { USD: 1 }, source: "FXRatesAPI" }), quotesFor: () => ({}) }));
 
 import { createCozteTools } from "./cozte-agent-tools";
-import { archiveRecord, loadBusinessView, loadDeliveries } from "./business";
+import { archiveRecord, loadBusinessView, loadCustomerDirectory, loadDeliveries, loadRecordHistory, recordPurchase, updatePurchase } from "./business";
 import { dbBatch } from "./db";
 import { businessToday } from "@/lib/business";
 
@@ -93,5 +93,24 @@ describe.skipIf(!bridgeUrl)("sales corrections and deliveries against D1", { tim
     await archiveRecord(principal, "sale", pickupSale);
     const list = await loadDeliveries(principal, today.slice(0, 7));
     expect(list.some((item) => item.saleId === pickupSale)).toBe(false);
+  });
+
+  it("keeps a history of each record and suggests known customers", async () => {
+    const history = await loadRecordHistory(principal, "sale", deliveredSale, async () => ({}));
+    expect(history.map((event) => event.title)).toEqual(expect.arrayContaining(["Venta registrada", "Venta corregida"]));
+    expect(history.find((event) => event.title === "Venta corregida")?.who).toMatch(/Cozte/);
+    const directory = await loadCustomerDirectory(principal);
+    expect(directory.customers.map((item) => item.name)).toEqual(expect.arrayContaining(["Ana López", "Bruno"]));
+    expect(directory.addresses).toEqual(expect.arrayContaining(["Belgrano 88"]));
+  });
+
+  it("corrects a purchase, and protects an investment already in the unit cost", async () => {
+    const expense = await recordPurchase(principal, { purchasedOn: today, description: "Cinta de embalaje", amount: 3500, kind: "expense", area: "delivery" }, { source: "user", idempotencyKey: crypto.randomUUID() });
+    expect((await updatePurchase(principal, expense.id, { amount: 4200, supplier: "Embalajes Sur" }, "user")).done[0]).toContain("corregida");
+    const view = await loadBusinessView(principal, today.slice(0, 7));
+    expect(view.purchases.find((item) => item.id === expense.id)).toMatchObject({ amountMinor: 4200, supplier: "Embalajes Sur" });
+    const scale = await recordPurchase(principal, { purchasedOn: today, description: "Balanza", amount: 45000, kind: "investment", area: "production", usefulLifeMonths: 60, includeInUnitCost: true }, { source: "user", idempotencyKey: crypto.randomUUID() });
+    await expect(updatePurchase(principal, scale.id, { amount: 50000 }, "user")).rejects.toThrow(/primero quítala del costo/);
+    expect((await updatePurchase(principal, scale.id, { description: "Balanza digital" }, "user")).done.length).toBe(1);
   });
 });

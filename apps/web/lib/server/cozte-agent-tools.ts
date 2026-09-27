@@ -178,6 +178,7 @@ export const cozteToolInputSchemas = {
     note: z.string().trim().max(300).optional(),
     items: z.array(z.object({ product: reference, quantity: z.number().positive().max(1_000_000_000), unitPrice: amount.optional().describe("Si se omite, se mantiene el precio cobrado (o el de lista si el producto es nuevo)") })).min(1).max(40).optional().describe("La lista completa de productos de la venta, ya corregida"),
     deliveryCost: amount.optional().describe("Lo que costó entregar este pedido"),
+    fillMissingCosts: z.boolean().optional().describe("true completa con el costo de hoy los productos que no tenían costo completo al registrarse la venta (\"costo incompleto\"); cambia lo que dejó la venta. Pregúntalo antes si la persona no lo pidió"),
   }),
   updateDelivery: z.object({
     delivery: z.string().min(1).max(120).optional().describe("ID de la entrega a cambiar (de readDeliveries)"),
@@ -677,7 +678,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
           items.push({ productId: product.item.id, quantity: item.quantity, unitPrice: item.unitPrice });
         }
       }
-      const sale = await updateSale(principal, value.sale, { soldOn: value.date, channelId, customer: value.customer, note: value.note, items, deliveryCost: value.deliveryCost }, "cozte").catch(async (error) => {
+      const sale = await updateSale(principal, value.sale, { soldOn: value.date, channelId, customer: value.customer, note: value.note, items, deliveryCost: value.deliveryCost, fillMissingCosts: value.fillMissingCosts }, "cozte").catch(async (error) => {
         if (!(error instanceof ApiError) || error.status !== 404) throw error;
         return null;
       });

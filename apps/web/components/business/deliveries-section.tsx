@@ -19,7 +19,8 @@ import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, Table
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
 import { MonthPicker, SectionHeader, Stat, Tip, businessAction, notifySaved, todayFor, useBusinessView, useCustomerDirectory, useDemoVersion, useMoney } from "./business-ui";
-import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
+import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, downloadCsv, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
+import { RecordHistory } from "./record-history";
 import { DELIVERY_TONE, relativeDay } from "./delivery-status";
 import { DeliveryCards } from "./mobile-cards";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -138,7 +139,7 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
   </>;
 }
 
-function DeliveriesTable({ directory, deliveries, channels, today, money, onSave, onRemove, onOpenSales }: {
+function DeliveriesTable({ directory, deliveries, channels, demo, today, money, onSave, onRemove, onOpenSales }: {
   directory: CustomerDirectory; deliveries: Delivery[]; channels: SalesChannel[]; demo: boolean; today: string; money: (value: number) => string;
   onSave: (delivery: Delivery, patch: Patch, message?: string) => Promise<boolean>; onRemove: (delivery: Delivery) => void; onOpenSales?: () => void;
 }) {
@@ -176,6 +177,9 @@ function DeliveriesTable({ directory, deliveries, channels, today, money, onSave
   const channelOptions = [{ value: "all", label: "Todos los canales" }, ...channels.map((channel) => ({ value: channel.id, label: channel.name })), ...(deliveries.some((item) => !item.sale.channelId) ? [{ value: "direct", label: "Venta directa" }] : [])];
   const quickChips: { id: Quick; label: string }[] = [{ id: "all", label: "Todas" }, { id: "open", label: "Por entregar" }, { id: "today", label: "Hoy" }, { id: "overdue", label: "Atrasadas" }, { id: "failed", label: "Con problema" }, { id: "delivered", label: "Entregadas" }];
   const disabled = false;
+  const [history, setHistory] = React.useState<Delivery | null>(null);
+  const exportRows = () => downloadCsv(`entregas-${today.slice(0, 7)}`, ["Fecha", "Franja", "Estado", "Recibe", "Dirección", "Contacto", "Quién entrega", "Forma", "Seguimiento", "Costo", "Productos", "Canal", "Vendida el", "Entregada el", "Nota"],
+    rows.map((item) => [item.scheduledOn, item.timeWindow, DELIVERY_STATUS_LABELS[item.status], item.recipient || item.sale.customer, item.address, item.contact, item.carrier, item.method, item.tracking, item.costMinor, item.sale.items, item.sale.channelName, item.sale.soldOn, item.deliveredOn, item.note]));
   const recipientSuggestions = [...directory.customers.map((item) => ({ value: item.name, hint: item.address || undefined })), ...directory.recipients.map((value) => ({ value }))];
   const addressSuggestions = directory.addresses.map((value) => ({ value }));
   const carrierSuggestions = directory.carriers.map((value) => ({ value }));
@@ -189,7 +193,8 @@ function DeliveriesTable({ directory, deliveries, channels, today, money, onSave
     <TableToolbar search={search} onSearch={setSearch} placeholder="Buscar cliente, dirección, producto o seguimiento" shown={rows.length} total={deliveries.length} filters={[
       { id: "channel", label: "Canal", value: channelFilter, onChange: setChannelFilter, options: channelOptions },
       ...(carriers.length ? [{ id: "carrier", label: "Quién entrega", value: carrierFilter, onChange: setCarrierFilter, options: [{ value: "all", label: "Todos los que entregan" }, ...carriers.map((carrier) => ({ value: carrier, label: carrier }))] }] : []),
-    ]}>{sort ? <Button type="button" size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setSort(null)}>Orden: más cercanas a hoy</Button> : null}</TableToolbar>
+    ]}>{sort ? <Button type="button" size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setSort(null)}>Orden: más cercanas a hoy</Button> : null}<Button type="button" size="sm" variant="outline" className="h-8" onClick={exportRows} title="Descarga lo que ves (con los filtros aplicados)"><AnimatedIcon name="cloud" data-icon="inline-start" size={14} />Descargar Excel</Button></TableToolbar>
+    {history ? <RecordHistory kind="delivery" id={history.id} title={`Entrega a ${history.recipient || history.sale.customer || "cliente"}`} demo={demo} onClose={() => setHistory(null)} /> : null}
     {isMobile ? <DeliveryCards rows={rows} today={today} money={money} onSave={onSave} onRemove={onRemove} /> : <div className="max-h-[min(70vh,48rem)] overflow-auto rounded-lg border">
       <Table className="border-separate border-spacing-0">
         <TableHeader className="sticky top-0 z-20 bg-card"><TableRow className="hover:bg-transparent">
@@ -235,6 +240,7 @@ function DeliveriesTable({ directory, deliveries, channels, today, money, onSave
             </button></TableCell>
             <TableCell className={sheetCell}><EditableText value={item.note} label="Nota" placeholder="—" disabled={disabled} onCommit={(note) => void onSave(item, { note })} /></TableCell>
             <TableCell className={cn(sheetCell, "px-1")}><div className="flex items-center justify-end gap-0.5">
+              <Button size="icon-sm" variant="ghost" aria-label="Historial de la entrega" title="Historial" onClick={() => setHistory(item)}><AnimatedIcon name="history" size={14} /></Button>
               {open ? <Button size="icon-sm" variant="ghost" aria-label="Marcar como entregada" title="Marcar como entregada" disabled={disabled} onClick={() => void onSave(item, { status: "delivered" }, "Entrega marcada como entregada")}><AnimatedIcon name="check" size={14} /></Button> : null}
               <Button size="icon-sm" variant="ghost" aria-label="Quitar entrega" title="Quitar entrega (la venta sigue)" disabled={disabled} onClick={() => onRemove(item)}><AnimatedIcon name="delete" size={14} /></Button>
             </div></TableCell>

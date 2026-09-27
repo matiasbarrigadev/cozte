@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateCosts, type DomainState } from "./domain";
-import { DIRECT_CHANNEL, byProximity, byRecency, channelEconomics, companyStructure, deliverySummary, initialDeliveryStatus, investmentShare, monthLessons, monthResult, needsDelivery, priceSale, repriceSale, type Delivery, type Purchase, type Sale, type SalesChannel } from "./business";
+import { DIRECT_CHANNEL, buildCustomerDirectory, canFillSaleCosts, describeHistoryEvent, byProximity, byRecency, channelEconomics, companyStructure, deliverySummary, initialDeliveryStatus, investmentShare, monthLessons, monthResult, needsDelivery, priceSale, repriceSale, type Delivery, type Purchase, type Sale, type SalesChannel } from "./business";
 
 const state: DomainState = {
   revision: 1, activePeriod: "2026-09", organization: { id: "o", name: "Tofu", currency: "ARS" },
@@ -154,5 +154,30 @@ describe("sales and deliveries", () => {
       { ...base, id: "e", scheduledOn: "2026-09-28", status: "cancelled", costMinor: 999 },
     ];
     expect(deliverySummary(list, "2026-09-26", "2026-09")).toEqual({ today: 1, next7: 2, overdue: 1, onTheWay: 1, delivered: 1, failed: 1, cost: 1400, averageCost: 350 });
+  });
+
+  it("completes, with today's cost, a sale recorded without a product's full cost", () => {
+    const incomplete: Sale = { ...sale(), items: sale().items.map((item) => ({ ...item, unitVariableCostMinor: null, unitCostMinor: null })), variableCostMinor: null, productionCostMinor: null };
+    expect(canFillSaleCosts(incomplete, costs)).toBe(true);
+    expect(canFillSaleCosts(sale(), costs)).toBe(false);
+    const filled = repriceSale(incomplete, { fillMissingCosts: true }, state, costs, [online]).sale;
+    expect(filled.variableCostMinor).toBe(sale().variableCostMinor);
+    expect(filled.totalMinor).toBe(incomplete.totalMinor);
+    expect(filled.sellingCostMinor).toBe(incomplete.sellingCostMinor);
+  });
+
+  it("remembers customers with their last address, and describes each change in plain words", () => {
+    const directory = buildCustomerDirectory([
+      { customer: "Ana López", soldOn: "2026-09-01", address: "Mitre 10", contact: "351 1" },
+      { customer: "ana lopez", soldOn: "2026-09-20", address: "Belgrano 88", recipient: "Portería", carrier: "Moto propia" },
+      { customer: "", soldOn: "2026-09-22", recipient: "Juan", address: "Caseros 5" },
+    ]);
+    expect(directory.customers).toEqual([{ name: "ana lopez", address: "Belgrano 88", contact: "351 1", recipient: "Portería", lastOn: "2026-09-20", sales: 2 }]);
+    expect(directory.addresses).toEqual(["Caseros 5", "Belgrano 88", "Mitre 10"]);
+    expect(directory.carriers).toEqual(["Moto propia"]);
+    const money = (value: number) => `$${value}`;
+    expect(describeHistoryEvent("update-sale", { before: { customer: "Ana", deliveryCostMinor: 400 }, patch: { customer: "Ana López", deliveryCost: 600 }, source: "user" }, money)).toEqual({ title: "Venta corregida", lines: ["Cliente: Ana → Ana López", "Costo de entrega: $400 → $600"] });
+    expect(describeHistoryEvent("update-delivery", { id: "d1", status: "delivered", source: "cozte" }, money)).toEqual({ title: "Entrega actualizada", lines: ["Estado: Entregada"] });
+    expect(describeHistoryEvent("archive-sale", { reason: "duplicada" }, money)).toEqual({ title: "Venta anulada", lines: ["Motivo: duplicada"] });
   });
 });

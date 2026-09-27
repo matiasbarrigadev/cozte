@@ -2,8 +2,8 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { DIRECT_CHANNEL, channelPrice, needsDelivery, saleItemsText, type ChannelEconomics, type CustomerDirectory, type Sale, type SalePatch, type SalesChannel } from "@/lib/business";
-import type { DomainState } from "@/lib/domain";
+import { DIRECT_CHANNEL, canFillSaleCosts, channelPrice, needsDelivery, saleItemsText, type ChannelEconomics, type CustomerDirectory, type Sale, type SalePatch, type SalesChannel } from "@/lib/business";
+import { calculateCosts, type DomainState } from "@/lib/domain";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,9 @@ import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, Table
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
 import { MonthPicker, ReceiptLink, SectionHeader, Stat, Tip, businessAction, notifySaved, todayFor, uploadDocument, useBusinessView, useCustomerDirectory, useMoney } from "./business-ui";
-import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
+import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, downloadCsv, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
+import { RecordHistory } from "./record-history";
+import { DELIVERY_STATUS_LABELS } from "@/lib/business";
 import { DeliveryStatusBadge, relativeDay } from "./delivery-status";
 import { SaleCards } from "./mobile-cards";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -77,6 +79,14 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
     catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo crear la entrega"); }
   }
 
+  const costs = React.useMemo(() => calculateCosts(state), [state]);
+  const fillable = (view?.sales ?? []).filter((sale) => canFillSaleCosts(sale, costs));
+  async function fillAll() {
+    let done = 0;
+    for (const sale of fillable) { try { await businessAction({ action: "update-sale", id: sale.id, patch: { fillMissingCosts: true } }, demo); done++; } catch { /* Reported below. */ } }
+    notifySaved(done === fillable.length ? `${done} venta${done === 1 ? "" : "s"} completada${done === 1 ? "" : "s"} con el costo de hoy` : `Se completaron ${done} de ${fillable.length} ventas`);
+    reload(); onDataChanged?.();
+  }
   const byProduct = new Map<string, ChannelEconomics[]>();
   for (const row of view?.economics ?? []) byProduct.set(row.productId, [...byProduct.get(row.productId) ?? [], row]);
   const sales = view?.sales ?? [];
@@ -95,6 +105,10 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
         <Stat label="Comisiones y cargos" value={money(result.sellingCost)} note={result.revenue ? `${Math.round(result.sellingCost / result.revenue * 100)} % de lo vendido` : undefined} />
       </div>
 
+      {fillable.length ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50/70 px-4 py-3 text-sm dark:border-amber-400/30 dark:bg-amber-500/5">
+        <p><span className="font-medium">{fillable.length} venta{fillable.length === 1 ? "" : "s"} con costo incompleto.</span> Cuando se registraron faltaba el costo de algún producto, así que no se sabe cuánto dejaron. Hoy ese costo está completo.</p>
+        <Button type="button" size="sm" variant="outline" onClick={() => void fillAll()}>Completar con el costo de hoy</Button>
+      </div> : null}
       <Card className="gap-4">
         <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
           <div className="flex flex-col gap-1.5"><CardTitle>Ventas</CardTitle><CardDescription>Haz clic en una celda para corregirla: Enter guarda, Escape cancela. El precio cobrado y el costo de cada producto quedan como estaban el día de la venta.</CardDescription></div>
@@ -102,7 +116,7 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
         </CardHeader>
         <CardContent>
           {!state.products.length ? <Empty className="py-6"><EmptyHeader><EmptyTitle>Primero, tus productos</EmptyTitle><EmptyDescription>Para registrar ventas, Cozte necesita saber qué vendes y cuánto cuesta hacerlo. Cárgalos en Costos de producción o cuéntaselos a Cozte.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={onOpenCozte}>Contarle a Cozte qué fabrico</Button></Empty>
-            : sales.length ? <SalesTable month={month} today={today} customerSuggestions={customerSuggestions} sales={sales} state={state} channels={view.channels} demo={demo} money={money} onUpdate={update} onArchive={(sale) => void archive("sale", sale.id)} onEditItems={setItemsSale} onSchedule={(sale) => void scheduleDelivery(sale)} onOpenDeliveries={onOpenDeliveries} />
+            : sales.length ? <SalesTable costs={costs} month={month} today={today} customerSuggestions={customerSuggestions} sales={sales} state={state} channels={view.channels} demo={demo} money={money} onUpdate={update} onArchive={(sale) => void archive("sale", sale.id)} onEditItems={setItemsSale} onSchedule={(sale) => void scheduleDelivery(sale)} onOpenDeliveries={onOpenDeliveries} />
             : <Empty className="py-6"><EmptyHeader><EmptyTitle>No hay ventas registradas en {monthName(month)}</EmptyTitle><EmptyDescription>Regístralas acá o mándale a Cozte la foto del remito o factura.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={onOpenCozte}>Enviar un remito a Cozte</Button></Empty>}
           {state.products.length ? <QuickSale key={view.sales.length} state={state} channels={view.channels} demo={demo} today={today} month={month} suggestions={customerSuggestions} onSaved={() => { reload(); onDataChanged?.(); }} /> : null}
         </CardContent>
@@ -153,9 +167,9 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
 }
 
 /** The month's sales as an editable sheet: search and filters on top, most recent first unless sorted by a column. */
-function SalesTable({ month, today, customerSuggestions, sales, state, channels, demo, money, onUpdate, onArchive, onEditItems, onSchedule, onOpenDeliveries }: {
-  month: string; today: string; customerSuggestions: Suggestion[]; sales: Sale[]; state: DomainState; channels: SalesChannel[]; demo: boolean; money: (value: number) => string;
-  onUpdate: (sale: Sale, patch: SalePatch, message?: string) => Promise<boolean>; onArchive: (sale: Sale) => void; onEditItems: (sale: Sale) => void; onSchedule: (sale: Sale) => void; onOpenDeliveries?: () => void;
+function SalesTable({ costs, month, today, customerSuggestions, sales, state, channels, demo, money, onUpdate, onArchive, onEditItems, onSchedule, onOpenDeliveries }: {
+  costs: ReturnType<typeof calculateCosts>; month: string; today: string; customerSuggestions: Suggestion[]; sales: Sale[]; state: DomainState; channels: SalesChannel[]; demo: boolean; money: (value: number) => string;
+  onUpdate: (sale: Sale, patch: SalePatch, message?: string, undoable?: boolean) => Promise<boolean>; onArchive: (sale: Sale) => void; onEditItems: (sale: Sale) => void; onSchedule: (sale: Sale) => void; onOpenDeliveries?: () => void;
 }) {
   const [search, setSearch] = React.useState("");
   const [channelFilter, setChannelFilter] = usePersistentState<string>("ventas:canal", "all");
@@ -177,11 +191,15 @@ function SalesTable({ month, today, customerSuggestions, sales, state, channels,
   }, [sales, search, channelFilter, deliveryFilter, sort]);
   const totals = rows.reduce((sum, sale) => ({ total: sum.total + sale.totalMinor, selling: sum.selling + sale.sellingCostMinor, delivery: sum.delivery + sale.deliveryCostMinor, left: sum.left + (leftOf(sale) ?? 0) }), { total: 0, selling: 0, delivery: 0, left: 0 });
   const disabled = false;
+  const [history, setHistory] = React.useState<Sale | null>(null);
+  const exportRows = () => downloadCsv(`ventas-${month}`, ["Fecha", "Canal", "Cliente", "Productos", "Cobrado", "Comisiones y cargos", "Costo de entrega", "Te dejó", "Entrega", "Nota"],
+    rows.map((sale) => [sale.soldOn, sale.channelName, sale.customer, saleItemsText(sale.items), sale.totalMinor, sale.sellingCostMinor, sale.deliveryCostMinor, leftOf(sale), sale.delivery ? `${DELIVERY_STATUS_LABELS[sale.delivery.status]} (${sale.delivery.scheduledOn})` : "", sale.note]));
   return <div className="flex flex-col gap-3">
     <TableToolbar search={search} onSearch={setSearch} placeholder="Buscar cliente, producto, canal o nota" shown={rows.length} total={sales.length} filters={[
       { id: "channel", label: "Canal", value: channelFilter, onChange: setChannelFilter, options: [{ value: "all", label: "Todos los canales" }, ...channelOptions] },
       { id: "delivery", label: "Entrega", value: deliveryFilter, onChange: setDeliveryFilter, options: [{ value: "all", label: "Con y sin entrega" }, { value: "open", label: "Entrega por hacer", hint: "Pendiente, en camino o con problema" }, { value: "delivered", label: "Ya entregadas" }, { value: "none", label: "Sin entrega" }] },
-    ]} />
+    ]}><Button type="button" size="sm" variant="outline" className="h-8" onClick={exportRows} title="Descarga lo que ves (con los filtros aplicados)"><AnimatedIcon name="cloud" data-icon="inline-start" size={14} />Descargar Excel</Button></TableToolbar>
+    {history ? <RecordHistory kind="sale" id={history.id} title={`Venta del ${history.soldOn.slice(8, 10)}/${history.soldOn.slice(5, 7)}${history.customer ? ` a ${history.customer}` : ""}`} demo={demo} onClose={() => setHistory(null)} /> : null}
     {isMobile ? <SaleCards rows={rows} today={today} channels={channels} money={money} suggestions={customerSuggestions} onUpdate={onUpdate} onArchive={onArchive} onEditItems={onEditItems} onOpenDeliveries={onOpenDeliveries} /> : <div className="max-h-[min(70vh,48rem)] overflow-auto rounded-lg border">
       <Table className="border-separate border-spacing-0">
         <TableHeader className="sticky top-0 z-20 bg-card"><TableRow className="hover:bg-transparent">
@@ -225,13 +243,16 @@ function SalesTable({ month, today, customerSuggestions, sales, state, channels,
             <TableCell className={cn(sheetCell, "px-3 text-right font-medium tabular-nums")}>{money(sale.totalMinor)}</TableCell>
             <TableCell className={cn(sheetCell, "px-3 text-right tabular-nums text-muted-foreground")}>{money(sale.sellingCostMinor)}</TableCell>
             <TableCell className={sheetCell}><EditableNumber value={sale.deliveryCostMinor} label="Costo de entregar" disabled={disabled} onCommit={(deliveryCost) => void onUpdate(sale, { deliveryCost }, "Costo de entrega actualizado")} /></TableCell>
-            <TableCell className={cn(sheetCell, "px-3 text-right font-semibold tabular-nums", left !== null && left < 0 && "text-destructive")}>{left === null ? <span className="text-xs font-normal text-muted-foreground" title="Algún producto no tenía el costo completo al venderse">Costo incompleto</span> : money(left)}</TableCell>
+            <TableCell className={cn(sheetCell, "px-3 text-right font-semibold tabular-nums", left !== null && left < 0 && "text-destructive")}>{left === null ? canFillSaleCosts(sale, costs)
+              ? <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs font-normal" title="Algún producto no tenía el costo completo al venderse; hoy sí. Completarlo cambia lo que dejó esta venta." onClick={() => void onUpdate(sale, { fillMissingCosts: true }, "Venta completada con el costo de hoy", false)}>Completar costo</Button>
+              : <span className="text-xs font-normal text-muted-foreground" title="Algún producto no tenía el costo completo al venderse, y todavía no lo tiene">Costo incompleto</span> : money(left)}</TableCell>
             <TableCell className={cn(sheetCell, "px-3")}>{sale.delivery
               ? <button type="button" onClick={onOpenDeliveries} className="inline-flex items-center gap-1.5 rounded-full hover:opacity-80" title="Ver en Entregas"><DeliveryStatusBadge status={sale.delivery.status} /><span className="text-xs text-muted-foreground tabular-nums">{sale.delivery.scheduledOn.slice(8, 10)}/{sale.delivery.scheduledOn.slice(5, 7)}</span></button>
               : <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={disabled} onClick={() => onSchedule(sale)}><AnimatedIcon name="plus" data-icon="inline-start" size={12} />Programar</Button>}</TableCell>
             <TableCell className={sheetCell}><EditableText value={sale.note} label="Nota" placeholder="—" disabled={disabled} onCommit={(note) => void onUpdate(sale, { note })} /></TableCell>
             <TableCell className={cn(sheetCell, "px-1")}><div className="flex items-center justify-end gap-0.5">
               <ReceiptLink documentId={sale.documentId} demo={demo} label="Remito" />
+              <Button size="icon-sm" variant="ghost" aria-label="Historial de la venta" title="Historial" onClick={() => setHistory(sale)}><AnimatedIcon name="history" size={14} /></Button>
               <Button size="icon-sm" variant="ghost" aria-label="Editar productos de la venta" title="Editar productos" disabled={disabled} onClick={() => onEditItems(sale)}><AnimatedIcon name="edit" size={14} /></Button>
               <Button size="icon-sm" variant="ghost" aria-label="Anular venta" title="Anular venta" disabled={disabled} onClick={() => onArchive(sale)}><AnimatedIcon name="delete" size={14} /></Button>
             </div></TableCell>

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { calculateCosts, convertToOrganizationCurrency, type CostArea, type DomainState } from "@/lib/domain";
-import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, buildCustomerDirectory, businessToday, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
+import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, buildCustomerDirectory, businessToday, describeHistoryEvent, type HistoryEvent, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement, type SqlValue } from "./db";
 import { commitMutation, type Mutation } from "./mutations";
@@ -97,6 +97,7 @@ export const salePatchSchema = z.object({
   note: text(500).optional(),
   items: z.array(z.object({ productId: z.string().min(1).max(120), quantity: z.number().positive().max(1_000_000_000), unitPrice: amount.optional() })).min(1).max(40).optional(),
   deliveryCost: amount.optional(),
+  fillMissingCosts: z.boolean().optional(),
 });
 
 export type ChannelInput = z.input<typeof channelInputSchema>;
@@ -386,13 +387,40 @@ export async function updateSale(principal: Principal, id: string, input: SalePa
     { sql: "UPDATE sales SET sold_on=?, channel_id=?, channel_name=?, customer=?, note=?, total_minor=?, selling_cost_minor=?, delivery_cost_minor=?, variable_cost_minor=?, production_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [
       next.soldOn, next.channelId, next.channelName, next.customer, next.note, next.totalMinor, next.sellingCostMinor, next.deliveryCostMinor, next.variableCostMinor, next.productionCostMinor, id, principal.organizationId,
     ] },
-    ...(patch.items ? [
+    ...(patch.items || patch.fillMissingCosts ? [
       { sql: "DELETE FROM sale_items WHERE sale_id=? AND sale_id IN (SELECT id FROM sales WHERE organization_id=?)", params: [id, principal.organizationId] },
       ...next.items.map((item): SqlStatement => ({ sql: "INSERT INTO sale_items (sale_id, product_id, product_name, quantity_milli, unit_price_minor, unit_variable_cost_minor, unit_cost_minor) VALUES (?, ?, ?, ?, ?, ?, ?)", params: [id, item.productId, item.productName, item.quantityMilli, item.unitPriceMinor, item.unitVariableCostMinor, item.unitCostMinor] })),
     ] : []),
     audit(principal, "update-sale", id, { before: sale, patch, source }),
   ]);
   return { ...sale, ...next };
+}
+
+/**
+ * The changes of a sale (with its delivery), a delivery (with its sale) or a purchase, newest first: who did it
+ * (you, Cozte or someone of the team) and what changed.
+ */
+export async function loadRecordHistory(principal: Principal, kind: "sale" | "delivery" | "purchase", id: string, names: (userIds: string[]) => Promise<Record<string, string>>): Promise<HistoryEvent[]> {
+  const org = principal.organizationId;
+  let ids = [id];
+  if (kind === "sale") ids = [id, ...(await dbQuery<{ id: string }>("SELECT id FROM deliveries WHERE sale_id=? AND organization_id=?", [id, org])).map((row) => row.id)];
+  if (kind === "delivery") ids = [id, ...(await dbQuery<{ sale_id: string }>("SELECT sale_id FROM deliveries WHERE id=? AND organization_id=?", [id, org])).map((row) => row.sale_id)];
+  const [rows, organizations] = await dbBatch<{ id: string; actor_id: string; action: string; details_json: string; created_at: string } | { currency: string }>([
+    { sql: `SELECT id, actor_id, action, details_json, created_at FROM audit_events WHERE organization_id=? AND entity_id IN (${ids.map(() => "?").join(", ")}) ORDER BY created_at DESC LIMIT 100`, params: [org, ...ids] },
+    { sql: "SELECT currency FROM organizations WHERE id=?", params: [org] },
+  ], { retrySafe: true });
+  const events = rows as { id: string; actor_id: string; action: string; details_json: string; created_at: string }[];
+  const currency = (organizations as { currency: string }[])[0]?.currency ?? "CLP";
+  const money = (value: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: Math.abs(value) < 100 && currency !== "CLP" ? 2 : 0 }).format(value);
+  const others = [...new Set(events.map((event) => event.actor_id).filter((actor) => actor !== principal.userId))];
+  const known = others.length ? await names(others).catch(() => ({} as Record<string, string>)) : {};
+  return events.map((event) => {
+    let details: Record<string, unknown> = {};
+    try { details = JSON.parse(event.details_json) as Record<string, unknown>; } catch { /* Old or malformed details: title only. */ }
+    const byCozte = details.source === "cozte";
+    const person = event.actor_id === principal.userId ? "Tú" : known[event.actor_id] ?? "Alguien del equipo";
+    return { id: event.id, at: event.created_at, who: byCozte ? `Cozte (a pedido de ${person === "Tú" ? "ti" : person})` : person, byCozte, ...describeHistoryEvent(event.action, details, money) };
+  });
 }
 
 /** Customers, recipients, addresses and carriers used in the last sales, for suggestions. */
