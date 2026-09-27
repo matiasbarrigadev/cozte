@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activityHeadline, answerTextIndexes, discardedDraftMetadata, toolOutcomeLine, turnActivity, type ActivityPart } from "./cozte-turn-activity";
+import { activityHeadline, answerTextIndexes, discardedDraftMetadata, liveStatus, qualityNoteMetadata, toolOutcomeLine, turnActivity, type ActivityPart } from "./cozte-turn-activity";
 
 const parts: ActivityPart[] = [
   { type: "reasoning", text: "La persona dio gas y luz; los guardo como gastos mensuales repartidos por horas." },
@@ -63,5 +63,22 @@ describe("turn activity", () => {
 
   it("hides reasoning written in another script", () => {
     expect(turnActivity([{ type: "reasoning", text: "用户想要保存" }])).toEqual([]);
+  });
+
+  it("names the phase of a running turn from the last part that arrived", () => {
+    const phase = (list: ActivityPart[]) => liveStatus(list).phase;
+    expect(phase([])).toBe("start");
+    expect(phase([{ type: "step-start" }, { type: "reasoning", text: "Veamos" }])).toBe("thinking");
+    const reading: ActivityPart[] = [{ type: "reasoning", text: "Veamos" }, { type: "tool-readCosts", toolCallId: "r", state: "input-available" }];
+    expect(liveStatus(reading)).toEqual({ phase: "tool:readCosts:r", titles: ["Revisando los costos…"] });
+    const read: ActivityPart[] = [...reading.slice(0, 1), { ...reading[1], state: "output-available", output: { ok: true } }];
+    expect(phase(read)).toBe("analyzing");
+    expect(phase([...read, { type: "reasoning", text: "Con esto alcanza" }])).toBe("analyzing");
+    expect(phase([...read, { type: "text", text: "Tu costo", state: "streaming" }])).toBe("writing");
+    expect(phase([...read, { type: "text", text: "Tu costo es $3.010.", state: "done" }])).toBe("reviewing");
+    expect(phase([...read, { type: "reasoning", text: "x", providerMetadata: discardedDraftMetadata("Cifra sin respaldo") }])).toBe("correcting");
+    expect(phase([...read, { type: "reasoning", text: "x", providerMetadata: discardedDraftMetadata("Revisión de calidad: poco clara") }])).toBe("improving");
+    const summary = { overall: 0.9, flags: [] } as unknown as Parameters<typeof qualityNoteMetadata>[0];
+    expect(phase([...read, { type: "reasoning", text: "ok", providerMetadata: qualityNoteMetadata(summary, false) }])).toBe("finishing");
   });
 });

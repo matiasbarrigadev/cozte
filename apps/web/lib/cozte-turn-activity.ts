@@ -30,6 +30,15 @@ const running: Record<string, string> = {
   readBusiness: "Revisando el mes",
   showVisual: "Preparando el gráfico",
   setExplanationLevel: "Guardando tu nivel",
+  updateSale: "Corrigiendo la venta",
+  updateDelivery: "Actualizando la entrega",
+  readDeliveries: "Revisando las entregas",
+  manageBoard: "Ordenando el tablero",
+  createPresentation: "Armando la presentación",
+  editPresentation: "Editando la presentación",
+  readPresentation: "Revisando la presentación",
+  sharePresentation: "Preparando el link",
+  askQuestions: "Preparando unas preguntas",
 };
 
 /** How each tool reads in a collapsed summary, singular and plural. */
@@ -52,6 +61,14 @@ const summaryVerb: Record<string, [string, string]> = {
   readBusiness: ["revisó el mes", "revisó el mes"],
   showVisual: ["mostró 1 gráfico", "mostró {n} gráficos"],
   setExplanationLevel: ["guardó tu nivel", "guardó tu nivel"],
+  updateSale: ["corrigió 1 venta", "corrigió {n} ventas"],
+  updateDelivery: ["actualizó 1 entrega", "actualizó {n} entregas"],
+  readDeliveries: ["revisó las entregas", "revisó las entregas"],
+  manageBoard: ["ordenó el tablero", "ordenó el tablero"],
+  createPresentation: ["armó 1 presentación", "armó {n} presentaciones"],
+  editPresentation: ["editó la presentación", "editó la presentación {n} veces"],
+  readPresentation: ["revisó la presentación", "revisó las presentaciones"],
+  sharePresentation: ["compartió la presentación", "compartió {n} presentaciones"],
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -187,4 +204,41 @@ export function activityHeadline(items: ActivityItem[]): string {
   if (improved) phrases.push("mejoró la respuesta");
   const text = phrases.join(" · ");
   return text.charAt(0).toLocaleUpperCase("es") + text.slice(1);
+}
+
+/** What Cozte is doing while a turn runs: a stable phase and the titles shown for it, in rotation. */
+export type LiveStatus = { phase: string; titles: string[] };
+
+const LIVE_TITLES = {
+  start: ["Leyendo tu mensaje…", "Pensando por dónde empezar…"],
+  thinking: ["Pensando…", "Ordenando las ideas…"],
+  analyzing: ["Analizando lo que encontró…", "Pensando el siguiente paso…"],
+  writing: ["Redactando la respuesta…", "Poniéndolo en palabras claras…"],
+  reviewing: ["Revisando la respuesta…", "Verificando las cifras…", "Comprobando que se entienda bien…"],
+  correcting: ["Corrigiendo un detalle…", "Verificando de nuevo…"],
+  improving: ["Mejorando la explicación…", "Haciéndolo más claro…"],
+  finishing: ["Dando los últimos toques…"],
+} satisfies Record<string, string[]>;
+
+/**
+ * The phase of a turn that is still running, read from the last part that arrived. Nothing written while the turn
+ * runs is final (the verifier or the quality review can still take it back), so the screen shows these titles and
+ * the answer appears only when the turn ends.
+ */
+export function liveStatus(parts: ActivityPart[]): LiveStatus {
+  const meaningful = parts.filter((part) => part.type !== "step-start" && !((part.type === "text" || part.type === "reasoning") && !part.text?.trim()));
+  const last = meaningful.at(-1);
+  const status = (phase: keyof typeof LIVE_TITLES): LiveStatus => ({ phase, titles: LIVE_TITLES[phase] });
+  if (!last) return status("start");
+  if (qualityNote(last)) return status("finishing");
+  const draft = discardedDraft(last);
+  if (draft) return status(draft.reason.startsWith("Revisión de calidad") ? "improving" : "correcting");
+  if (last.type.startsWith("tool-")) {
+    const name = last.type.slice("tool-".length);
+    const done = last.state === "output-available" || last.state === "output-error";
+    return done ? status("analyzing") : { phase: `tool:${name}:${last.toolCallId ?? ""}`, titles: [`${running[name] ?? "Trabajando"}…`] };
+  }
+  if (last.type === "reasoning") return status(meaningful.some((part) => part.type.startsWith("tool-")) ? "analyzing" : "thinking");
+  if (last.type === "text") return status(last.state === "done" ? "reviewing" : "writing");
+  return status("thinking");
 }

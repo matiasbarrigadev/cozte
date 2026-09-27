@@ -12,7 +12,7 @@ import type { AssistantDataSource } from "@/lib/server/assistant-trace";
 import type { ProposalSection } from "@/lib/proposal-presentation";
 import { assistantToolOutcome } from "@/lib/assistant-run-activity";
 import { COZTE_COST_WRITE_TOOLS, COZTE_TOOL_LABELS, cozteToolSucceeded } from "@/lib/cozte-tool-catalog";
-import { activityHeadline, answerTextIndexes, turnActivity, type ActivityItem, type ActivityPart } from "@/lib/cozte-turn-activity";
+import { activityHeadline, answerTextIndexes, liveStatus, turnActivity, type ActivityItem, type ActivityPart } from "@/lib/cozte-turn-activity";
 import { qualityChecks, type QualitySummary } from "@/lib/cozte-quality";
 import { answered, formatCozteAnswers, parseCozteQuestions, type CozteQuestionAnswer, type CozteQuestionSet } from "@/lib/cozte-questions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -27,13 +27,13 @@ import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { TextShimmer } from "@/components/ui/text-shimmer";
-import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { AudioWaveform, useVoiceDictation } from "@/components/use-voice-dictation";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { PresentationCard } from "@/components/decks/presentation-card";
 import { CozteVisual, CozteVisualProvider } from "@/components/cozte/cozte-visuals";
 import { BoardPanel } from "@/components/cozte/board-panel";
+import { CozteLiveStatus, StreamedAnswer } from "@/components/cozte/live-status";
 import { DEFAULT_EXPLANATION_LEVEL, EXPLANATION_LEVELS, type ExplanationLevel } from "@/lib/cozte-levels";
 import { cleanWidget, parseBoard, pinWidget, widgetKey, type BoardWidget, type WidgetSpec } from "@/lib/cozte-widgets";
 import type { DomainState, ProductCost } from "@/lib/domain";
@@ -428,7 +428,7 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
                 <ChatMessageBubble message={message} persisted={toolsByAssistantMessage.get(message.id)} streaming={status === "streaming" && message.id === messages.at(-1)?.id} onAnswer={message.id === messages.at(-1)?.id ? answerQuestions : undefined} onPinVisual={pinVisual} pinnedKeys={pinnedKeys} onOpenPresentation={onOpenPresentation} />
                 {(proposalsAfterMessage.get(message.id) ?? []).map((proposal) => <ProposalTurnCard key={proposal.id} proposal={proposal} onOpen={() => setSelectedProposalId(proposal.id)} />)}
               </React.Fragment>)}
-              {status === "submitted" ? <TextShimmer className="text-sm">Cozte está analizando…</TextShimmer> : null}
+              {status === "submitted" ? <div className="flex max-w-[94%] flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"><span className="text-xs font-semibold">Cozte</span><CozteLiveStatus status={liveStatus([])} /></div> : null}
               <ChatContainerScrollAnchor />
             </ChatContainerContent></ChatContainerRoot></CardContent>
             <CardFooter className="flex flex-col items-stretch gap-3 border-t px-4 py-4 md:px-8">
@@ -536,6 +536,13 @@ function presentationCards(parts: UIMessage["parts"]): Map<number, { id: string;
 
 /** One chat message. Memoized so only the reply that is streaming re-renders on each update. */
 const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer, onPinVisual, pinnedKeys = "", onOpenPresentation }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void; onPinVisual?: (widget: WidgetSpec) => void; pinnedKeys?: string; onOpenPresentation?: (id: string) => void }) {
+  // A reply that finishes while on screen is written out; one loaded from history appears whole.
+  const [wasStreaming, setWasStreaming] = React.useState(streaming);
+  const [reveal, setReveal] = React.useState(false);
+  if (wasStreaming !== streaming) {
+    setWasStreaming(streaming);
+    if (!streaming) setReveal(true);
+  }
   const answer = message.role === "assistant" ? answerTextIndexes(message.parts as ActivityPart[], streaming) : null;
   // One card per presentation, at the last tool call that touched it, so a deck edited several times shows once.
   const deckCards = message.role === "assistant" ? presentationCards(message.parts) : null;
@@ -546,9 +553,9 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
       const liveToolCallIds = new Set(message.parts.filter(isToolUIPart).map((part) => part.toolCallId));
       return <CozteTurnActivity parts={message.parts} persisted={persisted.filter((execution) => !liveToolCallIds.has(execution.toolCallId))} streaming={streaming} />;
     })() : null}
-    {message.parts.map((part, index) => {
+    {message.role === "assistant" && streaming ? <CozteLiveStatus status={liveStatus(message.parts as ActivityPart[])} /> : message.parts.map((part, index) => {
       // Only the final message is the answer; notes written before tools live in the collapsed trace.
-      if (part.type === "text") return message.role === "assistant" ? answer?.has(index) ? <AssistantMarkdown key={index} text={part.text} /> : null : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
+      if (part.type === "text") return message.role === "assistant" ? answer?.has(index) ? <StreamedAnswer key={index} text={part.text} animate={reveal} /> : null : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
       if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
       if (part.type === "file" && part.mediaType === "application/pdf") return <Badge key={index} variant="outline">PDF · {part.filename ?? "Documento adjunto"}</Badge>;
       if (part.type === "file" && part.mediaType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return <Badge key={index} variant="outline">Excel · {part.filename ?? "Planilla adjunta"}</Badge>;
@@ -617,12 +624,12 @@ function CozteTurnActivity({ parts, persisted, streaming }: { parts: UIMessage["
   const live = streaming && items.some((item) => item.kind === "tool" ? item.running : item.kind === "reasoning" && item.streaming);
   const failed = items.some((item) => item.kind === "tool" && item.failed);
   const pending = !failed && items.some((item) => item.kind === "tool" && item.needsInput);
-  const headline = items.length ? activityHeadline(items) : persisted.length === 1 ? "1 acción registrada" : `${persisted.length} acciones registradas`;
+  const headline = streaming ? `Ver lo que está haciendo · ${items.length} paso${items.length === 1 ? "" : "s"}` : items.length ? activityHeadline(items) : persisted.length === 1 ? "1 acción registrada" : `${persisted.length} acciones registradas`;
   return <details className="group/activity w-full max-w-full rounded-lg border bg-background/60 text-xs text-foreground">
     <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
       <span aria-hidden="true" className="shrink-0 transition-transform group-open/activity:rotate-90">▸</span>
       <span className={cn("size-1.5 shrink-0 rounded-full", live ? "animate-pulse bg-primary" : failed ? "bg-destructive" : pending ? "bg-amber-500" : "bg-emerald-500")} aria-hidden="true" />
-      {live ? <TextShimmer className="min-w-0 truncate">{headline}</TextShimmer> : <span className={cn("min-w-0 truncate", failed && "text-destructive")}>{headline}</span>}
+      <span className={cn("min-w-0 truncate", failed && !streaming && "text-destructive")}>{headline}</span>
     </summary>
     <ol className="flex flex-col gap-2 border-t px-3 py-2.5">
       {items.map((item, index) => item.kind === "reasoning" ? <li key={`reasoning-${index}`}><ActivityReasoning text={item.text} streaming={item.streaming} /></li>
