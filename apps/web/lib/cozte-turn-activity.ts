@@ -147,7 +147,10 @@ const hasText = (part: ActivityPart) => part.type === "text" && Boolean(part.tex
 export function answerTextIndexes(parts: ActivityPart[], streaming = false): Set<number> {
   const lastWork = parts.findLastIndex(isWorkTool);
   const after = parts.flatMap((part, index) => index > lastWork && hasText(part) ? [index] : []);
-  if (after.length || streaming) return new Set(after);
+  if (streaming) return new Set(after);
+  // A finished turn has one answer: the last text. Earlier texts after the last tool are notes whose tool call was not
+  // stored (turns saved before failed calls were kept), and showing them all repeated the answer after a reload.
+  if (after.length) return new Set([after.at(-1)!]);
   const last = parts.findLastIndex(hasText);
   return new Set(last >= 0 ? [last] : []);
 }

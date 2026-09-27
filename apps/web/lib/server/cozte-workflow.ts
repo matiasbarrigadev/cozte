@@ -78,7 +78,20 @@ type FinalizeInput = {
   responseText?: string;
 };
 
-type StepLike = { text: string; reasoningText?: string; toolCalls: { toolCallId: string; toolName: string; input: unknown }[]; toolResults: { toolCallId: string; toolName: string; output: unknown }[] };
+type StepLike = {
+  text: string; reasoningText?: string;
+  toolCalls: { toolCallId: string; toolName: string; input: unknown; invalid?: boolean; error?: unknown }[];
+  toolResults: { toolCallId: string; toolName: string; output: unknown }[];
+  content?: { type: string; toolCallId?: string; error?: unknown }[];
+};
+
+/** Why a tool call has no result: it failed while running, or its arguments were rejected before it ran. */
+function toolFailure(step: StepLike, toolCallId: string): string {
+  const call = step.toolCalls.find((item) => item.toolCallId === toolCallId);
+  const failure = step.content?.find((part) => part.type === "tool-error" && part.toolCallId === toolCallId)?.error ?? call?.error;
+  const text = failure instanceof Error ? `${failure.name}: ${failure.message}` : typeof failure === "string" ? failure : failure ? JSON.stringify(failure) : "No se completó";
+  return text.slice(0, 1_500);
+}
 
 async function finalizeCozteRun(input: FinalizeInput): Promise<void> {
   "use step";
@@ -273,8 +286,9 @@ function assistantTurn(runId: string, steps: StepLike[], retracted: Map<number, 
       // Questions attached to a discarded answer left the screen with it.
       if (discarded !== undefined && call.toolName === "askQuestions") continue;
       const result = step.toolResults.find((item) => item.toolCallId === call.toolCallId);
-      if (!result) continue;
-      parts.push({ type: `tool-${call.toolName}`, toolCallId: call.toolCallId, state: "output-available", input: call.input, output: compactToolOutputForHistory(call.toolName, result.output) } as UIMessage["parts"][number]);
+      // A failed call stays in the trace as it was seen live, so the working notes around it are not taken for the answer.
+      if (!result) parts.push({ type: `tool-${call.toolName}`, toolCallId: call.toolCallId, state: "output-error", input: call.input, errorText: toolFailure(step, call.toolCallId) } as UIMessage["parts"][number]);
+      else parts.push({ type: `tool-${call.toolName}`, toolCallId: call.toolCallId, state: "output-available", input: call.input, output: compactToolOutputForHistory(call.toolName, result.output) } as UIMessage["parts"][number]);
     }
     for (const item of quality.after.get(index) ?? []) parts.push(note(item));
   });

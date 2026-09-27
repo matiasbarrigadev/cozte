@@ -53,6 +53,21 @@ describe("turn activity", () => {
     expect(activityHeadline(turnActivity([{ type: "reasoning", text: "Pienso…" }], true))).toBe("Pensando…");
   });
 
+  it("shows one answer after a reload even when a failed tool call between notes was not stored", () => {
+    const saved: ActivityPart[] = [
+      { type: "tool-createPresentation", toolCallId: "p", state: "output-available", output: { ok: true } },
+      { type: "text", text: "Listo, los montos ya están respaldados." },
+      { type: "text", text: "Listo. Los montos quedaron todos respaldados." },
+      { type: "text", text: "Veo que la herramienta rechazó el formato; la presentación quedó así." },
+    ];
+    expect([...answerTextIndexes(saved)]).toEqual([3]);
+    expect(turnActivity(saved).filter((item) => item.kind === "note")).toHaveLength(2);
+    // Stored with the failed call, the notes sit before it and the answer after it, as they were seen live.
+    const withFailure: ActivityPart[] = [saved[0], saved[1], { type: "tool-editPresentation", toolCallId: "e", state: "output-error", errorText: "AI_InvalidToolInputError" }, saved[3]];
+    expect([...answerTextIndexes(withFailure)]).toEqual([3]);
+    expect(turnActivity(withFailure).map((item) => item.kind === "tool" ? `${item.name}:${item.failed}` : item.kind)).toEqual(["createPresentation:false", "note", "editPresentation:true"]);
+  });
+
   it("says a malformed tool call plainly instead of showing the raw validation error", () => {
     const raw = "AI_InvalidToolInputError: Invalid input for tool editPresentation: AI_TypeValidationError: Type validation failed: Value: {...}. Error message: data/changes/0/set/left/bullets must be array";
     expect(toolOutcomeLine("editPresentation", undefined, raw)).toEqual({ text: "No se aplicó: Cozte mandó los datos con un formato equivocado", failed: true });

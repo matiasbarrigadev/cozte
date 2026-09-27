@@ -42,8 +42,13 @@ function compactPart(part: Part): Part | null {
   // Metadata marks discarded drafts, which keep a little more room so the person can read what was corrected.
   if (part.type === "reasoning") return part.text.trim() ? { type: "reasoning", text: part.text.slice(0, part.providerMetadata ? 4000 : 2000), ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {}) } as Part : null;
   if (!part.type.startsWith("tool-")) return null;
-  const tool = part as Extract<Part, { type: `tool-${string}` }> & { state?: string; input?: unknown; output?: unknown; toolCallId: string };
+  const tool = part as Extract<Part, { type: `tool-${string}` }> & { state?: string; input?: unknown; output?: unknown; errorText?: string; toolCallId: string };
   const toolName = part.type.slice("tool-".length);
+  // Failed calls are kept for the trace only (the model never sees them), so their input need not match the schema.
+  if (knownTools.has(toolName) && tool.state === "output-error") {
+    const input = (JSON.stringify(tool.input) ?? "").length > 4000 ? {} : tool.input;
+    return { type: part.type, toolCallId: tool.toolCallId, state: "output-error", input, errorText: (tool.errorText ?? "No se completó").slice(0, 1500) } as Part;
+  }
   // Inputs are replayed as real tool calls and must still match the tool schema, so they are kept whole or dropped.
   if (!knownTools.has(toolName) || tool.state !== "output-available" || (JSON.stringify(tool.input) ?? "").length > 4000) return null;
   return { type: part.type, toolCallId: tool.toolCallId, state: "output-available", input: tool.input, output: compactToolOutputForHistory(toolName, tool.output) } as Part;
