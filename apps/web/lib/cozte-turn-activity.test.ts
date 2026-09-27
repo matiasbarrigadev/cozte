@@ -53,6 +53,11 @@ describe("turn activity", () => {
     expect(activityHeadline(turnActivity([{ type: "reasoning", text: "Pienso…" }], true))).toBe("Pensando…");
   });
 
+  it("says a malformed tool call plainly instead of showing the raw validation error", () => {
+    const raw = "AI_InvalidToolInputError: Invalid input for tool editPresentation: AI_TypeValidationError: Type validation failed: Value: {...}. Error message: data/changes/0/set/left/bullets must be array";
+    expect(toolOutcomeLine("editPresentation", undefined, raw)).toEqual({ text: "No se aplicó: Cozte mandó los datos con un formato equivocado", failed: true });
+  });
+
   it("explains failures and missing data in plain language", () => {
     expect(toolOutcomeLine("saveExpense", { ok: false, error: "Faltan datos para crear el gasto.", needs: ["importe"] })).toEqual({ text: "Falta: importe", failed: false, needsInput: true });
     expect(activityHeadline(turnActivity([{ type: "tool-saveExpense", toolCallId: "n", state: "output-available", output: { ok: false, error: "x", needs: ["importe"] } }]))).toBe("Faltó un dato");

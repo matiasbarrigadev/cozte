@@ -1,11 +1,12 @@
 import "server-only";
 import { createHash } from "node:crypto";
-import { tool } from "ai";
+import { asSchema, tool } from "ai";
 import { z } from "zod";
 import { supportedCurrencies, type Currency } from "@/lib/currency";
 import { calculateCosts, type DomainState } from "@/lib/domain";
 import { buildCostOverview, buildProductDetail, evaluateExpression, normalizeName, resolveEntity, simulateScenario, standardUnitRatio } from "@/lib/cozte-cost-view";
 import type { CozteToolName } from "@/lib/cozte-tool-catalog";
+import type { ToolJsonSchema } from "@/lib/cozte-tool-repair";
 import { isoDateToolInputSchema } from "@/lib/iso-date";
 import { ApiError, type Principal } from "./auth";
 import { dbQuery } from "./db";
@@ -45,6 +46,20 @@ const deliveryDetails = {
   tracking: z.string().trim().max(120).optional().describe("Código de seguimiento"),
   note: z.string().trim().max(300).optional(),
 };
+
+const toolJsonSchemas = new Map<string, ToolJsonSchema | null>();
+
+/** The JSON Schema of a tool input, which guides the repair of malformed arguments; null for an unknown tool. */
+export function cozteToolJsonSchema(name: string): ToolJsonSchema | null {
+  if (!toolJsonSchemas.has(name)) {
+    const schema = (cozteToolInputSchemas as Record<string, z.ZodType>)[name];
+    let json: ToolJsonSchema | null = null;
+    // The same JSON Schema the agent validates tool calls against.
+    try { json = schema ? asSchema(schema).jsonSchema as ToolJsonSchema : null; } catch { json = null; }
+    toolJsonSchemas.set(name, json);
+  }
+  return toolJsonSchemas.get(name) ?? null;
+}
 
 export const cozteToolInputSchemas = {
   readCosts: z.object({

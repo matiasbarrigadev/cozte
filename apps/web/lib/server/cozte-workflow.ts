@@ -12,7 +12,7 @@ import { discardedDraftMetadata, qualityNoteMetadata } from "@/lib/cozte-turn-ac
 import type { Principal } from "./auth";
 import { loadConversation, saveConversation } from "./production-profile";
 import { addAssistantEvent, addAssistantWorkflowEvent, errorDetails, finishAssistantRun, isAssistantWorkflowLinked, reopenAssistantRunAsFailed } from "./assistant-trace";
-import { createCozteTools } from "./cozte-agent-tools";
+import { cozteToolJsonSchema, createCozteTools } from "./cozte-agent-tools";
 import { loadState } from "./state";
 import { buildCostOverview } from "@/lib/cozte-cost-view";
 
@@ -211,7 +211,7 @@ async function writeReceiptAnswer(writable: WritableStream<ModelCallStreamPart>,
 async function repairCozteToolCall({ toolCall, error }: { toolCall: { type: "tool-call"; toolCallId: string; toolName: string; input: string }; error: { message: string } }): Promise<{ type: "tool-call"; toolCallId: string; toolName: string; input: string } | null> {
   "use step";
   if (!(COZTE_TOOL_NAMES as string[]).includes(toolCall.toolName)) return null;
-  const repaired = repairCozteToolInput(toolCall.toolName, toolCall.input);
+  const repaired = repairCozteToolInput(toolCall.toolName, toolCall.input, cozteToolJsonSchema(toolCall.toolName) ?? undefined);
   if (!repaired || repaired === toolCall.input) return null;
   const { workflowRunId } = getWorkflowMetadata();
   await addAssistantWorkflowEvent(workflowRunId, "tool_input_repaired", { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, reason: error.message })

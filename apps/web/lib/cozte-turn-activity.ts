@@ -79,6 +79,9 @@ const number = (value: unknown) => typeof value === "number" ? new Intl.NumberFo
 
 /** One plain-language line describing what a finished tool call did. */
 export function toolOutcomeLine(name: string, output: unknown, errorText?: string): { text: string; failed: boolean; needsInput?: boolean } {
+  // Malformed arguments are a technical slip of the model: said plainly here, the full error stays in the details.
+  if (errorText && /InvalidToolInputError|Type validation failed|must NOT have|must be (?:array|object|string|number|integer|boolean)/.test(errorText)) return { text: "No se aplicó: Cozte mandó los datos con un formato equivocado", failed: true };
+  if (errorText && /NoSuchToolError/.test(errorText)) return { text: "No se aplicó: Cozte pidió una herramienta que no existe", failed: true };
   if (errorText) return { text: errorText, failed: true };
   const result = record(output);
   // Missing or ambiguous data is a question for the person, not a failure.
