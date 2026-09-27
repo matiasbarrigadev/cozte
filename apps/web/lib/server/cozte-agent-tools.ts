@@ -16,10 +16,12 @@ import { commitMutation, mutationSchema } from "./mutations";
 import { createMutationProposal } from "./assistant-proposals";
 import { archiveCozteNote, loadCozteNotes, saveCozteNote } from "./cozte-notes";
 import { AREA_LABELS, PURCHASE_KIND_LABELS, channelEconomics } from "@/lib/business";
-import { archiveRecord, loadBusinessView, loadChannels, loadDeliveries, recordPurchase, recordSale, saveChannel, saveDelivery, updateSale } from "./business";
+import { archiveRecord, loadBusinessView, loadChannels, loadDeliveries, organizationPlace, recordPurchase, recordSale, saveChannel, saveDelivery, updateSale } from "./business";
 import { DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, businessTimeZone, businessToday, daysFrom, isOpenDelivery, type DeliveryStatus } from "@/lib/business";
 import { resolveDocument } from "./documents";
 import { searchMessages } from "./cozte-messages";
+import { saveOrganizationLocation } from "./organization-location";
+import { COUNTRIES, findCountry } from "@/lib/locations";
 import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { WIDGETS, WIDGET_KINDS, boardOutline, computeWidget, moveWidget, widgetFigures, widgetNeeds, widgetTitle, type WidgetKind, type WidgetSpec } from "@/lib/cozte-widgets";
 import { METRIC_KEYS, type MetricKey } from "@/lib/decks";
@@ -245,6 +247,11 @@ export const cozteToolInputSchemas = {
   readPresentation: z.object({
     presentation: reference.optional().describe("Título o ID para ver sus diapositivas; omítelo para listar las presentaciones"),
   }),
+  setCompanyLocation: z.object({
+    country: z.string().trim().min(2).max(60).describe("País de la empresa, por nombre o código (Argentina, AR, México…)"),
+    city: z.string().trim().max(80).optional().describe("Ciudad o localidad"),
+    timeZone: z.string().trim().max(60).optional().describe("Solo si el país tiene varias zonas horarias y la persona dijo cuál (p. ej. America/Cancun); por defecto la usual del país"),
+  }),
   searchConversation: z.object({
     query: z.string().trim().min(2).max(120).describe("Palabras clave de lo que buscas (un nombre, un producto, un tema); se buscan todas, sin importar tildes ni mayúsculas"),
     from: isoDateToolInputSchema.optional().describe("Solo mensajes desde esta fecha (AAAA-MM-DD)"),
@@ -290,6 +297,7 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   createPresentation: `Crea una presentación de diapositivas con los datos reales del negocio y la guarda. Parte de una plantilla o de diapositivas a medida. Cada plantilla ya trae: ${(Object.keys(DECK_TEMPLATES) as (keyof typeof DECK_TEMPLATES)[]).map((key) => `${key} = ${templateOutline(key)}`).join("; ")}. Con plantilla, slides agrega diapositivas NUEVAS antes del cierre: no repitas las que ya trae; para cambiar sus títulos o textos usa después editPresentation con update. Los gráficos y cifras los calcula el motor: tú eliges cuáles y escribes títulos, conclusiones y puntos. La persona la ve en el chat y puede presentarla, editarla o compartirla.`,
   editPresentation: "Modifica una presentación guardada: agrega, cambia, quita, mueve o duplica diapositivas; cambia título, estilo o mes; recalcula los datos; o deshace el último cambio. Todos los números de diapositiva de una llamada se refieren a la presentación como estaba ANTES de la llamada (como la ves en el último resultado): puedes quitar 2 y 7 y agregar antes de la 9 en una sola llamada. Cada cambio queda en el historial y se puede deshacer.",
   readPresentation: "Lista las presentaciones guardadas o muestra las diapositivas de una (número, diseño, título, textos, gráfico con su conclusión y cifras).",
+  setCompanyLocation: "Guarda dónde está la empresa (país y ciudad). Con eso quedan bien la hora y el día de la empresa, el trato y las palabras de su país, y la moneda que se sugiere. Úsala cuando la persona te diga dónde está; no cambia costos ni la moneda principal.",
   searchConversation: "Busca en toda la conversación con esta persona, también en la parte que ya no ves y en conversaciones archivadas: devuelve los mensajes que contienen las palabras, con fecha, quién lo dijo y un fragmento. Úsala cuando la persona se refiera a algo dicho antes que no está en los mensajes que ves. Los números del negocio no se buscan acá: léelos con las herramientas, que están al día.",
   sharePresentation: "Crea o desactiva el link público de una presentación: cualquiera con el link la ve sin cuenta, sin las notas de quien presenta ni otros datos de la empresa.",
   askQuestions: "Muestra a la persona de 1 a 4 preguntas con opciones para elegir; siempre puede responder con texto libre. Úsala cuando necesites datos o decisiones que solo ella conoce. Termina tu turno: las respuestas llegan en su próximo mensaje, así que no escribas nada después de llamarla.",
@@ -303,8 +311,6 @@ function stableKey(...parts: (string | number)[]): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** The business's calendar day, not UTC's, so a sale recorded at night keeps today's date. */
-const today = () => businessToday();
 const whole = (value: number) => Math.round(value);
 const threeDecimals = (value: number) => Math.round(value * 1000) / 1000;
 
@@ -380,6 +386,10 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
   const { principal } = input;
   const schema = cozteToolInputSchemas[input.toolName];
   const args = schema.parse(input.input) as Record<string, unknown>;
+  // The business's calendar day where it is, not UTC's, so a sale recorded at night keeps today's date.
+  const place = await organizationPlace(principal);
+  const todayValue = businessToday(place);
+  const today = () => todayValue;
   switch (input.toolName) {
     case "readCosts": {
       const { product } = args as z.infer<typeof cozteToolInputSchemas.readCosts>;
@@ -865,10 +875,23 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       const found = await resolvePresentation(principal, value.presentation);
       return { ...deckReceipt(found, []), note: "Diapositivas actuales, numeradas desde 1." };
     }
+    case "setCompanyLocation": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.setCompanyLocation>;
+      const country = findCountry(value.country);
+      if (!country) return { ok: false, error: `No reconozco «${value.country}» como país de la lista`, options: COUNTRIES.map((item) => item.name) };
+      const zone = value.timeZone && country.timeZones.some((item) => item.zone === value.timeZone) ? value.timeZone : undefined;
+      const saved = await saveOrganizationLocation(principal, { country: country.code, city: value.city ?? "", timeZone: zone }, "cozte");
+      const zoneLabel = country.timeZones.find((item) => item.zone === saved.timeZone)?.label ?? country.name;
+      const [organization] = await dbQuery<{ currency: string }>("SELECT currency FROM organizations WHERE id=?", [principal.organizationId]);
+      return {
+        ok: true,
+        done: [`Ubicación guardada: ${saved.city ? `${saved.city}, ` : ""}${country.name} (hora de ${zoneLabel})`],
+        ...(organization && organization.currency !== country.currency ? { note: `La moneda principal sigue siendo ${organization.currency}; la usual allá es ${country.currency}. La persona puede cambiarla en «Tu empresa» (arriba a la derecha) mientras no haya costos cargados; si ya hay, cada costo puede cargarse en la moneda que corresponda.` } : {}),
+      };
+    }
     case "searchConversation": {
       const value = args as z.infer<typeof cozteToolInputSchemas.searchConversation>;
-      const [organization] = await dbQuery<{ currency: string }>("SELECT currency FROM organizations WHERE id=?", [principal.organizationId]);
-      const zone = businessTimeZone(organization?.currency);
+      const zone = businessTimeZone(place);
       const matches = await searchMessages(principal, { query: value.query, from: value.from, to: value.to });
       return {
         ok: true,
@@ -953,6 +976,7 @@ export function createCozteTools(principal: Principal, runId: string) {
     editPresentation: tool({ description: describe.editPresentation, inputSchema: schemas.editPresentation, execute: execute("editPresentation") }),
     readPresentation: tool({ description: describe.readPresentation, inputSchema: schemas.readPresentation, execute: execute("readPresentation") }),
     searchConversation: tool({ description: describe.searchConversation, inputSchema: schemas.searchConversation, execute: execute("searchConversation") }),
+    setCompanyLocation: tool({ description: describe.setCompanyLocation, inputSchema: schemas.setCompanyLocation, execute: execute("setCompanyLocation") }),
     sharePresentation: tool({ description: describe.sharePresentation, inputSchema: schemas.sharePresentation, execute: execute("sharePresentation") }),
     askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),
   };

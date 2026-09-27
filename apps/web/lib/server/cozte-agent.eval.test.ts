@@ -412,6 +412,28 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     expect(failures).toEqual([]);
   });
 
+  it.each(models)("saves where the business is when the person says it, and talks like people there, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    const history: ModelMessage[] = [];
+    const first = await productionTurn({ model, principal, history, text: "Hola! Tengo una fábrica chica de alfajores en Rosario, Argentina. Quiero empezar a ordenar mis costos." });
+    const saved = first.records.find((item) => item.name === "setCompanyLocation" && item.ok);
+    const state = await loadState(principal);
+    const second = saved ? await productionTurn({ model, principal, history, text: "¿Qué necesitás que te pase primero?" }) : null;
+    const answer = (second?.answer ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+    const checks = {
+      savedLocation: state.organization.country === "AR" && /rosario/i.test(state.organization.city ?? ""),
+      // With the location saved, the next answer uses vos (tenés, pasame, contame…) rather than tú.
+      voseo: /\b(tenes|pasame|contame|decime|fijate|sabes|podes|queres|mandame|necesitas|arranca|vos)\b/.test(answer) && !/\b(tienes|puedes|quieres|cuentame|dime)\b/.test(answer),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] location ${JSON.stringify(checks)}\n${first.answer}\n---\n${second?.answer ?? ""}`);
+    results.push({ model, scenario: "location", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "Rosario", answer: first.answer }, { user: "¿Qué necesitás?", answer: second?.answer ?? "" }] });
+    expect(failures).toEqual([]);
+  });
+
   it.each(models)("picks, pins and arranges board widgets from what the person asks, with %s", async (model) => {
     process.env.DATA_BRIDGE_URL = bridgeUrl;
     process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";

@@ -343,7 +343,14 @@ export async function recordSale(principal: Principal, input: SaleInput, options
   return { id, duplicate: false, sale: { id, ...sale, delivery: delivery ? { id: delivery.id, status: delivery.status, scheduledOn: delivery.scheduledOn } : null } };
 }
 
-const organizationToday = async (principal: Principal) => businessToday((await dbQuery<{ currency: string }>("SELECT currency FROM organizations WHERE id=?", [principal.organizationId]))[0]?.currency);
+/** Where the business is, for its calendar: its location when known, or its currency. */
+export async function organizationPlace(principal: Principal): Promise<{ currency: string | null; country: string | null; timeZone: string | null }> {
+  const [row] = await dbQuery<{ currency: string | null; country: string | null; time_zone: string | null }>("SELECT currency, country, time_zone FROM organizations WHERE id=?", [principal.organizationId]);
+  return { currency: row?.currency ?? null, country: row?.country ?? null, timeZone: row?.time_zone ?? null };
+}
+
+/** Today's date where the business is. */
+export const organizationToday = async (principal: Principal) => businessToday(await organizationPlace(principal));
 
 function newDeliveryRow(principal: Principal, saleId: string, soldOn: string, channel: Pick<SalesChannel, "deliveryMethod">, customer: string, fields: z.infer<typeof deliveryFieldsSchema>, source: "user" | "cozte", today: string) {
   const id = crypto.randomUUID();

@@ -39,6 +39,7 @@ const running: Record<string, string> = {
   readPresentation: "Revisando la presentación",
   sharePresentation: "Preparando el link",
   searchConversation: "Buscando en conversaciones anteriores",
+  setCompanyLocation: "Guardando dónde está la empresa",
   askQuestions: "Preparando unas preguntas",
 };
 
@@ -71,6 +72,7 @@ const summaryVerb: Record<string, [string, string]> = {
   readPresentation: ["revisó la presentación", "revisó las presentaciones"],
   sharePresentation: ["compartió la presentación", "compartió {n} presentaciones"],
   searchConversation: ["buscó en conversaciones anteriores", "buscó {n} veces en conversaciones anteriores"],
+  setCompanyLocation: ["guardó dónde está la empresa", "guardó dónde está la empresa"],
 };
 
 function record(value: unknown): Record<string, unknown> {

@@ -12,13 +12,13 @@ import { todayFor, useBusinessView } from "./business-ui";
 import { usePersistentState } from "./data-table";
 import { useDeliveries } from "./deliveries-section";
 
-type Step = { id: string; title: string; hint: string; done: boolean; view: AppView; prompt: string };
+type Step = { id: string; title: string; hint: string; done: boolean; view: AppView; prompt: string; open?: () => void };
 
 /**
  * The whole path from zero to a business that knows its numbers, with progress: each step opens its section or
  * starts it with Cozte. It disappears when everything is done, or when the person hides it.
  */
-export function FirstSteps({ state, demo, onGo, onAsk }: { state: DomainState; demo: boolean; onGo: (view: AppView) => void; onAsk: (text: string) => void }) {
+export function FirstSteps({ state, demo, onGo, onAsk, onOpenCompany }: { state: DomainState; demo: boolean; onGo: (view: AppView) => void; onAsk: (text: string) => void; onOpenCompany?: () => void }) {
   const month = todayFor(demo).slice(0, 7);
   const { view } = useBusinessView(month, demo, state);
   const { data } = useDeliveries(month, demo, state.revision);
@@ -26,6 +26,7 @@ export function FirstSteps({ state, demo, onGo, onAsk }: { state: DomainState; d
   if (!view || hidden === "hidden") return null;
   const delivers = view.channels.some((channel) => needsDelivery(channel));
   const steps: Step[] = [
+    { id: "location", title: "Dónde está tu empresa", hint: "Para usar tu día y tu hora, hablarte como se habla allá y sugerirte la moneda.", done: Boolean(state.organization.country), view: "dashboard", prompt: "Te cuento dónde está mi empresa.", open: onOpenCompany },
     { id: "products", title: "Tus productos", hint: "Qué fabricas y cuántas unidades salen de cada lote.", done: state.products.length > 0, view: "planilla", prompt: "Quiero empezar: te cuento qué productos fabrico." },
     { id: "materials", title: "Insumos con precio", hint: "Lo que compras para producir y cuánto pagas.", done: state.materials.some((item) => item.priceMinor !== null), view: "planilla", prompt: "Te paso los insumos que uso y lo que pago por cada uno." },
     { id: "recipes", title: "La receta de cada producto", hint: "Cuánto de cada insumo lleva.", done: state.products.length > 0 && state.products.every((product) => state.components.some((item) => item.productId === product.id)), view: "planilla", prompt: "Armemos la receta de mis productos: cuánto insumo lleva cada uno." },
@@ -59,7 +60,7 @@ export function FirstSteps({ state, demo, onGo, onAsk }: { state: DomainState; d
             <p className="text-xs text-muted-foreground">{step.hint}</p>
             {!step.done ? <div className="mt-1 flex flex-wrap gap-2">
               <Button type="button" size="sm" className="h-7 px-2 text-xs" variant={step.id === next.id ? "default" : "outline"} disabled={demo} onClick={() => onAsk(step.prompt)}><AnimatedIcon name="sparkles" data-icon="inline-start" size={12} />Hacerlo con Cozte</Button>
-              <Button type="button" size="sm" className="h-7 px-2 text-xs" variant="ghost" onClick={() => onGo(step.view)}>Ir →</Button>
+              <Button type="button" size="sm" className="h-7 px-2 text-xs" variant="ghost" onClick={() => step.open ? step.open() : onGo(step.view)}>{step.open ? "Completar →" : "Ir →"}</Button>
             </div> : null}
           </div>
         </li>)}

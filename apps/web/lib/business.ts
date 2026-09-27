@@ -1,3 +1,4 @@
+import { locationTimeZone } from "./locations";
 import { calculateCosts, type CostArea, type DomainState, type Product, type ProductCost } from "./domain";
 
 /**
@@ -111,22 +112,29 @@ const CURRENCY_ZONES: Record<string, string> = {
   UYU: "America/Montevideo", BOB: "America/La_Paz", PYG: "America/Asuncion", BRL: "America/Sao_Paulo", USD: "America/New_York", EUR: "Europe/Madrid",
 };
 
+/** Where a business is, as far as the calendar goes: its location when known, or just its currency. */
+export type BusinessPlace = string | { currency?: string | null; country?: string | null; timeZone?: string | null } | null | undefined;
+
 /**
  * Today's date (AAAA-MM-DD) where the business is, not in UTC: at 22:00 in Buenos Aires it is still today there.
- * Without a currency it uses Buenos Aires, the timezone of most of Cozte's businesses.
+ * Without a place it uses Buenos Aires, the timezone of most of Cozte's businesses.
  */
-export function businessToday(currency?: string, now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: businessTimeZone(currency), year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+export function businessToday(place?: BusinessPlace, now = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: businessTimeZone(place), year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
 }
 
-/** The timezone where the business is, from its currency (Buenos Aires by default). */
-export function businessTimeZone(currency?: string): string {
-  return (currency && CURRENCY_ZONES[currency]) || "America/Argentina/Buenos_Aires";
+/**
+ * The timezone where the business is: the one of its location (chosen, or its country's usual one); without a
+ * location, the one its currency suggests; Buenos Aires by default. A string is a currency code or an IANA zone.
+ */
+export function businessTimeZone(place?: BusinessPlace): string {
+  if (typeof place === "string") return place.includes("/") ? place : CURRENCY_ZONES[place] ?? "America/Argentina/Buenos_Aires";
+  return (place && locationTimeZone(place)) || (place?.currency && CURRENCY_ZONES[place.currency]) || "America/Argentina/Buenos_Aires";
 }
 
 /** "sábado 27 de septiembre de 2026, 10:32" where the business is. */
-export function businessNowLabel(currency?: string, now = new Date()): string {
-  const zone = businessTimeZone(currency);
+export function businessNowLabel(place?: BusinessPlace, now = new Date()): string {
+  const zone = businessTimeZone(place);
   const date = new Intl.DateTimeFormat("es-AR", { timeZone: zone, weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(now);
   const time = new Intl.DateTimeFormat("es-AR", { timeZone: zone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(now);
   return `${date}, ${time}`;

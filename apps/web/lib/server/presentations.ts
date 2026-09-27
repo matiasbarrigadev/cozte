@@ -60,7 +60,7 @@ export async function loadDeckSources(principal: Principal, needs: { months: str
     ...months.map((month) => loadBusinessRecords(principal, month)),
   ]);
   return {
-    state, costs: calculateCosts(state), analysis, deliveries, now: new Date().toISOString(), today: businessToday(state.organization.currency),
+    state, costs: calculateCosts(state), analysis, deliveries, now: new Date().toISOString(), today: businessToday(state.organization),
     views: Object.fromEntries(months.map((month, index) => [month, buildBusinessView(state, records[index], month)])),
   };
 }

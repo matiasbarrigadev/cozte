@@ -5,7 +5,7 @@ import { byProximity, priceSale, saleItemsText, type BusinessRecords, type Deliv
 export const demoState: DomainState = {
   revision: 3,
   activePeriod: "2026-09",
-  organization: { id: "demo", name: "Taller Norte", currency: "CLP" },
+  organization: { id: "demo", name: "Taller Norte", currency: "CLP", country: "CL", city: "Santiago", timeZone: "America/Santiago" },
   products: [
     { id: "dura", name: "Cuaderno A5 · tapa dura", lotUnits: 100, salePriceMinor: 5500, salesVariableMinor: 490, laborLotMinor: 60000, productionHoursMilli: 20000, version: 1 },
     { id: "blanda", name: "Cuaderno A5 · tapa blanda", lotUnits: 100, salePriceMinor: 4300, salesVariableMinor: 360, laborLotMinor: 60000, productionHoursMilli: 15000, version: 1 },

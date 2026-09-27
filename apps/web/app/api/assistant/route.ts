@@ -133,7 +133,7 @@ export async function POST(request: Request) {
     const files = message.parts.filter((part) => part.type === "file");
     const attachments = files.length ? await storeChatAttachments(principal, candidateRunId, files) : [];
     // The stored conversation keeps everything for the UI; the model only sees what it can trust.
-    const timed = withMessageTimes(modelHistory(validated.map((item) => item.id === incoming.id ? incoming : previous.find((saved) => saved.id === item.id) ?? item)), businessTimeZone(state.organization.currency));
+    const timed = withMessageTimes(modelHistory(validated.map((item) => item.id === incoming.id ? incoming : previous.find((saved) => saved.id === item.id) ?? item)), businessTimeZone(state.organization));
     const modelMessages = withAttachmentNote(prepareCozteModelMessages(await convertToModelMessages(timed)), attachments);
     const safeMessages = [...previous, persistableMessage(incoming)];
     const agentSettings = cozteAgentSettings();

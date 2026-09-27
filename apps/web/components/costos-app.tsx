@@ -5,7 +5,7 @@ import Link from "next/link";
 import { OrganizationSwitcher, UserButton, useOrganization } from "@clerk/nextjs";
 import { toast } from "sonner";
 import { calculateCosts, convertToOrganizationCurrency, type DomainState, type Product, type ProductCost, type ProductionWorkMap } from "@/lib/domain";
-import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
+import { toNativeMilli, type Currency } from "@/lib/currency";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +32,10 @@ import { ResultSection } from "./business/result-section";
 import { MonthCard } from "./business/month-card";
 import { TodayCard } from "./business/today-card";
 import { FirstSteps } from "./business/first-steps";
+import { CompanyDialog } from "./company-dialog";
+import { usePersistentState } from "./business/data-table";
+import { countryByCode } from "@/lib/locations";
+import { MapPin } from "lucide-react";
 import { PresentationsSection } from "./decks/presentations-section";
 import { DEMO_MONTH } from "@/lib/demo";
 import { appPath, viewFromPathname, viewFromSegments, type AppView } from "@/lib/app-routes";
@@ -83,6 +87,10 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
   const [busy, setBusy] = React.useState(false);
   const [pendingMeta, setPendingMeta] = React.useState<{ action: Record<string, unknown>; affected: string[]; description: string } | null>(null);
   const [dialog, setDialog] = React.useState<"product" | "material" | "expense" | "edit-product" | null>(null);
+  // Where the company is: asked once when it is not known yet, and editable from the header.
+  const [companyOpen, setCompanyOpen] = React.useState(false);
+  const [locationAsked, setLocationAsked] = usePersistentState<string>(`ubicacion-preguntada:${state.organization.id}`, "");
+  const askLocation = !demo && !state.organization.country && locationAsked !== "yes";
   const [history, setHistory] = React.useState<HistoryEntry[]>([]);
   const [snapshots, setSnapshots] = React.useState<CostSnapshotRow[]>([]);
   const [profileSnapshots, setProfileSnapshots] = React.useState<ProfileSnapshotRow[]>([]);
@@ -150,18 +158,6 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
     setState(await response.json());
   }
 
-  async function changeBaseCurrency(next: Currency) {
-    if (demo || next === currency) return;
-    setBusy(true);
-    try {
-      const response = await fetch("/api/organization/currency", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ currency: next, expectedRevision: state.revision }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "No se pudo cambiar la moneda base");
-      await refresh();
-      toast.success(`Moneda base: ${next}`);
-    } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo cambiar la moneda"); }
-    finally { setBusy(false); }
-  }
 
   async function save(action: Record<string, unknown>, quiet = false) {
     if (demo) { toast.info("Demostración: los cambios no se guardan"); return false; }
@@ -277,7 +273,8 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
         <SidebarFooter><div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">{demo ? <Badge variant="outline" className="border-white/25 bg-white/5 text-white">Demostración</Badge> : <><div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden"><OrganizationSwitcher hidePersonal appearance={{ elements: { organizationSwitcherTrigger: "cozte-org-trigger", organizationPreviewAvatarBox: "cozte-org-avatar", organizationSwitcherPopoverCard: "cozte-clerk-popover" } }} /></div><UserButton appearance={{ elements: { userButtonTrigger: "cozte-user-trigger", userButtonAvatarBox: "cozte-user-avatar", userButtonPopoverCard: "cozte-clerk-popover" } }} /></>}</div></SidebarFooter>
       </Sidebar>
       <SidebarInset>
-        <header className="flex h-16 items-center gap-3 border-b bg-card px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="data-vertical:h-6 data-vertical:self-center" /><span className="truncate text-sm font-semibold text-foreground">{demo ? state.organization.name : <ActiveOrganizationName fallback={state.organization.name} />}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}{!demo && !state.products.length && !state.materials.length && !state.expenses.length ? <Dropdown value={currency} disabled={busy} aria-label="Moneda base de la empresa" onChange={(event) => void changeBaseCurrency(event.target.value as Currency)}>{supportedCurrencies.map((code) => <DropdownOption key={code} value={code}>{code}</DropdownOption>)}</Dropdown> : <Badge variant="outline" title="Moneda base de la empresa">{currency}</Badge>}</div></header>
+        <header className="flex h-16 items-center gap-3 border-b bg-card px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="data-vertical:h-6 data-vertical:self-center" /><span className="truncate text-sm font-semibold text-foreground">{demo ? state.organization.name : <ActiveOrganizationName fallback={state.organization.name} />}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}<Button type="button" variant="outline" size="sm" className="max-w-56" title="Dónde está tu empresa y su moneda principal" onClick={() => setCompanyOpen(true)}><MapPin data-icon="inline-start" /><span className="truncate">{state.organization.city || countryByCode(state.organization.country)?.name || "¿Dónde está?"}</span><span className="text-muted-foreground">· {currency}</span></Button></div></header>
+        <CompanyDialog key={`${state.organization.country}-${state.organization.timeZone}-${currency}-${companyOpen || askLocation}`} open={companyOpen || askLocation} state={state} demo={demo} onSaved={refresh} onClose={() => { setCompanyOpen(false); setLocationAsked("yes"); }} />
         <main className={view === "asistente" ? "mx-auto flex w-full max-w-none flex-col gap-4 px-4 py-5 md:px-8" : "mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-7 md:px-8 md:py-10"}>
           {demo && view !== "asistente" ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
           {view === "dashboard" ? <>
@@ -293,7 +290,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
               <CardContent><ol className="flex flex-col gap-2">{summary.gaps.slice(0, 5).map((gap, index) => <li key={gap} className="flex items-start gap-3 rounded-lg border bg-muted/30 px-3 py-2 text-sm"><span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums text-muted-foreground">{index + 1}</span><span>{gap}</span></li>)}</ol>{summary.gaps.length > 5 ? <p className="mt-2 text-xs text-muted-foreground">Y {summary.gaps.length - 5} dato{summary.gaps.length - 5 === 1 ? "" : "s"} más.</p> : null}</CardContent>
               <CardFooter className="flex flex-wrap gap-2"><Button onClick={() => navigate("asistente")}><AnimatedIcon name="assistant" data-icon="inline-start" />Completar con Cozte</Button><Button variant="outline" onClick={() => navigate("planilla")}>Abrir costos de producción</Button></CardFooter></Card> : null}
             {state.alerts.length ? <Alert><AlertTitle>{state.alerts.length} precio{state.alerts.length === 1 ? "" : "s"} para revisar</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-3"><span>{state.alerts.slice(0, 3).map((item) => item.message).join(" · ")}</span><Button variant="link" onClick={() => navigate("planilla")}>Abrir planilla</Button></div></AlertDescription></Alert> : null}
-            <FirstSteps state={state} demo={demo} onGo={(next) => navigate(next)} onAsk={(text) => { setPendingPrompt(text); navigate("asistente"); }} />
+            <FirstSteps state={state} demo={demo} onOpenCompany={() => setCompanyOpen(true)} onGo={(next) => navigate(next)} onAsk={(text) => { setPendingPrompt(text); navigate("asistente"); }} />
             {state.products.length ? <TodayCard state={state} demo={demo} onOpen={(section) => navigate(section)} /> : null}
             {state.products.length ? <MonthCard state={state} demo={demo} month={businessMonth} onOpen={(section) => navigate(section)} /> : null}
             <Card><CardHeader><CardTitle>Fichas de productos</CardTitle><CardDescription>Lo que cuesta fabricar cada unidad, en qué se va ese costo y cuánto deja su precio de venta.</CardDescription>{summary.composition.length ? <CompositionLegend /> : null}</CardHeader><CardContent>{state.products.length ? <><ul className="flex flex-col divide-y md:hidden" aria-label="Fichas de productos">{state.products.map((item) => {

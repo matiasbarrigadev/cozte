@@ -6,7 +6,7 @@ import { dbBatch, dbQuery } from "./db";
 import type { Principal } from "./auth";
 import { officialFxTable, quotesFor } from "./fx";
 
-type OrganizationRow = { id: string; name: string; currency: string; revision: number };
+type OrganizationRow = { id: string; name: string; currency: string; revision: number; country: string | null; city: string | null; time_zone: string | null };
 type MaterialRow = {
   id: string; name: string; supplier: string; purchase_unit: string; category: string; version: number;
   price_minor: number | null; source: string | null; effective_date: string | null;
@@ -69,7 +69,7 @@ export async function loadState(principal: Principal): Promise<DomainState> {
 
 export async function loadStateForOrganization(org: string): Promise<DomainState> {
   const [organizations, materials, products, components, expenses, categories, investments] = await dbBatch<OrganizationRow | MaterialRow | ProductRow | ComponentRow | ExpenseRow | CategoryRow | InvestmentRow>([
-    { sql: "SELECT id, name, currency, revision FROM organizations WHERE id=?", params: [org] },
+    { sql: "SELECT id, name, currency, revision, country, city, time_zone FROM organizations WHERE id=?", params: [org] },
     { sql: "SELECT m.id, m.name, m.supplier, m.purchase_unit, m.category, m.version, p.amount_minor AS price_minor, p.source, p.effective_date, p.currency, p.native_amount_milli FROM materials m LEFT JOIN material_prices p ON p.material_id=m.id AND p.version=m.version WHERE m.organization_id=? AND m.archived_at IS NULL ORDER BY m.name", params: [org] },
     { sql: "SELECT id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli, batches_per_month_milli, version FROM products WHERE organization_id=? AND archived_at IS NULL ORDER BY name", params: [org] },
     { sql: "SELECT pm.product_id, pm.material_id, pm.quantity_milli FROM product_materials pm JOIN products p ON p.id=pm.product_id JOIN materials m ON m.id=pm.material_id WHERE p.organization_id=? AND p.archived_at IS NULL AND m.archived_at IS NULL", params: [org] },
@@ -86,7 +86,7 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
   return {
     revision: organization.revision,
     activePeriod: (expenses as ExpenseRow[]).map((row) => row.period).sort().at(-1) ?? new Date().toISOString().slice(0, 7),
-    organization: { id: organization.id, name: organization.name, currency: base },
+    organization: { id: organization.id, name: organization.name, currency: base, country: organization.country, city: organization.city, timeZone: organization.time_zone },
     fxQuotes,
     categories: categories as CategoryRow[],
     investments: (investments as InvestmentRow[]).filter((row) => row.useful_life_months).map((row): Investment => ({

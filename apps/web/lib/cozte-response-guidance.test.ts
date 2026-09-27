@@ -13,4 +13,13 @@ describe("guía de respuesta de Cozte", () => {
     expect(getCozteLocaleGuidance("CLP", true)).toContain("El perfil de la empresa ya contiene su ubicación");
     expect(getCozteLocaleGuidance("USD")).toContain("no permite inferir un país");
   });
+
+  it("talks like people do where the company is, once its location is known", () => {
+    const argentina = getCozteLocaleGuidance("ARS", false, { country: "AR", city: "Córdoba" });
+    expect(argentina).toContain("La empresa está en Córdoba, Argentina");
+    expect(argentina).toContain("Trato de vos");
+    expect(argentina).not.toContain("setCompanyLocation");
+    expect(getCozteLocaleGuidance("USD", false, { country: "MX" })).toContain("la usual allá es MXN");
+    expect(getCozteLocaleGuidance("ARS")).toContain("setCompanyLocation");
+  });
 });

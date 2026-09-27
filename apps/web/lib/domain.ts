@@ -78,7 +78,8 @@ export type ProductionWorkMap = {
 export type DomainState = {
   revision: number;
   activePeriod: string;
-  organization: { id: string; name: string; currency: Currency };
+  /** Where the business is (country code, city, timezone), when known. */
+  organization: { id: string; name: string; currency: Currency; country?: string | null; city?: string | null; timeZone?: string | null };
   fxQuotes?: Partial<Record<Currency, FxQuote>>;
   products: Product[];
   materials: Material[];
