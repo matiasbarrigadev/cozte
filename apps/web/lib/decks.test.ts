@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildBusinessView } from "./business";
 import { calculateCosts } from "./domain";
 import { DEMO_MONTH, demoBusinessRecords, demoState } from "./demo";
-import { DECK_TEMPLATE_KEYS, applyOperations, newDeck, templateOutline, templateSlides, unbackedAmounts, type DeckSources } from "./decks";
+import { DECK_TEMPLATE_KEYS, applyOperations, formatMoney, newDeck, templateOutline, templateSlides, unbackedAmounts, type DeckSources } from "./decks";
 
 const sources: DeckSources = {
   state: demoState, costs: calculateCosts(demoState), analysis: null, now: "2026-09-25T12:00:00Z",
@@ -50,7 +50,7 @@ describe("presentations", () => {
 
   it("flags amounts in texts that no chart or figure shows", () => {
     const deck = newDeck({ month: DEMO_MONTH, slides: [
-      { title: "Ventas", chart: "sales-by-channel", text: "Vendimos $1.023.200 en total y la feria aportó $999.999." },
+      { title: "Ventas", chart: "sales-by-channel", text: `Vendimos ${formatMoney(sources.views[DEMO_MONTH].result.revenue, demoState.organization.currency)} en total y la feria aportó $999.999.` },
     ] }, sources);
     expect(unbackedAmounts(deck)).toEqual(["$999.999"]);
   });

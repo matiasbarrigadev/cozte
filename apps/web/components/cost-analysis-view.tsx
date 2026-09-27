@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
@@ -153,7 +153,7 @@ export function CostAnalysisView({ currency, demo }: { currency: string; demo: b
         <CardContent>{display === "chart" ? <TimeLineChart periods={periods} periodLabel={periodLabel} series={unitSeries} formatValue={money} ariaLabel="Costo por unidad de cada producto en el tiempo" /> : <DataTable periods={periods} periodLabel={periodLabel} series={unitSeries} format={money} />}</CardContent></Card>
 
       {selected ? <Card><CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3"><div className="flex flex-col gap-1.5"><CardTitle>Composición del costo por unidad</CardTitle><CardDescription>Cómo evolucionó cada {groupBy === "type" ? "tipo de costo" : groupBy === "category" ? "categoría" : "concepto"} y cuánto suma al total.</CardDescription></div>
-          <NativeSelect aria-label="Producto" value={selected.id} onChange={(event) => setProductId(event.target.value)}>{products.map((product) => <NativeSelectOption key={product.id} value={product.id}>{product.name}</NativeSelectOption>)}</NativeSelect></CardHeader>
+          <Dropdown aria-label="Producto" value={selected.id} onChange={(event) => setProductId(event.target.value)}>{products.map((product) => <DropdownOption key={product.id} value={product.id}>{product.name}</DropdownOption>)}</Dropdown></CardHeader>
         <CardContent>{display === "chart" ? <TimeLineChart periods={periods} periodLabel={periodLabel} series={compositionSeries} formatValue={money} ariaLabel={`Composición del costo de ${selected.name} en el tiempo`} /> : <DataTable periods={periods} periodLabel={periodLabel} series={compositionSeries} format={money} />}</CardContent></Card> : null}
 
       <div className="grid gap-6 lg:grid-cols-2">

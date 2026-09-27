@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { cn } from "@/lib/utils";
 import { CozteVisual, useAvailableVisuals, useVisualData, type WidgetChoice } from "./cozte-visuals";
@@ -117,10 +117,10 @@ function WidgetOptions({ kind, onBack, onAdd }: { kind: WidgetKind; onBack: () =
       <div className="flex flex-col gap-1.5"><span className="text-xs font-medium text-muted-foreground">Vista previa con tus datos</span><CozteVisual widget={widget} compact /></div>
       <div className="flex flex-col gap-3 text-sm">
         {showProduct ? <label className="flex flex-col gap-1.5"><span className="font-medium">Producto</span>
-          <NativeSelect className="w-full" value={productId} onChange={(event) => setProductId(event.target.value)}>
-            {meta.productOptional && !perProduct ? <NativeSelectOption value="">Todos los productos</NativeSelectOption> : null}
-            {state.products.map((product) => <NativeSelectOption key={product.id} value={product.id}>{product.name}</NativeSelectOption>)}
-          </NativeSelect></label> : null}
+          <Dropdown className="w-full" value={productId} onChange={(event) => setProductId(event.target.value)}>
+            {meta.productOptional && !perProduct ? <DropdownOption value="">Todos los productos</DropdownOption> : null}
+            {state.products.map((product) => <DropdownOption key={product.id} value={product.id}>{product.name}</DropdownOption>)}
+          </Dropdown></label> : null}
         {kind === "kpis" ? <fieldset className="flex flex-col gap-2"><legend className="mb-1 font-medium">Cifras (hasta 4)</legend>
           {METRIC_GROUPS.map((group) => <div key={group.label} className="flex flex-col gap-1">
             <span className="text-[11px] font-medium text-muted-foreground">{group.label}</span>

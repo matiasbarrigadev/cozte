@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateCosts, type DomainState } from "./domain";
-import { DIRECT_CHANNEL, channelEconomics, companyStructure, investmentShare, monthLessons, monthResult, priceSale, type Purchase, type Sale, type SalesChannel } from "./business";
+import { DIRECT_CHANNEL, byProximity, byRecency, channelEconomics, companyStructure, deliverySummary, initialDeliveryStatus, investmentShare, monthLessons, monthResult, needsDelivery, priceSale, repriceSale, type Delivery, type Purchase, type Sale, type SalesChannel } from "./business";
 
 const state: DomainState = {
   revision: 1, activePeriod: "2026-09", organization: { id: "o", name: "Tofu", currency: "ARS" },
@@ -100,5 +100,59 @@ describe("business engine", () => {
     // An office investment never enters the unit cost, and neither does one past its useful life.
     expect(calculateCosts({ ...state, investments: [{ ...scale, area: "admin", includeInUnitCost: true }] })[0].unitMinor).toBe(500);
     expect(calculateCosts({ ...state, activePeriod: "2031-09", expenses: state.expenses.map((item) => ({ ...item, period: "2031-09" })), investments: [{ ...scale, includeInUnitCost: true }] })[0].unitMinor).toBe(500);
+  });
+});
+
+describe("sales and deliveries", () => {
+  const sale = (): Sale => {
+    const priced = priceSale(state, costs, online, [{ productId: "t300", quantity: 8 }]);
+    return { id: "s1", soldOn: "2026-09-10", channelId: "ig", channelName: "Instagram", customer: "Ana", note: "", documentId: null, source: "user", ...priced };
+  };
+
+  it("sorts sales most recent first and deliveries by closeness to today, the one ahead first on a tie", () => {
+    expect(byRecency([{ d: "2026-09-02" }, { d: "2026-09-20" }, { d: "2026-09-11" }], (item) => item.d).map((item) => item.d)).toEqual(["2026-09-20", "2026-09-11", "2026-09-02"]);
+    expect(byProximity([{ d: "2026-09-20" }, { d: "2026-09-27" }, { d: "2026-09-25" }, { d: "2026-10-05" }, { d: "2026-09-26" }], (item) => item.d, "2026-09-26").map((item) => item.d))
+      .toEqual(["2026-09-26", "2026-09-27", "2026-09-25", "2026-09-20", "2026-10-05"]);
+  });
+
+  it("creates deliveries for channels that deliver, and marks past ones as delivered", () => {
+    expect(needsDelivery(online)).toBe(true);
+    expect(needsDelivery(wholesale)).toBe(false);
+    expect(needsDelivery({ deliveryMethod: "Retiro en el local", deliveryCostPerOrderMinor: 0 })).toBe(false);
+    expect(needsDelivery({ deliveryMethod: "Correo", deliveryCostPerOrderMinor: 0 })).toBe(true);
+    expect(needsDelivery(wholesale, 900)).toBe(true);
+    expect(initialDeliveryStatus("2026-09-20", "2026-09-26")).toBe("delivered");
+    expect(initialDeliveryStatus("2026-09-26", "2026-09-26")).toBe("pending");
+  });
+
+  it("keeps the price charged and the cost of the day when a sale is corrected", () => {
+    const original = sale();
+    // Quantity changes: same unit price and unit cost as recorded, commission follows the new total.
+    const more = repriceSale(original, { items: [{ productId: "t300", quantity: 10 }] }, state, costs, [online]);
+    expect(more.problems).toEqual([]);
+    expect(more.sale.totalMinor).toBe(20_000);
+    expect(more.sale.sellingCostMinor).toBe(2_000);
+    expect(more.sale.variableCostMinor).toBe(original.items[0].unitVariableCostMinor! * 10);
+    // A cost that changed later does not rewrite the sale.
+    const pricier = calculateCosts({ ...state, materials: state.materials.map((item) => ({ ...item, priceMinor: 5000 })) });
+    expect(repriceSale(original, { items: [{ productId: "t300", quantity: 8 }] }, state, pricier, [online]).sale.variableCostMinor).toBe(original.variableCostMinor);
+    // Moving it to wholesale keeps the price charged, drops the commission and takes that channel delivery cost.
+    const moved = repriceSale(original, { channelId: "may" }, state, costs, [online, wholesale]);
+    expect(moved.sale).toMatchObject({ channelName: "Mayorista", totalMinor: original.totalMinor, sellingCostMinor: 0, deliveryCostMinor: 0 });
+    // Only a note: nothing else moves.
+    expect(repriceSale(original, { note: "pagó por transferencia" }, state, costs, []).sale).toMatchObject({ note: "pagó por transferencia", sellingCostMinor: original.sellingCostMinor, totalMinor: original.totalMinor });
+    expect(repriceSale(original, { channelId: "nope" }, state, costs, [online]).problems).toEqual(["Ese canal no existe"]);
+  });
+
+  it("summarizes what is due, late and what delivering cost in the month", () => {
+    const base = { saleId: "s", timeWindow: "", method: "", carrier: "", recipient: "", address: "", contact: "", tracking: "", note: "", deliveredOn: null, source: "user" as const, sale: { soldOn: "2026-09-01", channelId: null, channelName: "", customer: "", totalMinor: 0, items: "" } };
+    const list: Delivery[] = [
+      { ...base, id: "a", scheduledOn: "2026-09-26", status: "pending", costMinor: 400 },
+      { ...base, id: "b", scheduledOn: "2026-09-24", status: "on_the_way", costMinor: 400 },
+      { ...base, id: "c", scheduledOn: "2026-09-10", status: "delivered", costMinor: 600 },
+      { ...base, id: "d", scheduledOn: "2026-09-30", status: "failed", costMinor: 0 },
+      { ...base, id: "e", scheduledOn: "2026-09-28", status: "cancelled", costMinor: 999 },
+    ];
+    expect(deliverySummary(list, "2026-09-26", "2026-09")).toEqual({ today: 1, next7: 2, overdue: 1, onTheWay: 1, delivered: 1, failed: 1, cost: 1400, averageCost: 350 });
   });
 });

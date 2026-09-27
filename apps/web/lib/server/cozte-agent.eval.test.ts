@@ -33,6 +33,7 @@ import { buildCozteInstructions } from "./cozte-instructions";
 import { cozteAgentSettings, cozteProviderOptions } from "./cozte-workflow";
 import { loadCozteNotes } from "./cozte-notes";
 import { loadCozteSettings } from "./cozte-settings";
+import { loadChannels } from "./business";
 import { loadState } from "./state";
 import { calculateCosts } from "@/lib/domain";
 import { dbBatch, dbQuery } from "./db";
@@ -72,7 +73,7 @@ type Principal = { userId: string; organizationId: string; role: "owner" };
 async function productionTurn(input: { model: string; principal: Principal; history: ModelMessage[]; text: string; level?: "simple" | "medium" | "advanced" }) {
   const settings = { ...cozteAgentSettings(), model: input.model };
   const state = await loadState(input.principal);
-  const instructions = buildCozteInstructions({ state, notes: await loadCozteNotes(input.principal), legacyProfile: null, level: input.level ?? "simple", board: (await loadCozteSettings(input.principal)).board });
+  const instructions = buildCozteInstructions({ state, notes: await loadCozteNotes(input.principal), legacyProfile: null, level: input.level ?? "simple", board: (await loadCozteSettings(input.principal)).board, channels: await loadChannels(input.principal) });
   const tools = createCozteTools(input.principal, crypto.randomUUID());
   input.history.push({ role: "user", content: input.text });
   const pass = (messages: ModelMessage[]) => generateText({ model: input.model, system: instructions, messages, tools, stopWhen: [isStepCount(settings.maxSteps), questionsShown], maxOutputTokens: settings.maxOutputTokens, providerOptions: cozteProviderOptions(settings) });
@@ -432,6 +433,56 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     for (const [name, passed] of Object.entries(checks)) if (!passed) failures.push(`estado final: ${name}`);
     console.log(`\n[${model}] board ${JSON.stringify(checks)} ${JSON.stringify(board.map((widget) => widget.title ?? widget.kind))}`);
     results.push({ model, scenario: "board", failures: failures.length, failureDetails: failures, ...checks, transcript });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("records a sale with its delivery, tracks it and corrects both, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET currency='ARS' WHERE id=?", params: [principal.organizationId] }]);
+    const seed = createCozteTools(principal, crypto.randomUUID());
+    let seedCall = 0;
+    const setup = async (name: keyof typeof seed, input: Record<string, unknown>) => await (seed[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<unknown>)(input, { toolCallId: `seed-${++seedCall}` });
+    await setup("saveProduct", { name: "Tofu 300g", goodUnitsPerLot: 100, lotsPerMonth: 20, hoursPerLot: 5, salePrice: 2000 });
+    await setup("saveMaterial", { name: "Soja orgánica", purchaseUnit: "kg", price: 1000 });
+    await setup("saveRecipe", { product: "Tofu 300g", items: [{ material: "Soja orgánica", perLot: 30 }] });
+    await setup("saveChannel", { name: "Instagram", commissionPercent: 10, delivery: "Moto propia", deliveryCostPerOrder: 1500, unitsPerOrder: 3 });
+
+    const history: ModelMessage[] = [];
+    const failures: string[] = [];
+    const transcript: Record<string, unknown>[] = [];
+    const turn = async (text: string, expected: string[]) => {
+      const { answer, records, rejected, verified } = await productionTurn({ model, principal, history, text, level: "simple" });
+      for (const name of expected) if (!records.some((item) => item.name === name && item.ok)) failures.push(`"${text.slice(0, 40)}…": no ejecutó ${name}`);
+      if (!verified) failures.push(`"${text.slice(0, 40)}…": respuesta sin respaldo tras la corrección`);
+      transcript.push({ user: text, tools: records.map((item) => item.name + (item.ok ? "" : " (falló)")), calls: records.filter((item) => item.name !== "readCosts").map((item) => ({ tool: item.name, ok: item.ok, input: item.input, error: (item.output as { error?: string } | null)?.error })), rejected, answer });
+      return { records, answer };
+    };
+    await turn("Vendí 6 tofus de 300g por Instagram a Bruno Díaz. Hay que llevárselos el jueves a Belgrano 88, entre 9 y 13.", ["recordSale"]);
+    const pending = await turn("¿Qué entregas tengo pendientes?", ["readDeliveries"]);
+    if (!/bruno/i.test(pending.answer)) failures.push("no nombró la entrega de Bruno al listar las pendientes");
+    await turn("Ya se la entregué a Bruno. Ah, y en realidad no eran 6 tofus, eran 8.", ["updateDelivery", "updateSale"]);
+
+    const [sales, deliveries] = await Promise.all([
+      dbQuery<{ id: string; total_minor: number; customer: string }>("SELECT id, total_minor, customer FROM sales WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]),
+      dbQuery<{ status: string; scheduled_on: string; address: string; time_window: string; delivered_on: string | null }>("SELECT status, scheduled_on, address, time_window, delivered_on FROM deliveries WHERE organization_id=? AND archived_at IS NULL", [principal.organizationId]),
+    ]);
+    const thursday = deliveries[0] ? new Date(`${deliveries[0].scheduled_on}T12:00:00Z`).getUTCDay() === 4 : false;
+    const checks = {
+      oneSale: sales.length === 1,
+      correctedTo8: sales[0]?.total_minor === 16_000,
+      customer: /bruno/i.test(sales[0]?.customer ?? ""),
+      oneDelivery: deliveries.length === 1,
+      address: /belgrano 88/i.test(deliveries[0]?.address ?? ""),
+      window: /9/.test(deliveries[0]?.time_window ?? "") && /13/.test(deliveries[0]?.time_window ?? ""),
+      scheduledThursday: thursday,
+      delivered: deliveries[0]?.status === "delivered" && Boolean(deliveries[0]?.delivered_on),
+    };
+    for (const [name, passed] of Object.entries(checks)) if (!passed) failures.push(`estado final: ${name}`);
+    console.log(`\n[${model}] deliveries ${JSON.stringify(checks)} ${JSON.stringify(deliveries)}`);
+    results.push({ model, scenario: "deliveries", failures: failures.length, failureDetails: failures, ...checks, transcript });
     expect(failures).toEqual([]);
   });
 });

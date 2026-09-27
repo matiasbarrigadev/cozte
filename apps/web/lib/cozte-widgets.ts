@@ -10,7 +10,7 @@ export type WidgetGroup = "month" | "sales" | "costs" | "purchases";
 
 export const WIDGET_GROUPS: { id: WidgetGroup; label: string; hint: string }[] = [
   { id: "month", label: "Tu mes", hint: "Cómo viene el mes: resultado, equilibrio y cifras clave" },
-  { id: "sales", label: "Ventas y entregas", hint: "Qué, dónde y cuándo se vende, y qué deja cada canal" },
+  { id: "sales", label: "Ventas y entregas", hint: "Qué, dónde y cuándo se vende, qué deja cada canal y cómo van las entregas" },
   { id: "costs", label: "Costos", hint: "Cuánto cuesta producir, en qué se va y cómo cambia" },
   { id: "purchases", label: "Compras", hint: "Lo que se compró en el mes" },
 ];

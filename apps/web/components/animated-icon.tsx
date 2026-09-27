@@ -34,6 +34,8 @@ import {
   SendIcon,
   SparklesIcon,
   SquarePenIcon,
+  TruckIcon,
+  HandCoinsIcon,
   UploadIcon,
   XIcon,
 } from "lucide-animated";
@@ -71,6 +73,8 @@ const icons = {
   send: SendIcon,
   sparkles: SparklesIcon,
   edit: SquarePenIcon,
+  truck: TruckIcon,
+  sales: HandCoinsIcon,
   upload: UploadIcon,
   close: XIcon,
 } as const;

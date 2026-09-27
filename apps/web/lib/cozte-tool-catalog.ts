@@ -14,6 +14,9 @@ export const COZTE_TOOL_LABELS = {
   recordPurchase: "Registrar compra",
   recordSale: "Registrar venta",
   setInvestmentCost: "Decidir costo de inversión",
+  updateSale: "Corregir venta",
+  updateDelivery: "Actualizar entrega",
+  readDeliveries: "Revisar entregas",
   voidRecord: "Anular registro",
   readBusiness: "Revisar el mes",
   showVisual: "Mostrar gráfico",
@@ -31,10 +34,10 @@ export type CozteToolName = keyof typeof COZTE_TOOL_LABELS;
 export const COZTE_TOOL_NAMES = Object.keys(COZTE_TOOL_LABELS) as CozteToolName[];
 
 /** Tools that can change stored data; the UI refreshes and the verifier requires their receipts. */
-export const COZTE_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveNote", "saveChannel", "recordPurchase", "recordSale", "setInvestmentCost", "voidRecord", "setExplanationLevel", "manageBoard", "createPresentation", "editPresentation", "sharePresentation"]);
+export const COZTE_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveNote", "saveChannel", "recordPurchase", "recordSale", "updateSale", "updateDelivery", "setInvestmentCost", "voidRecord", "setExplanationLevel", "manageBoard", "createPresentation", "editPresentation", "sharePresentation"]);
 
 /** Tools whose successful result changes costs shown elsewhere in the app. */
-export const COZTE_COST_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveChannel", "recordPurchase", "recordSale", "setInvestmentCost", "voidRecord"]);
+export const COZTE_COST_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveChannel", "recordPurchase", "recordSale", "updateSale", "updateDelivery", "setInvestmentCost", "voidRecord"]);
 
 /** Whether a tool call changed stored data: write tools always, and showVisual only when it pinned the widget. */
 export function cozteToolWrote(toolName: string, output: unknown): boolean {

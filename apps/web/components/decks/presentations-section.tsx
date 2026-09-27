@@ -14,7 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Dropdown, DropdownOption, DropdownGroup } from "@/components/ui/dropdown";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { AnimatedIcon } from "@/components/animated-icon";
@@ -173,9 +173,9 @@ function PresentationEditor({ id, state, demo, onOpen, onAskCozte, api }: Props 
       <Input aria-label="Título de la presentación" value={title} maxLength={LIMITS.title} onChange={(event) => setTitle(event.target.value)}
         onBlur={() => { if (title.trim() && title.trim() !== presentation.title) void edit([{ action: "settings", title: title.trim() }], "Título actualizado"); else setTitle(presentation.title); }}
         className="h-9 min-w-48 flex-1 text-base font-semibold" />
-      <NativeSelect aria-label="Estilo" value={presentation.theme} disabled={busy} onChange={(event) => void edit([{ action: "settings", theme: event.target.value as DeckTheme }])}>
-        {DECK_THEME_KEYS.map((key) => <NativeSelectOption key={key} value={key}>Estilo: {DECK_THEMES[key].label}</NativeSelectOption>)}
-      </NativeSelect>
+      <Dropdown aria-label="Estilo" value={presentation.theme} disabled={busy} onChange={(event) => void edit([{ action: "settings", theme: event.target.value as DeckTheme }])}>
+        {DECK_THEME_KEYS.map((key) => <DropdownOption key={key} value={key}>Estilo: {DECK_THEMES[key].label}</DropdownOption>)}
+      </Dropdown>
       <MonthPicker month={presentation.deck.month} onChange={(month) => { if (month !== presentation.deck.month) void edit([{ action: "settings", month }]); }} />
     </div>
     <div className="flex flex-wrap items-center gap-2">
@@ -206,14 +206,14 @@ function PresentationEditor({ id, state, demo, onOpen, onAskCozte, api }: Props 
           <Button size="sm" variant="outline" disabled={busy || number === slides.length} onClick={() => { void edit([{ action: "move", slide: number, to: number + 1 }], "Movida"); setSelected(number); }}>Bajar</Button>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => { void edit([{ action: "duplicate", slide: number }]); setSelected(number); }}>Duplicar</Button>
           <Button size="sm" variant="outline" disabled={busy || slides.length === 1} onClick={() => void edit([{ action: "remove", slide: number }])}>Quitar</Button>
-          <NativeSelect aria-label="Agregar diapositiva" className="ml-auto" value="" disabled={busy} onChange={(event) => {
+          <Dropdown aria-label="Agregar diapositiva" className="ml-auto" value="" disabled={busy} onChange={(event) => {
             const input = starterSlide(event.target.value, state);
             if (input) { void edit([{ action: "add", slide: input, position: number + 1 }]).then((result) => { if (result) setSelected(number); }); }
           }}>
-            <NativeSelectOption value="">+ Agregar diapositiva…</NativeSelectOption>
-            <optgroup label="Gráficos con tus datos">{CHART_KIND_KEYS.map((key) => <NativeSelectOption key={key} value={`chart:${key}`}>{CHART_KINDS[key].label}</NativeSelectOption>)}</optgroup>
-            <optgroup label="Otros diseños">{(["kpis", "bullets", "comparison", "section", "closing"] as SlideLayout[]).map((key) => <NativeSelectOption key={key} value={`layout:${key}`}>{SLIDE_LAYOUTS[key].label}</NativeSelectOption>)}</optgroup>
-          </NativeSelect>
+            <DropdownOption value="">+ Agregar diapositiva…</DropdownOption>
+            <DropdownGroup label="Gráficos con tus datos">{CHART_KIND_KEYS.map((key) => <DropdownOption key={key} value={`chart:${key}`}>{CHART_KINDS[key].label}</DropdownOption>)}</DropdownGroup>
+            <DropdownGroup label="Otros diseños">{(["kpis", "bullets", "comparison", "section", "closing"] as SlideLayout[]).map((key) => <DropdownOption key={key} value={`layout:${key}`}>{SLIDE_LAYOUTS[key].label}</DropdownOption>)}</DropdownGroup>
+          </Dropdown>
         </div>
         {slide.notes ? <p className="rounded-lg bg-muted px-3 py-2 text-sm"><span className="font-medium">Notas para presentar: </span>{slide.notes}</p> : null}
       </div>
@@ -274,14 +274,14 @@ function SlideForm({ slide, state, busy, onSave }: { slide: Slide; state: Domain
   return <Card className="gap-3">
     <CardHeader><CardTitle className="text-base">Editar esta diapositiva</CardTitle></CardHeader>
     <CardContent className="flex flex-col gap-3 text-sm">
-      <Field label="Diseño"><NativeSelect className="w-full" value={layout} onChange={(event) => setLayout(event.target.value as SlideLayout)}>{SLIDE_LAYOUT_KEYS.map((key) => <NativeSelectOption key={key} value={key}>{SLIDE_LAYOUTS[key].label}</NativeSelectOption>)}</NativeSelect></Field>
+      <Field label="Diseño"><Dropdown className="w-full" value={layout} onChange={(event) => setLayout(event.target.value as SlideLayout)}>{SLIDE_LAYOUT_KEYS.map((key) => <DropdownOption key={key} value={key}>{SLIDE_LAYOUTS[key].label}</DropdownOption>)}</Dropdown></Field>
       <Field label="Título"><Input value={title} maxLength={LIMITS.title} onChange={(event) => setTitle(event.target.value)} /></Field>
       <Field label="Subtítulo"><Input value={subtitle} maxLength={LIMITS.subtitle} onChange={(event) => setSubtitle(event.target.value)} /></Field>
-      {layout === "chart" ? <Field label="Gráfico"><NativeSelect className="w-full" value={chart} onChange={(event) => setChart(event.target.value as ChartKind)}>{CHART_KIND_KEYS.map((key) => <NativeSelectOption key={key} value={key}>{CHART_KINDS[key].label}</NativeSelectOption>)}</NativeSelect></Field> : null}
+      {layout === "chart" ? <Field label="Gráfico"><Dropdown className="w-full" value={chart} onChange={(event) => setChart(event.target.value as ChartKind)}>{CHART_KIND_KEYS.map((key) => <DropdownOption key={key} value={key}>{CHART_KINDS[key].label}</DropdownOption>)}</Dropdown></Field> : null}
       {layout === "kpis" ? <fieldset className="flex flex-col gap-1.5"><legend className="mb-1 font-medium">Cifras (hasta 4)</legend>
         <div className="grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-1">{METRIC_KEYS.map((key) => <label key={key} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={metrics.includes(key)} disabled={!metrics.includes(key) && metrics.length >= LIMITS.metrics} onChange={(event) => setMetrics((current) => event.target.checked ? [...current, key] : current.filter((item) => item !== key))} />{METRICS[key].label}</label>)}</div>
       </fieldset> : null}
-      {usesProduct ? <Field label="Producto"><NativeSelect className="w-full" value={product} onChange={(event) => setProduct(event.target.value)}>{chart === "channels" && layout === "chart" ? <NativeSelectOption value="">Todos</NativeSelectOption> : null}{state.products.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.name}</NativeSelectOption>)}</NativeSelect></Field> : null}
+      {usesProduct ? <Field label="Producto"><Dropdown className="w-full" value={product} onChange={(event) => setProduct(event.target.value)}>{chart === "channels" && layout === "chart" ? <DropdownOption value="">Todos</DropdownOption> : null}{state.products.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}</Dropdown></Field> : null}
       {usesMonth ? <Field label="Mes (vacío = el de la presentación)"><Input type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></Field> : null}
       {layout !== "comparison" ? <Field label={layout === "chart" ? "Conclusión (vacío = la automática)" : "Texto"}><Textarea rows={3} value={text} maxLength={LIMITS.text} onChange={(event) => setText(event.target.value)} /></Field> : null}
       {showBullets ? <Field label="Puntos (uno por línea)"><Textarea rows={4} value={bullets} onChange={(event) => setBullets(event.target.value)} /></Field> : null}

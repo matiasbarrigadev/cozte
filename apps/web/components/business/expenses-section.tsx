@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
@@ -128,7 +128,7 @@ function ExpenseDialog({ area, expense, state, demo, onSave, onClose }: { area: 
     <DialogHeader><DialogTitle>{expense ? `Editar ${expense.name}` : "Nuevo gasto de la empresa"}</DialogTitle><DialogDescription>{AREA_HINTS[selectedArea]}</DialogDescription></DialogHeader>
     <form className="flex flex-col gap-4" onSubmit={submit}><FieldGroup>
       {!expense ? <Field><FieldLabel htmlFor="company-expense-name">Gasto</FieldLabel><Input id="company-expense-name" name="name" required minLength={2} placeholder="Ej. Contador" /></Field> : null}
-      <Field><FieldLabel htmlFor="company-expense-area">Área</FieldLabel><NativeSelect id="company-expense-area" className="w-full" value={selectedArea} onChange={(event) => setSelectedArea(event.target.value as CostArea)}>{COMPANY_AREAS.map((item) => <NativeSelectOption key={item} value={item}>{AREA_LABELS[item]}</NativeSelectOption>)}{expense ? <NativeSelectOption value="production">{AREA_LABELS.production} (se reparte en los productos)</NativeSelectOption> : null}</NativeSelect></Field>
+      <Field><FieldLabel htmlFor="company-expense-area">Área</FieldLabel><Dropdown id="company-expense-area" className="w-full" value={selectedArea} onChange={(event) => setSelectedArea(event.target.value as CostArea)}>{COMPANY_AREAS.map((item) => <DropdownOption key={item} value={item}>{AREA_LABELS[item]}</DropdownOption>)}{expense ? <DropdownOption value="production">{AREA_LABELS.production} (se reparte en los productos)</DropdownOption> : null}</Dropdown></Field>
       <Field><FieldLabel htmlFor="company-expense-amount">Monto por mes ({expense?.currency ?? currency})</FieldLabel><Input id="company-expense-amount" name="amount" type="number" min="0" step="0.01" required defaultValue={expense ? (expense.nativeAmountMilli == null ? expense.amountMinor : expense.nativeAmountMilli / 1000) : undefined} /><FieldDescription>{expense ? "Si ya no lo pagas, ponlo en 0." : "Si lo pagas cada año o trimestre, divídelo por 12 o por 3."}</FieldDescription></Field>
       {!expense ? <Field><FieldLabel htmlFor="company-expense-category">Categoría</FieldLabel><Input id="company-expense-category" name="category" list="company-expense-categories" defaultValue="Servicios" /><datalist id="company-expense-categories">{categories.map((item) => <option key={item} value={item} />)}</datalist></Field> : null}
       <Field><FieldLabel htmlFor="company-expense-source">De dónde sale el monto</FieldLabel><Input id="company-expense-source" name="source" placeholder="Ej. Factura de septiembre" /></Field>

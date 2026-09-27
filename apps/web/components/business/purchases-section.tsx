@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
@@ -117,17 +117,17 @@ function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: Domai
       <Field><FieldLabel htmlFor="purchase-description">Qué compraste</FieldLabel><Input id="purchase-description" name="description" required minLength={2} placeholder="Ej. Cinta de embalaje" /></Field>
       <Field><FieldLabel htmlFor="purchase-supplier">Dónde o a quién</FieldLabel><Input id="purchase-supplier" name="supplier" placeholder="Opcional" /></Field>
       <Field><FieldLabel htmlFor="purchase-kind">¿Qué tipo de compra es?</FieldLabel>
-        <NativeSelect id="purchase-kind" className="w-full" value={kind} onChange={(event) => setKind(event.target.value as PurchaseKind)}>{KINDS.map((item) => <NativeSelectOption key={item} value={item} disabled={(item === "material" && !state.materials.length) || (item === "fixed_payment" && !activeExpenses.length)}>{PURCHASE_KIND_LABELS[item]}</NativeSelectOption>)}</NativeSelect>
+        <Dropdown id="purchase-kind" className="w-full" value={kind} onChange={(event) => setKind(event.target.value as PurchaseKind)}>{KINDS.map((item) => <DropdownOption key={item} value={item} disabled={(item === "material" && !state.materials.length) || (item === "fixed_payment" && !activeExpenses.length)}>{PURCHASE_KIND_LABELS[item]}</DropdownOption>)}</Dropdown>
         <FieldDescription>{PURCHASE_KIND_HINTS[kind]}</FieldDescription>
       </Field>
       {kind === "material" ? <div className="grid gap-3 sm:grid-cols-2">
-        <Field><FieldLabel htmlFor="purchase-material">Insumo</FieldLabel><NativeSelect id="purchase-material" name="material" className="w-full">{state.materials.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.name} ({item.purchaseUnit})</NativeSelectOption>)}</NativeSelect></Field>
+        <Field><FieldLabel htmlFor="purchase-material">Insumo</FieldLabel><Dropdown id="purchase-material" name="material" className="w-full">{state.materials.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name} ({item.purchaseUnit})</DropdownOption>)}</Dropdown></Field>
         <Field><FieldLabel htmlFor="purchase-quantity">Cantidad comprada</FieldLabel><Input id="purchase-quantity" name="quantity" type="number" min="0.001" step="0.001" placeholder="En su unidad de compra" /></Field>
         <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" name="updatePrice" defaultChecked className="size-4" />Actualizar el precio del insumo con esta compra</label>
       </div> : null}
-      {kind === "fixed_payment" ? <Field><FieldLabel htmlFor="purchase-expense">Gasto mensual que pagaste</FieldLabel><NativeSelect id="purchase-expense" name="expense" className="w-full">{activeExpenses.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.name} ({AREA_LABELS[item.area ?? "production"]})</NativeSelectOption>)}</NativeSelect></Field> : null}
+      {kind === "fixed_payment" ? <Field><FieldLabel htmlFor="purchase-expense">Gasto mensual que pagaste</FieldLabel><Dropdown id="purchase-expense" name="expense" className="w-full">{activeExpenses.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name} ({AREA_LABELS[item.area ?? "production"]})</DropdownOption>)}</Dropdown></Field> : null}
       {kind === "investment" ? <Field><FieldLabel htmlFor="purchase-life">¿Cuántos meses la vas a usar?</FieldLabel><Input id="purchase-life" name="life" type="number" min="1" max="600" step="1" required defaultValue={36} /><FieldDescription>Como referencia: 36 meses para tecnología, 60 para máquinas y herramientas.</FieldDescription></Field> : null}
-      {!areaLocked ? <Field><FieldLabel htmlFor="purchase-area">Área</FieldLabel><NativeSelect id="purchase-area" className="w-full" value={area} onChange={(event) => setArea(event.target.value as CostArea)}>{AREAS.map((item) => <NativeSelectOption key={item} value={item}>{AREA_LABELS[item]}</NativeSelectOption>)}</NativeSelect></Field> : null}
+      {!areaLocked ? <Field><FieldLabel htmlFor="purchase-area">Área</FieldLabel><Dropdown id="purchase-area" className="w-full" value={area} onChange={(event) => setArea(event.target.value as CostArea)}>{AREAS.map((item) => <DropdownOption key={item} value={item}>{AREA_LABELS[item]}</DropdownOption>)}</Dropdown></Field> : null}
       {kind === "investment" && area === "production" ? <Field>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="includeInUnitCost" className="size-4" />Sumar su parte mensual al costo de cada producto</label>
         <FieldDescription>Conviene si se usa para producir y habrá que reemplazarla: así tu precio paga su desgaste. Si no, cuenta solo en el resultado del mes. Puedes cambiarlo después en Gastos de la empresa.</FieldDescription>

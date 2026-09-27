@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-export const todayIso = () => new Date().toISOString().slice(0, 10);
+/** Today on the person's own clock (not UTC), as AAAA-MM-DD. */
+export const todayIso = () => new Date().toLocaleDateString("en-CA");
 
 /** Whole amounts for reading: tables, totals and lessons. */
 export function useMoney(currency: string) {

@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
@@ -24,6 +24,7 @@ import { CozteAssistant } from "./cozte-assistant";
 import { CostHistory, type CostSnapshotRow, type HistoryEntry, type ProfileSnapshotRow } from "./cost-history";
 import { CostAnalysisView } from "./cost-analysis-view";
 import { SalesSection } from "./business/sales-section";
+import { DeliveriesSection } from "./business/deliveries-section";
 import { ExpensesSection } from "./business/expenses-section";
 import { PurchasesSection } from "./business/purchases-section";
 import { ResultSection } from "./business/result-section";
@@ -48,8 +49,8 @@ type NavItem = { id: View; label: string; icon: AnimatedIconName };
 /** Grouped the way a business thinks about it: what it costs, what happens each day and how it went. */
 const navGroups: { label: string; items: NavItem[] }[] = [
   { label: "Espacio de trabajo", items: [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "asistente", label: "Cozte AI", icon: "assistant" }] },
-  { label: "Costos", items: [{ id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "ventas", label: "Ventas y entregas", icon: "arrowUpRight" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
-  { label: "Día a día", items: [{ id: "compras", label: "Compras", icon: "receipt" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
+  { label: "Costos", items: [{ id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
+  { label: "Día a día", items: [{ id: "ventas", label: "Ventas", icon: "sales" }, { id: "entregas", label: "Entregas", icon: "truck" }, { id: "compras", label: "Compras", icon: "receipt" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
   { label: "Evolución", items: [{ id: "analisis", label: "Análisis de costos", icon: "chart" }, { id: "presentaciones", label: "Presentaciones", icon: "presentation" }, { id: "historial", label: "Historial", icon: "history" }] },
 ];
 
@@ -273,7 +274,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
         <SidebarFooter><div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">{demo ? <Badge variant="outline" className="border-white/25 bg-white/5 text-white">Demostración</Badge> : <><div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden"><OrganizationSwitcher hidePersonal appearance={{ elements: { organizationSwitcherTrigger: "cozte-org-trigger", organizationPreviewAvatarBox: "cozte-org-avatar", organizationSwitcherPopoverCard: "cozte-clerk-popover" } }} /></div><UserButton appearance={{ elements: { userButtonTrigger: "cozte-user-trigger", userButtonAvatarBox: "cozte-user-avatar", userButtonPopoverCard: "cozte-clerk-popover" } }} /></>}</div></SidebarFooter>
       </Sidebar>
       <SidebarInset>
-        <header className="flex h-16 items-center gap-3 border-b bg-card px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="h-6" /><span className="truncate text-sm font-semibold text-foreground">{demo ? state.organization.name : <ActiveOrganizationName fallback={state.organization.name} />}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}{!demo && !state.products.length && !state.materials.length && !state.expenses.length ? <NativeSelect value={currency} disabled={busy} aria-label="Moneda base de la empresa" onChange={(event) => void changeBaseCurrency(event.target.value as Currency)}>{supportedCurrencies.map((code) => <NativeSelectOption key={code} value={code}>{code}</NativeSelectOption>)}</NativeSelect> : <Badge variant="outline" title="Moneda base de la empresa">{currency}</Badge>}</div></header>
+        <header className="flex h-16 items-center gap-3 border-b bg-card px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="h-6" /><span className="truncate text-sm font-semibold text-foreground">{demo ? state.organization.name : <ActiveOrganizationName fallback={state.organization.name} />}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}{!demo && !state.products.length && !state.materials.length && !state.expenses.length ? <Dropdown value={currency} disabled={busy} aria-label="Moneda base de la empresa" onChange={(event) => void changeBaseCurrency(event.target.value as Currency)}>{supportedCurrencies.map((code) => <DropdownOption key={code} value={code}>{code}</DropdownOption>)}</Dropdown> : <Badge variant="outline" title="Moneda base de la empresa">{currency}</Badge>}</div></header>
         <main className={view === "asistente" ? "mx-auto flex w-full max-w-none flex-col gap-4 px-4 py-5 md:px-8" : "mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-7 md:px-8 md:py-10"}>
           {demo && view !== "asistente" ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
           {view === "dashboard" ? <>
@@ -330,7 +331,9 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
               onReview={reviewChanges} onDiscard={() => { if (!demo) setDraftStatus("saving"); setDraft(emptyDraft()); setReview(null); }} />
           </> : null}
 
-          {view === "ventas" ? <SalesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenCozte={() => navigate("asistente")} /> : null}
+          {view === "ventas" ? <SalesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenCozte={() => navigate("asistente")} onOpenDeliveries={() => navigate("entregas")} onDataChanged={refresh} /> : null}
+
+          {view === "entregas" ? <DeliveriesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenSales={() => navigate("ventas")} onDataChanged={refresh} /> : null}
 
           {view === "gastos" ? <ExpensesSection state={state} demo={demo} month={businessMonth} onSave={save} onOpenProduction={() => navigate("planilla")} onOpenPurchases={() => navigate("compras")} /> : null}
 
@@ -381,5 +384,5 @@ function ProductComponents({ product, state, onSave, busy, demo }: { product: Pr
   const [materialId, setMaterialId] = React.useState(state.materials[0]?.id ?? "");
   const [quantity, setQuantity] = React.useState("1");
   const components = state.components.filter((item) => item.productId === product.id);
-  return <Card><CardHeader><CardTitle>Composición</CardTitle><CardDescription>Un mismo insumo puede estar en varios productos con cantidades distintas.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Insumo</TableHead><TableHead>Consumo por lote</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{components.map((item) => { const material = state.materials.find((entry) => entry.id === item.materialId); return <TableRow key={item.materialId}><TableCell>{material?.name ?? "Insumo no encontrado"}</TableCell><TableCell>{item.quantityMilli / 1000} {material?.purchaseUnit}</TableCell><TableCell className="text-right"><Button variant="ghost" size="sm" disabled={busy || demo} onClick={() => void onSave({ action: "set-component", productId: product.id, materialId: item.materialId, quantityMilli: 0 })}>Quitar</Button></TableCell></TableRow>; })}</TableBody></Table></CardContent><CardFooter className="flex flex-wrap gap-2"><NativeSelect value={materialId} onChange={(event) => setMaterialId(event.target.value)} aria-label="Insumo para agregar"><NativeSelectOption value="">Seleccionar insumo</NativeSelectOption>{state.materials.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.name}</NativeSelectOption>)}</NativeSelect><Input className="w-28" type="number" min="0.001" step="0.001" value={quantity} onChange={(event) => setQuantity(event.target.value)} aria-label="Cantidad por lote" /><Button variant="outline" disabled={!materialId || busy || demo} onClick={() => void onSave({ action: "set-component", productId: product.id, materialId, quantityMilli: Math.round(Number(quantity) * 1000) })}>Guardar consumo</Button></CardFooter></Card>;
+  return <Card><CardHeader><CardTitle>Composición</CardTitle><CardDescription>Un mismo insumo puede estar en varios productos con cantidades distintas.</CardDescription></CardHeader><CardContent><Table><TableHeader><TableRow><TableHead>Insumo</TableHead><TableHead>Consumo por lote</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{components.map((item) => { const material = state.materials.find((entry) => entry.id === item.materialId); return <TableRow key={item.materialId}><TableCell>{material?.name ?? "Insumo no encontrado"}</TableCell><TableCell>{item.quantityMilli / 1000} {material?.purchaseUnit}</TableCell><TableCell className="text-right"><Button variant="ghost" size="sm" disabled={busy || demo} onClick={() => void onSave({ action: "set-component", productId: product.id, materialId: item.materialId, quantityMilli: 0 })}>Quitar</Button></TableCell></TableRow>; })}</TableBody></Table></CardContent><CardFooter className="flex flex-wrap gap-2"><Dropdown value={materialId} onChange={(event) => setMaterialId(event.target.value)} aria-label="Insumo para agregar"><DropdownOption value="">Seleccionar insumo</DropdownOption>{state.materials.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}</Dropdown><Input className="w-28" type="number" min="0.001" step="0.001" value={quantity} onChange={(event) => setQuantity(event.target.value)} aria-label="Cantidad por lote" /><Button variant="outline" disabled={!materialId || busy || demo} onClick={() => void onSave({ action: "set-component", productId: product.id, materialId, quantityMilli: Math.round(Number(quantity) * 1000) })}>Guardar consumo</Button></CardFooter></Card>;
 }

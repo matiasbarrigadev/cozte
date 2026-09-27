@@ -1,6 +1,6 @@
 import { calculateCosts, type DomainState } from "./domain";
 import { snapshotRowsFor } from "./cost-snapshots";
-import { priceSale, type BusinessRecords, type Purchase, type Sale, type SalesChannel } from "./business";
+import { byProximity, priceSale, saleItemsText, type BusinessRecords, type Delivery, type Purchase, type Sale, type SalesChannel } from "./business";
 
 export const demoState: DomainState = {
   revision: 3,
@@ -87,11 +87,36 @@ export function demoBusinessRecords(): BusinessRecords {
     channels, purchases,
     investments: purchases.filter((item) => item.kind === "investment"),
     sales: [
+      sale("v6", "2026-09-25", tienda, [{ productId: "bolsillo", quantity: 5 }]),
       sale("v1", "2026-09-22", librerias, [{ productId: "bolsillo", quantity: 80 }]),
       sale("v2", "2026-09-19", tienda, [{ productId: "bolsillo", quantity: 4 }, { productId: "blanda", quantity: 2 }]),
       sale("v3", "2026-09-18", tienda, [{ productId: "dura", quantity: 3 }]),
       sale("v4", "2026-09-12", feria, [{ productId: "dura", quantity: 25 }, { productId: "blanda", quantity: 30 }, { productId: "bolsillo", quantity: 40 }]),
       sale("v5", "2026-09-04", librerias, [{ productId: "dura", quantity: 60 }, { productId: "blanda", quantity: 60 }]),
-    ],
+    ].map((item) => {
+      const delivery = DEMO_DELIVERY_DETAILS[item.id];
+      return delivery ? { ...item, delivery: { id: `e-${item.id}`, status: delivery.status, scheduledOn: delivery.scheduledOn } } : item;
+    }),
   };
+}
+
+/** Logistics of the demo's sales: one delivered long ago, one on the way today, one that failed and one coming up. */
+const DEMO_DELIVERY_DETAILS: Record<string, Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn">> = {
+  v6: { scheduledOn: "2026-09-28", timeWindow: "9 a 13", status: "pending", carrier: "Correo Andreani", recipient: "Lucía Ferreyra", address: "Av. Colón 1450, Córdoba", contact: "351 555 0142", tracking: "", note: "Timbre 3B", deliveredOn: null },
+  v1: { scheduledOn: "2026-09-23", timeWindow: "Mañana", status: "delivered", carrier: "Moto propia (Tomás)", recipient: "Librería El Ateneo", address: "San Martín 220", contact: "Depósito, preguntar por Marta", tracking: "", note: "", deliveredOn: "2026-09-23" },
+  v2: { scheduledOn: "2026-09-26", timeWindow: "14 a 18", status: "on_the_way", carrier: "Correo Andreani", recipient: "Martín Ruiz", address: "Belgrano 88, Rosario", contact: "341 555 0199", tracking: "AND-4821-77", note: "", deliveredOn: null },
+  v3: { scheduledOn: "2026-09-24", timeWindow: "", status: "failed", carrier: "Correo Andreani", recipient: "Sofía Paz", address: "Mitre 1020, Mendoza", contact: "261 555 0110", tracking: "AND-4790-12", note: "No había nadie: reprogramar", deliveredOn: null },
+  v5: { scheduledOn: "2026-09-05", timeWindow: "Tarde", status: "delivered", carrier: "Moto propia (Tomás)", recipient: "Librería Rayuela", address: "Caseros 540", contact: "", tracking: "", note: "", deliveredOn: "2026-09-05" },
+};
+
+/** The demo's deliveries, closest to the demo's today first. */
+export function demoDeliveries(today = "2026-09-26"): Delivery[] {
+  const records = demoBusinessRecords();
+  const list = records.sales.flatMap((sale): Delivery[] => {
+    const details = DEMO_DELIVERY_DETAILS[sale.id];
+    if (!details) return [];
+    const channel = records.channels.find((item) => item.id === sale.channelId);
+    return [{ id: `e-${sale.id}`, saleId: sale.id, ...details, method: channel?.deliveryMethod ?? "", source: "cozte", costMinor: sale.deliveryCostMinor, sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) } }];
+  });
+  return byProximity(list, (item) => item.scheduledOn, today);
 }

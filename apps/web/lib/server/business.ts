@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { calculateCosts, convertToOrganizationCurrency, type CostArea, type DomainState } from "@/lib/domain";
-import { AREA_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, priceSale, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
+import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, businessToday, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement } from "./db";
 import { commitMutation, type Mutation } from "./mutations";
@@ -43,6 +43,32 @@ export const purchaseInputSchema = z.object({
   documentId: z.string().min(1).max(120).optional(),
 });
 
+const deliveryStatus = z.enum(DELIVERY_STATUSES as [DeliveryStatus, ...DeliveryStatus[]]);
+const text = (max: number) => z.string().trim().max(max);
+
+/** Logistics details of a delivery; every field is optional so a correction can change just one. */
+export const deliveryFieldsSchema = z.object({
+  scheduledOn: z.iso.date().optional(),
+  timeWindow: text(60).optional(),
+  status: deliveryStatus.optional(),
+  method: text(80).optional(),
+  carrier: text(120).optional(),
+  recipient: text(120).optional(),
+  address: text(300).optional(),
+  contact: text(120).optional(),
+  tracking: text(120).optional(),
+  note: text(500).optional(),
+  deliveredOn: z.iso.date().nullable().optional(),
+});
+
+export const deliveryInputSchema = deliveryFieldsSchema.extend({
+  /** An existing delivery to change, or the sale to create one for. */
+  id: z.string().min(1).max(120).optional(),
+  saleId: z.string().min(1).max(120).optional(),
+  /** What delivering cost; stored on the sale so the month's result follows it. */
+  cost: amount.optional(),
+});
+
 export const saleInputSchema = z.object({
   soldOn: z.iso.date(),
   channelId: z.string().min(1).max(120).nullable().optional(),
@@ -51,11 +77,24 @@ export const saleInputSchema = z.object({
   customer: z.string().trim().max(120).default(""),
   note: z.string().trim().max(500).default(""),
   documentId: z.string().min(1).max(120).optional(),
+  /** Delivery details; without them a delivery is still created when the channel delivers. */
+  delivery: deliveryFieldsSchema.optional(),
+});
+
+export const salePatchSchema = z.object({
+  soldOn: z.iso.date().optional(),
+  channelId: z.string().min(1).max(120).nullable().optional(),
+  customer: text(120).optional(),
+  note: text(500).optional(),
+  items: z.array(z.object({ productId: z.string().min(1).max(120), quantity: z.number().positive().max(1_000_000_000), unitPrice: amount.optional() })).min(1).max(40).optional(),
+  deliveryCost: amount.optional(),
 });
 
 export type ChannelInput = z.input<typeof channelInputSchema>;
 export type PurchaseInput = z.input<typeof purchaseInputSchema>;
 export type SaleInput = z.input<typeof saleInputSchema>;
+export type SalePatchInput = z.input<typeof salePatchSchema>;
+export type DeliveryInput = z.input<typeof deliveryInputSchema>;
 type RecordOptions = { source: "user" | "cozte"; idempotencyKey: string };
 
 /** A second deterministic uuid for a derived write (the price update a purchase triggers). */
@@ -96,6 +135,8 @@ function monthBounds(value: string): [string, string] {
 type ChannelRow = { id: string; name: string; delivery_method: string; commission_bps: number; fee_per_order_minor: number; delivery_cost_per_order_minor: number; units_per_order_milli: number; price_adjustment_bps: number };
 type PurchaseRow = { id: string; purchased_on: string; description: string; supplier: string; amount_minor: number; kind: PurchaseKind; area: CostArea; material_name: string | null; quantity_milli: number | null; expense_id: string | null; expense_name: string | null; useful_life_months: number | null; include_in_unit_cost: number; document_id: string | null; source: "user" | "cozte" };
 type SaleRow = { id: string; sold_on: string; channel_id: string | null; channel_name: string; customer: string; note: string; total_minor: number; selling_cost_minor: number; delivery_cost_minor: number; variable_cost_minor: number | null; production_cost_minor: number | null; document_id: string | null; source: "user" | "cozte" };
+type SaleDeliveryRow = { sale_id: string; id: string; status: DeliveryStatus; scheduled_on: string };
+type DeliveryRow = { id: string; sale_id: string; scheduled_on: string; time_window: string; status: DeliveryStatus; method: string; carrier: string; recipient: string; address: string; contact: string; tracking: string; note: string; delivered_on: string | null; source: "user" | "cozte"; sold_on: string; channel_id: string | null; channel_name: string; customer: string; total_minor: number; delivery_cost_minor: number };
 type SaleItemRow = { sale_id: string; product_id: string; product_name: string; quantity_milli: number; unit_price_minor: number; unit_variable_cost_minor: number | null; unit_cost_minor: number | null };
 
 const toChannel = (row: ChannelRow): SalesChannel => ({ id: row.id, name: row.name, deliveryMethod: row.delivery_method, commissionBps: row.commission_bps, feePerOrderMinor: row.fee_per_order_minor, deliveryCostPerOrderMinor: row.delivery_cost_per_order_minor, unitsPerOrderMilli: row.units_per_order_milli, priceAdjustmentBps: row.price_adjustment_bps });
@@ -112,13 +153,15 @@ export async function loadChannels(principal: Principal): Promise<SalesChannel[]
 export async function loadBusinessRecords(principal: Principal, forMonth: string) {
   const [from, to] = monthBounds(month.parse(forMonth));
   const org = principal.organizationId;
-  const [channels, purchases, investments, sales, items] = await dbBatch<ChannelRow | PurchaseRow | SaleRow | SaleItemRow>([
+  const [channels, purchases, investments, sales, items, deliveries] = await dbBatch<ChannelRow | PurchaseRow | SaleRow | SaleItemRow | SaleDeliveryRow>([
     { sql: "SELECT id, name, delivery_method, commission_bps, fee_per_order_minor, delivery_cost_per_order_minor, units_per_order_milli, price_adjustment_bps FROM sales_channels WHERE organization_id=? AND archived_at IS NULL ORDER BY created_at", params: [org] },
     { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.purchased_on >= ? AND p.purchased_on < ? ORDER BY p.purchased_on DESC, p.created_at DESC LIMIT 500`, params: [org, from, to] },
     { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.kind='investment' ORDER BY p.purchased_on DESC LIMIT 500`, params: [org] },
     { sql: "SELECT id, sold_on, channel_id, channel_name, customer, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE organization_id=? AND archived_at IS NULL AND sold_on >= ? AND sold_on < ? ORDER BY sold_on DESC, created_at DESC LIMIT 500", params: [org, from, to] },
     { sql: "SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE s.organization_id=? AND s.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
+    { sql: "SELECT d.sale_id, d.id, d.status, d.scheduled_on FROM deliveries d JOIN sales s ON s.id=d.sale_id WHERE s.organization_id=? AND s.archived_at IS NULL AND d.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
   ], { retrySafe: true });
+  const deliveryBySale = new Map((deliveries as SaleDeliveryRow[]).map((row) => [row.sale_id, { id: row.id, status: row.status, scheduledOn: row.scheduled_on }]));
   const itemsBySale = new Map<string, SaleItem[]>();
   for (const row of items as SaleItemRow[]) {
     const list = itemsBySale.get(row.sale_id) ?? [];
@@ -134,6 +177,7 @@ export async function loadBusinessRecords(principal: Principal, forMonth: string
       totalMinor: row.total_minor, sellingCostMinor: row.selling_cost_minor, deliveryCostMinor: row.delivery_cost_minor,
       variableCostMinor: row.variable_cost_minor, productionCostMinor: row.production_cost_minor, documentId: row.document_id, source: row.source,
       items: itemsBySale.get(row.id) ?? [],
+      delivery: deliveryBySale.get(row.id) ?? null,
     })),
   };
 }
@@ -171,18 +215,20 @@ function audit(principal: Principal, action: string, entityId: string, details: 
 }
 
 /** Archives a channel, purchase or sale: it leaves every view and total, and the audit trail keeps it. */
-export async function archiveRecord(principal: Principal, kind: "channel" | "purchase" | "sale", id: string, reason = ""): Promise<void> {
+export async function archiveRecord(principal: Principal, kind: "channel" | "purchase" | "sale" | "delivery", id: string, reason = ""): Promise<void> {
   assertEditor(principal);
   if (kind === "purchase") {
     const [row] = await dbQuery<{ include_in_unit_cost: number }>("SELECT include_in_unit_cost FROM purchases WHERE id=? AND organization_id=? AND kind='investment' AND archived_at IS NULL", [id, principal.organizationId]);
     if (row?.include_in_unit_cost === 1) await commitOnce(principal, crypto.randomUUID(), "user", () => ({ action: "set-investment-cost", id, include: false }));
   }
-  const table = { channel: "sales_channels", purchase: "purchases", sale: "sales" }[kind];
+  const table = { channel: "sales_channels", purchase: "purchases", sale: "sales", delivery: "deliveries" }[kind];
   const [rows] = await dbBatch<{ id: string }>([
     { sql: `UPDATE ${table} SET archived_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND archived_at IS NULL RETURNING id`, params: [id, principal.organizationId] },
     audit(principal, `archive-${kind}`, id, { reason }),
   ]);
-  if (!rows.length) throw new ApiError(404, kind === "channel" ? "Canal no encontrado" : kind === "purchase" ? "Compra no encontrada" : "Venta no encontrada");
+  if (!rows.length) throw new ApiError(404, { channel: "Canal no encontrado", purchase: "Compra no encontrada", sale: "Venta no encontrada", delivery: "Entrega no encontrada" }[kind]);
+  // A voided sale takes its delivery with it.
+  if (kind === "sale") await dbBatch([{ sql: "UPDATE deliveries SET archived_at=CURRENT_TIMESTAMP WHERE sale_id=? AND organization_id=? AND archived_at IS NULL", params: [id, principal.organizationId] }]);
 }
 
 async function documentBelongs(principal: Principal, documentId: string | undefined) {
@@ -273,15 +319,140 @@ export async function recordSale(principal: Principal, input: SaleInput, options
   };
   if (duplicate[0]) return { id: duplicate[0].id, duplicate: true, sale: { id: duplicate[0].id, ...sale } };
   const id = crypto.randomUUID();
+  const delivery = value.delivery || needsDelivery(channel, value.deliveryCost) ? newDeliveryRow(principal, id, value.soldOn, channel, value.customer, value.delivery ?? {}, options.source, businessToday(state.organization.currency)) : null;
   await dbBatch([
     { sql: "INSERT INTO sales (id, organization_id, sold_on, channel_id, channel_name, customer, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source, actor_id, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
       id, principal.organizationId, sale.soldOn, sale.channelId, sale.channelName, sale.customer, sale.note, sale.totalMinor, sale.sellingCostMinor, sale.deliveryCostMinor,
       sale.variableCostMinor, sale.productionCostMinor, sale.documentId, options.source, principal.userId, options.idempotencyKey,
     ] },
     ...priced.items.map((item): SqlStatement => ({ sql: "INSERT INTO sale_items (sale_id, product_id, product_name, quantity_milli, unit_price_minor, unit_variable_cost_minor, unit_cost_minor) VALUES (?, ?, ?, ?, ?, ?, ?)", params: [id, item.productId, item.productName, item.quantityMilli, item.unitPriceMinor, item.unitVariableCostMinor, item.unitCostMinor] })),
+    ...(delivery ? [delivery.statement] : []),
     audit(principal, "record-sale", id, { ...value, totalMinor: sale.totalMinor, channel: channel.name, source: options.source }),
   ]);
-  return { id, duplicate: false, sale: { id, ...sale } };
+  return { id, duplicate: false, sale: { id, ...sale, delivery: delivery ? { id: delivery.id, status: delivery.status, scheduledOn: delivery.scheduledOn } : null } };
+}
+
+const organizationToday = async (principal: Principal) => businessToday((await dbQuery<{ currency: string }>("SELECT currency FROM organizations WHERE id=?", [principal.organizationId]))[0]?.currency);
+
+function newDeliveryRow(principal: Principal, saleId: string, soldOn: string, channel: Pick<SalesChannel, "deliveryMethod">, customer: string, fields: z.infer<typeof deliveryFieldsSchema>, source: "user" | "cozte", today: string) {
+  const id = crypto.randomUUID();
+  const scheduledOn = fields.scheduledOn ?? soldOn;
+  const status = fields.status ?? initialDeliveryStatus(scheduledOn, today);
+  const deliveredOn = status === "delivered" ? fields.deliveredOn ?? (scheduledOn < today ? scheduledOn : today) : null;
+  return {
+    id, status, scheduledOn,
+    statement: { sql: "INSERT INTO deliveries (id, organization_id, sale_id, scheduled_on, time_window, status, method, carrier, recipient, address, contact, tracking, note, delivered_on, source, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
+      id, principal.organizationId, saleId, scheduledOn, fields.timeWindow ?? "", status, fields.method ?? channel.deliveryMethod ?? "", fields.carrier ?? "", fields.recipient ?? customer, fields.address ?? "", fields.contact ?? "", fields.tracking ?? "", fields.note ?? "", deliveredOn, source, principal.userId,
+    ] } satisfies SqlStatement,
+  };
+}
+
+async function loadSale(principal: Principal, id: string): Promise<Sale> {
+  const [rows, items] = await dbBatch<SaleRow | SaleItemRow>([
+    { sql: "SELECT id, sold_on, channel_id, channel_name, customer, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [id, principal.organizationId] },
+    { sql: "SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE si.sale_id=? AND s.organization_id=?", params: [id, principal.organizationId] },
+  ], { retrySafe: true });
+  const row = (rows as SaleRow[])[0];
+  if (!row) throw new ApiError(404, "Venta no encontrada");
+  return {
+    id: row.id, soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, note: row.note,
+    totalMinor: row.total_minor, sellingCostMinor: row.selling_cost_minor, deliveryCostMinor: row.delivery_cost_minor,
+    variableCostMinor: row.variable_cost_minor, productionCostMinor: row.production_cost_minor, documentId: row.document_id, source: row.source,
+    items: (items as SaleItemRow[]).map((item) => ({ productId: item.product_id, productName: item.product_name, quantityMilli: item.quantity_milli, unitPriceMinor: item.unit_price_minor, unitVariableCostMinor: item.unit_variable_cost_minor, unitCostMinor: item.unit_cost_minor })),
+  };
+}
+
+/**
+ * Corrects a sale in place (date, channel, customer, note, products, delivery cost). Prices and product costs of
+ * the moment are kept unless changed; the month's result follows. The audit trail keeps the version before.
+ */
+export async function updateSale(principal: Principal, id: string, input: SalePatchInput, source: "user" | "cozte"): Promise<Sale> {
+  assertEditor(principal);
+  const patch = salePatchSchema.parse(input);
+  const [sale, state, channels] = await Promise.all([loadSale(principal, id), loadState(principal), loadChannels(principal)]);
+  const { sale: next, problems } = repriceSale(sale, patch, state, calculateCosts(state), channels);
+  if (problems.length) throw new ApiError(400, problems.join(". "));
+  await dbBatch([
+    { sql: "UPDATE sales SET sold_on=?, channel_id=?, channel_name=?, customer=?, note=?, total_minor=?, selling_cost_minor=?, delivery_cost_minor=?, variable_cost_minor=?, production_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [
+      next.soldOn, next.channelId, next.channelName, next.customer, next.note, next.totalMinor, next.sellingCostMinor, next.deliveryCostMinor, next.variableCostMinor, next.productionCostMinor, id, principal.organizationId,
+    ] },
+    ...(patch.items ? [
+      { sql: "DELETE FROM sale_items WHERE sale_id=? AND sale_id IN (SELECT id FROM sales WHERE organization_id=?)", params: [id, principal.organizationId] },
+      ...next.items.map((item): SqlStatement => ({ sql: "INSERT INTO sale_items (sale_id, product_id, product_name, quantity_milli, unit_price_minor, unit_variable_cost_minor, unit_cost_minor) VALUES (?, ?, ?, ?, ?, ?, ?)", params: [id, item.productId, item.productName, item.quantityMilli, item.unitPriceMinor, item.unitVariableCostMinor, item.unitCostMinor] })),
+    ] : []),
+    audit(principal, "update-sale", id, { before: sale, patch, source }),
+  ]);
+  return { ...sale, ...next };
+}
+
+/** Deliveries of a month plus every open one (pending, on the way or failed), closest to today first. */
+export async function loadDeliveries(principal: Principal, forMonth: string): Promise<Delivery[]> {
+  const [from, to] = monthBounds(month.parse(forMonth));
+  const org = principal.organizationId;
+  const scope = "d.organization_id=? AND d.archived_at IS NULL AND s.archived_at IS NULL AND ((d.scheduled_on >= ? AND d.scheduled_on < ?) OR d.status IN ('pending', 'on_the_way', 'failed'))";
+  const [rows, items] = await dbBatch<DeliveryRow | SaleItemRow>([
+    { sql: `SELECT d.id, d.sale_id, d.scheduled_on, d.time_window, d.status, d.method, d.carrier, d.recipient, d.address, d.contact, d.tracking, d.note, d.delivered_on, d.source, s.sold_on, s.channel_id, s.channel_name, s.customer, s.total_minor, s.delivery_cost_minor FROM deliveries d JOIN sales s ON s.id=d.sale_id WHERE ${scope} LIMIT 800`, params: [org, from, to] },
+    { sql: `SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN deliveries d ON d.sale_id=si.sale_id JOIN sales s ON s.id=si.sale_id WHERE ${scope}`, params: [org, from, to] },
+  ], { retrySafe: true });
+  const itemsBySale = new Map<string, SaleItemRow[]>();
+  for (const row of items as SaleItemRow[]) itemsBySale.set(row.sale_id, [...itemsBySale.get(row.sale_id) ?? [], row]);
+  const list = (rows as DeliveryRow[]).map((row): Delivery => ({
+    id: row.id, saleId: row.sale_id, scheduledOn: row.scheduled_on, timeWindow: row.time_window, status: row.status, method: row.method, carrier: row.carrier,
+    recipient: row.recipient, address: row.address, contact: row.contact, tracking: row.tracking, note: row.note, deliveredOn: row.delivered_on, source: row.source,
+    costMinor: row.delivery_cost_minor,
+    sale: { soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, totalMinor: row.total_minor, items: saleItemsText((itemsBySale.get(row.sale_id) ?? []).map((item) => ({ productName: item.product_name, quantityMilli: item.quantity_milli }))) },
+  }));
+  return byProximity(list, (item) => item.scheduledOn, await organizationToday(principal));
+}
+
+const DELIVERY_COLUMNS: Record<string, string> = { scheduledOn: "scheduled_on", timeWindow: "time_window", status: "status", method: "method", carrier: "carrier", recipient: "recipient", address: "address", contact: "contact", tracking: "tracking", note: "note", deliveredOn: "delivered_on" };
+
+/**
+ * Creates a sale's delivery or changes one. Marking it delivered stamps today unless a date is given; its cost goes
+ * to the sale, so the month's result and every view follow.
+ */
+export async function saveDelivery(principal: Principal, input: DeliveryInput, source: "user" | "cozte"): Promise<{ id: string; created: boolean; done: string[] }> {
+  assertEditor(principal);
+  const value = deliveryInputSchema.parse(input);
+  const org = principal.organizationId;
+  let id = value.id;
+  let saleId = value.saleId;
+  let created = false;
+  const statements: SqlStatement[] = [];
+  const done: string[] = [];
+  if (id) {
+    const [row] = await dbQuery<{ sale_id: string; status: DeliveryStatus; delivered_on: string | null }>("SELECT d.sale_id, d.status, d.delivered_on FROM deliveries d WHERE d.id=? AND d.organization_id=? AND d.archived_at IS NULL", [id, org]);
+    if (!row) throw new ApiError(404, "Entrega no encontrada");
+    saleId = row.sale_id;
+    const fields = { ...value };
+    if (fields.status === "delivered" && row.status !== "delivered" && fields.deliveredOn === undefined) fields.deliveredOn = await organizationToday(principal);
+    if (fields.status && fields.status !== "delivered" && fields.deliveredOn === undefined) fields.deliveredOn = null;
+    const sets = Object.entries(DELIVERY_COLUMNS).filter(([key]) => fields[key as keyof typeof fields] !== undefined);
+    if (sets.length) statements.push({ sql: `UPDATE deliveries SET ${sets.map(([, column]) => `${column}=?`).join(", ")}, updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`, params: [...sets.map(([key]) => (fields[key as keyof typeof fields] ?? null) as string | null), id, org] });
+    if (value.status) done.push(`Entrega: ${DELIVERY_STATUS_LABELS[value.status]}`);
+    if (value.scheduledOn) done.push(`Entrega programada para el ${value.scheduledOn}`);
+    if (sets.some(([key]) => !["status", "scheduledOn", "deliveredOn"].includes(key))) done.push("Datos de la entrega actualizados");
+  } else {
+    if (!saleId) throw new ApiError(400, "Indica la venta a entregar");
+    const [sale] = await dbQuery<{ sold_on: string; customer: string; channel_id: string | null }>("SELECT sold_on, customer, channel_id FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL", [saleId, org]);
+    if (!sale) throw new ApiError(404, "Venta no encontrada");
+    const [existing] = await dbQuery<{ id: string }>("SELECT id FROM deliveries WHERE sale_id=? AND organization_id=? AND archived_at IS NULL", [saleId, org]);
+    if (existing) throw new ApiError(409, "Esa venta ya tiene una entrega: cámbiala en lugar de crear otra");
+    const channel = sale.channel_id ? (await loadChannels(principal)).find((item) => item.id === sale.channel_id) ?? DIRECT_CHANNEL : DIRECT_CHANNEL;
+    const row = newDeliveryRow(principal, saleId, sale.sold_on, channel, sale.customer, value, source, await organizationToday(principal));
+    id = row.id;
+    created = true;
+    statements.push(row.statement);
+    done.push(`Entrega ${row.status === "delivered" ? "registrada como entregada" : `programada para el ${row.scheduledOn}`}`);
+  }
+  if (value.cost !== undefined) {
+    statements.push({ sql: "UPDATE sales SET delivery_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [Math.round(value.cost), saleId!, org] });
+    done.push("Costo de entrega actualizado");
+  }
+  if (!statements.length) return { id: id!, created, done: [] };
+  statements.push(audit(principal, created ? "create-delivery" : "update-delivery", id!, { ...value, source }));
+  await dbBatch(statements);
+  return { id: id!, created, done };
 }
 
 /** Plain-language one-liners for receipts and the audit of what was recorded. */

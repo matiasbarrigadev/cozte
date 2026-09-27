@@ -31,12 +31,15 @@ El proyecto `lightningteam/cozte` ya importa este repositorio con **Root Directo
 
 Además del costo de producir, el espacio de trabajo cubre lo que cuesta vender y sostener la empresa:
 
-- **Ventas y entregas** (`/app/ventas`): canales de venta con comisión, cargo por venta, costo de entrega por pedido y ajuste de precio; cuánto queda por unidad en cada canal y las ventas del mes.
+- **Ventas** (`/app/ventas`): tabla editable y filtrable de las ventas del mes, la más reciente primero (fecha, canal, cliente, producto, cantidad, precio, costo de entrega, nota). Corregir una venta conserva el precio cobrado y el costo de cada producto del día de la venta (`repriceSale`); cambiar el canal recalcula comisión y entrega. También canales de venta y cuánto queda por unidad en cada canal.
+- **Entregas** (`/app/entregas`): cada venta que tiene que llegar al cliente tiene su entrega (tabla `deliveries`: fecha, franja, estado, quién recibe, dirección, contacto, quién la lleva, seguimiento, nota). Se crea sola al registrar una venta por un canal que entrega (o con datos de entrega). Tabla editable con filtros rápidos (por entregar, hoy, atrasadas, con problema, entregadas), búsqueda y orden por cercanía a hoy; resumen del día, la semana y el costo del mes. El costo de entregar vive en la venta, así que el resultado del mes sigue cada cambio.
 - **Gastos de la empresa** (`/app/gastos`): gastos mensuales por área (entregas, ventas, administración). Solo los de producción se reparten en el costo de cada unidad; las inversiones se reparten en su vida útil.
 - **Compras** (`/app/compras`): compras del día a día clasificadas como insumo (actualiza su precio), gasto del mes, pago de un gasto fijo o inversión, con su comprobante.
 - **Resultado del mes** (`/app/resultado`): ventas, lo que dejó cada venta, gastos fijos, compras del mes, parte de las inversiones, resultado y punto de equilibrio.
 
-El motor está en `lib/business.ts` (puro) y la persistencia en `lib/server/business.ts`. Cozte registra canales, compras y ventas con sus herramientas; las imágenes y PDF enviados al chat se guardan en R2 como documentos para adjuntarlos al registro que respaldan, por lo que el despliegue necesita `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` y `R2_SECRET_ACCESS_KEY`. Sin R2 el chat funciona igual, pero los comprobantes no quedan adjuntos.
+Las tablas usan las celdas editables y la barra de búsqueda de `components/business/data-table.tsx`; los desplegables de toda la app son `components/ui/dropdown.tsx` (base-ui, misma API que un select nativo: opciones como hijos, `onChange`, `name`/`defaultValue` en formularios). Las fechas de "hoy" son las del negocio (`businessToday`, por la moneda) o las del navegador, nunca UTC.
+
+El motor está en `lib/business.ts` (puro) y la persistencia en `lib/server/business.ts`. Cozte registra canales, compras y ventas (con su entrega), corrige ventas (`updateSale`) y gestiona entregas (`updateDelivery`, `readDeliveries`) con sus herramientas; las imágenes y PDF enviados al chat se guardan en R2 como documentos para adjuntarlos al registro que respaldan, por lo que el despliegue necesita `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` y `R2_SECRET_ACCESS_KEY`. Sin R2 el chat funciona igual, pero los comprobantes no quedan adjuntos.
 
 ## Cozte: nivel, tablero y calidad
 

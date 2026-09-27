@@ -15,7 +15,8 @@ import { commitMutation, mutationSchema } from "./mutations";
 import { createMutationProposal } from "./assistant-proposals";
 import { archiveCozteNote, loadCozteNotes, saveCozteNote } from "./cozte-notes";
 import { AREA_LABELS, PURCHASE_KIND_LABELS, channelEconomics } from "@/lib/business";
-import { archiveRecord, loadBusinessView, loadChannels, recordPurchase, recordSale, saveChannel } from "./business";
+import { archiveRecord, loadBusinessView, loadChannels, loadDeliveries, recordPurchase, recordSale, saveChannel, saveDelivery, updateSale } from "./business";
+import { DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, businessToday, daysFrom, isOpenDelivery, type DeliveryStatus } from "@/lib/business";
 import { resolveDocument } from "./documents";
 import { WIDGETS, WIDGET_KINDS, boardOutline, computeWidget, moveWidget, widgetFigures, widgetTitle, type WidgetKind, type WidgetSpec } from "@/lib/cozte-widgets";
 import { METRIC_KEYS, type MetricKey } from "@/lib/decks";
@@ -32,6 +33,18 @@ const amount = z.number().nonnegative().max(1_000_000_000);
 const currency = z.enum(supportedCurrencies);
 const area = z.enum(["production", "delivery", "sales", "admin"]);
 const receipt = z.string().trim().min(1).max(200);
+
+const deliveryStatus = z.enum(DELIVERY_STATUSES as [DeliveryStatus, ...DeliveryStatus[]]).describe("pending: todavía no salió; on_the_way: en camino; delivered: entregada; failed: no se pudo entregar (hay que reprogramar); cancelled: no se va a entregar");
+const deliveryDetails = {
+  date: isoDateToolInputSchema.optional().describe("Fecha de entrega (AAAA-MM-DD). Si ya pasó, queda como entregada salvo que digas otro estado"),
+  timeWindow: z.string().trim().max(60).optional().describe("Franja horaria en palabras: '9 a 13', 'tarde'"),
+  recipient: z.string().trim().max(120).optional().describe("Quién recibe, si no es el cliente"),
+  address: z.string().trim().max(300).optional(),
+  contact: z.string().trim().max(120).optional().describe("Teléfono o forma de contacto"),
+  carrier: z.string().trim().max(120).optional().describe("Quién lleva el pedido: moto propia, un repartidor, una empresa de correo"),
+  tracking: z.string().trim().max(120).optional().describe("Código de seguimiento"),
+  note: z.string().trim().max(300).optional(),
+};
 
 export const cozteToolInputSchemas = {
   readCosts: z.object({
@@ -155,6 +168,28 @@ export const cozteToolInputSchemas = {
     customer: z.string().trim().max(120).optional(),
     note: z.string().trim().max(300).optional(),
     receipt: receipt.optional().describe("Remito o factura: número del archivo adjunto en el mensaje (1, 2…) o su nombre"),
+    delivery: z.object({ ...deliveryDetails, status: deliveryStatus.optional() }).optional().describe("Datos de la entrega si la persona los da (fecha, dirección, quién recibe). Si el canal entrega, la entrega se crea igual con la fecha de la venta"),
+  }),
+  updateSale: z.object({
+    sale: z.string().min(1).max(120).describe("ID de la venta (de readBusiness o de un registro)"),
+    date: isoDateToolInputSchema.optional(),
+    channel: reference.optional().describe("Otro canal (nombre o ID), o 'directa' para venta directa. Recalcula comisión y costo de entrega"),
+    customer: z.string().trim().max(120).optional(),
+    note: z.string().trim().max(300).optional(),
+    items: z.array(z.object({ product: reference, quantity: z.number().positive().max(1_000_000_000), unitPrice: amount.optional().describe("Si se omite, se mantiene el precio cobrado (o el de lista si el producto es nuevo)") })).min(1).max(40).optional().describe("La lista completa de productos de la venta, ya corregida"),
+    deliveryCost: amount.optional().describe("Lo que costó entregar este pedido"),
+  }),
+  updateDelivery: z.object({
+    delivery: z.string().min(1).max(120).optional().describe("ID de la entrega a cambiar (de readDeliveries)"),
+    sale: z.string().min(1).max(120).optional().describe("ID de una venta sin entrega, para crearle una"),
+    ...deliveryDetails,
+    status: deliveryStatus.optional(),
+    method: z.string().trim().max(80).optional().describe("Forma de entrega: retiro, moto propia, correo…"),
+    cost: amount.optional().describe("Lo que cuesta esta entrega; se guarda en la venta y cambia el resultado del mes"),
+  }),
+  readDeliveries: z.object({
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional().describe("Mes AAAA-MM; por defecto el actual. Siempre incluye las entregas abiertas de otros meses"),
+    status: z.enum(["all", "open", "today", "overdue", "delivered", "failed"]).optional().describe("open: por entregar (pendientes, en camino o con problema); overdue: atrasadas"),
   }),
   voidRecord: z.object({
     kind: z.enum(["purchase", "sale"]),
@@ -221,6 +256,9 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   recordPurchase: "Registra una compra del día a día con su tipo y área, y le adjunta el comprobante. Un insumo con cantidad actualiza su precio; una inversión se reparte en su vida útil.",
   recordSale: "Registra una venta: productos, cantidades y canal, con su remito o factura. Calcula lo cobrado, lo que cuesta vender y entregar, y lo que dejó.",
   setInvestmentCost: "Guarda la decisión de la persona sobre una inversión del taller: si su parte mensual se suma al costo de cada producto o queda solo en el resultado del mes. Devuelve el costo antes y después.",
+  updateSale: "Corrige una venta ya registrada: fecha, canal, cliente, nota, productos (cantidades o precios) o costo de entrega. Conserva el precio cobrado y el costo de cada producto del día de la venta salvo que los cambies; recalcula lo que dejó y el resultado del mes.",
+  updateDelivery: "Cambia una entrega (fecha, franja, estado, quién recibe, dirección, contacto, quién la lleva, seguimiento, nota o costo) o crea la entrega de una venta que no la tiene. Marcar 'delivered' registra la fecha de hoy.",
+  readDeliveries: "Lista las entregas del mes y todas las abiertas, la más cercana a hoy primero, con su estado, fecha, quién recibe, dirección, quién la lleva, costo y la venta.",
   voidRecord: "Anula una compra o venta mal registrada (queda en el historial). Después puedes registrarla bien.",
   readBusiness: "Lee cómo va un mes: canales y lo que queda por unidad en cada uno, gastos fijos por área e inversiones, compras, ventas, resultado del mes y punto de equilibrio.",
   showVisual: "Muestra en el chat un widget con datos reales del motor (costos, márgenes, producción, ventas por canal/producto/día, entregas, canales, resultado del mes, punto de equilibrio, gastos por área, evolución, compras o cifras clave a elección). Devuelve sus cifras y su conclusión. Con pin: true lo fija en el tablero de la persona, donde se actualiza solo.",
@@ -241,7 +279,8 @@ function stableKey(...parts: (string | number)[]): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-const today = () => new Date().toISOString().slice(0, 10);
+/** The business's calendar day, not UTC's, so a sale recorded at night keeps today's date. */
+const today = () => businessToday();
 const whole = (value: number) => Math.round(value);
 const threeDecimals = (value: number) => Math.round(value * 1000) / 1000;
 
@@ -604,15 +643,94 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       const recorded = await recordSale(principal, {
         soldOn: value.date ?? today(), channelId: channel?.item?.id ?? null, items, deliveryCost: value.deliveryCost,
         customer: value.customer ?? "", note: value.note ?? "", documentId: document?.id,
+        ...(value.delivery ? { delivery: { scheduledOn: value.delivery.date, timeWindow: value.delivery.timeWindow, recipient: value.delivery.recipient, address: value.delivery.address, contact: value.delivery.contact, carrier: value.delivery.carrier, tracking: value.delivery.tracking, note: value.delivery.note, status: value.delivery.status } } : {}),
       }, { source: "cozte", idempotencyKey: stableKey(input.runId, input.toolCallId) });
       const sale = recorded.sale;
       const left = sale.variableCostMinor === null ? null : sale.totalMinor - sale.variableCostMinor - sale.sellingCostMinor - sale.deliveryCostMinor;
       return {
         ok: true, ids: { sale: recorded.id },
-        done: [`Venta registrada: ${sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", ")} por ${sale.channelName}, total ${sale.totalMinor} ${state.organization.currency}`, ...(document ? [`Remito ${document.filename} adjuntado`] : [])],
+        done: [`Venta registrada: ${sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", ")} por ${sale.channelName}, total ${sale.totalMinor} ${state.organization.currency}`, ...(document ? [`Remito ${document.filename} adjuntado`] : []), ...(sale.delivery ? [`Entrega ${DELIVERY_STATUS_LABELS[sale.delivery.status].toLowerCase()} para el ${sale.delivery.scheduledOn}`] : [])],
+        ...(sale.delivery ? { delivery: { id: sale.delivery.id, status: sale.delivery.status, date: sale.delivery.scheduledOn } } : {}),
         sale: { total: sale.totalMinor, sellingCost: sale.sellingCostMinor, deliveryCost: sale.deliveryCostMinor, materialsAndLaborOfItems: sale.variableCostMinor, leftAfterSaleCosts: left, items: sale.items.map((item) => ({ product: item.productName, quantity: item.quantityMilli / 1000, unitPrice: item.unitPriceMinor })) },
         note: "leftAfterSaleCosts = total − materialsAndLaborOfItems − sellingCost − deliveryCost: lo que dejó la venta para pagar los gastos fijos del mes (los del taller incluidos). El envío es por pedido: esta venta cuenta como un pedido.",
         ...(value.receipt && !document ? { receiptWarning: "No encontré ese archivo; la venta quedó sin remito." } : {}),
+      };
+    }
+    case "updateSale": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.updateSale>;
+      const [state, channels] = await Promise.all([loadState(principal), loadChannels(principal)]);
+      let channelId: string | null | undefined;
+      if (value.channel) {
+        if (/^(directa|venta directa|direct)$/i.test(value.channel.trim())) channelId = null;
+        else {
+          const found = resolveEntity(channels, value.channel);
+          if (!found.item) return notFound("el canal", value.channel, found.candidates);
+          channelId = found.item.id;
+        }
+      }
+      let items: { productId: string; quantity: number; unitPrice?: number }[] | undefined;
+      if (value.items) {
+        items = [];
+        for (const item of value.items) {
+          const product = resolveEntity(state.products, item.product);
+          if (!product.item) return notFound("el producto", item.product, product.candidates);
+          items.push({ productId: product.item.id, quantity: item.quantity, unitPrice: item.unitPrice });
+        }
+      }
+      const sale = await updateSale(principal, value.sale, { soldOn: value.date, channelId, customer: value.customer, note: value.note, items, deliveryCost: value.deliveryCost }, "cozte").catch(async (error) => {
+        if (!(error instanceof ApiError) || error.status !== 404) throw error;
+        return null;
+      });
+      if (!sale) {
+        // An unknown id: hand back the recent sales so the next call can use the right one.
+        const view = await loadBusinessView(principal, (value.date ?? today()).slice(0, 7));
+        return { ok: false, error: "No encontré esa venta.", options: view.sales.slice(0, 15).map((item) => `${item.id} · ${item.soldOn} · ${item.customer || item.channelName} · ${item.items.map((line) => `${line.quantityMilli / 1000} × ${line.productName}`).join(", ")}`), next: "Usa el ID de la venta correcta de la lista." };
+      }
+      const left = sale.variableCostMinor === null ? null : sale.totalMinor - sale.variableCostMinor - sale.sellingCostMinor - sale.deliveryCostMinor;
+      return {
+        ok: true, done: [`Venta corregida: ${sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", ")} por ${sale.channelName} el ${sale.soldOn}, total ${sale.totalMinor} ${state.organization.currency}`],
+        sale: { id: sale.id, date: sale.soldOn, channel: sale.channelName, total: sale.totalMinor, sellingCost: sale.sellingCostMinor, deliveryCost: sale.deliveryCostMinor, leftAfterSaleCosts: left },
+      };
+    }
+    case "updateDelivery": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.updateDelivery>;
+      if (!value.delivery && !value.sale) return { ok: false, error: "Indica la entrega (delivery) o la venta a la que crearle una (sale).", next: "Busca los IDs con readDeliveries o readBusiness." };
+      const result = await saveDelivery(principal, {
+        id: value.delivery, saleId: value.delivery ? undefined : value.sale, scheduledOn: value.date, timeWindow: value.timeWindow, status: value.status, method: value.method,
+        carrier: value.carrier, recipient: value.recipient, address: value.address, contact: value.contact, tracking: value.tracking, note: value.note, cost: value.cost,
+      }, "cozte").catch((error) => {
+        if (!(error instanceof ApiError) || error.status !== 404) throw error;
+        return null;
+      });
+      if (!result) {
+        // An unknown id: hand back the current deliveries so the next call can use the right one.
+        const list = await loadDeliveries(principal, today().slice(0, 7));
+        return { ok: false, error: value.delivery ? "No encontré esa entrega." : "No encontré esa venta.", options: list.slice(0, 15).map((item) => `entrega ${item.id} · venta ${item.saleId} · ${item.scheduledOn} · ${DELIVERY_STATUS_LABELS[item.status]} · ${item.recipient || item.sale.customer || item.sale.channelName} · ${item.sale.items}`), next: "Usa el ID de la entrega (o de la venta, para crear una) de la lista." };
+      }
+      return { ok: true, done: result.done.length ? result.done : ["Sin cambios en la entrega"], delivery: { id: result.id, created: result.created } };
+    }
+    case "readDeliveries": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.readDeliveries>;
+      const now = today();
+      const list = (await loadDeliveries(principal, value.month ?? now.slice(0, 7))).filter((item) => {
+        const days = daysFrom(item.scheduledOn, now);
+        switch (value.status ?? "all") {
+          case "open": return isOpenDelivery(item.status);
+          case "today": return isOpenDelivery(item.status) && days === 0;
+          case "overdue": return isOpenDelivery(item.status) && days < 0;
+          case "delivered": return item.status === "delivered";
+          case "failed": return item.status === "failed";
+          default: return true;
+        }
+      });
+      return {
+        ok: true, today: now, count: list.length,
+        deliveries: list.slice(0, 60).map((item) => ({
+          id: item.id, saleId: item.saleId, date: item.scheduledOn, daysFromToday: daysFrom(item.scheduledOn, now), timeWindow: item.timeWindow || undefined,
+          status: DELIVERY_STATUS_LABELS[item.status], recipient: item.recipient || item.sale.customer || undefined, address: item.address || undefined, contact: item.contact || undefined,
+          carrier: item.carrier || undefined, method: item.method || undefined, tracking: item.tracking || undefined, cost: item.costMinor, products: item.sale.items, channel: item.sale.channelName, note: item.note || undefined,
+        })),
+        note: "Ordenadas por cercanía a hoy (daysFromToday negativo = ya pasó).",
       };
     }
     case "setInvestmentCost": {
@@ -643,7 +761,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         fixedCostsByArea: view.structure.areas.map((item) => ({ area: item.label, monthlyTotal: item.monthlyTotal, expenses: item.expenses.map((expense) => ({ name: expense.name, monthlyAmount: expense.monthlyAmount })), investments: item.investments.map((asset) => ({ description: asset.description, monthlyShare: asset.monthlyShare, monthsLeft: asset.monthsLeft, ...(item.area === "production" ? { includedInUnitCost: asset.includeInUnitCost } : {}) })) })),
         result: view.result,
         purchases: view.purchases.slice(0, 40).map((purchase) => ({ id: purchase.id, date: purchase.purchasedOn, description: purchase.description, amount: purchase.amountMinor, kind: PURCHASE_KIND_LABELS[purchase.kind], area: AREA_LABELS[purchase.area], hasReceipt: Boolean(purchase.documentId) })),
-        sales: view.sales.slice(0, 40).map((sale) => ({ id: sale.id, date: sale.soldOn, channel: sale.channelName, total: sale.totalMinor, items: sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", "), hasReceipt: Boolean(sale.documentId) })),
+        sales: view.sales.slice(0, 40).map((sale) => ({ id: sale.id, date: sale.soldOn, channel: sale.channelName, customer: sale.customer || undefined, total: sale.totalMinor, deliveryCost: sale.deliveryCostMinor, items: sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", "), hasReceipt: Boolean(sale.documentId), delivery: sale.delivery ? `${DELIVERY_STATUS_LABELS[sale.delivery.status]} (${sale.delivery.scheduledOn})` : "sin entrega" })),
       };
     }
     case "showVisual": {
@@ -788,6 +906,9 @@ export function createCozteTools(principal: Principal, runId: string) {
     recordPurchase: tool({ description: describe.recordPurchase, inputSchema: schemas.recordPurchase, execute: execute("recordPurchase") }),
     recordSale: tool({ description: describe.recordSale, inputSchema: schemas.recordSale, execute: execute("recordSale") }),
     setInvestmentCost: tool({ description: describe.setInvestmentCost, inputSchema: schemas.setInvestmentCost, execute: execute("setInvestmentCost") }),
+    updateSale: tool({ description: describe.updateSale, inputSchema: schemas.updateSale, execute: execute("updateSale") }),
+    updateDelivery: tool({ description: describe.updateDelivery, inputSchema: schemas.updateDelivery, execute: execute("updateDelivery") }),
+    readDeliveries: tool({ description: describe.readDeliveries, inputSchema: schemas.readDeliveries, execute: execute("readDeliveries") }),
     voidRecord: tool({ description: describe.voidRecord, inputSchema: schemas.voidRecord, execute: execute("voidRecord") }),
     readBusiness: tool({ description: describe.readBusiness, inputSchema: schemas.readBusiness, execute: execute("readBusiness") }),
     showVisual: tool({ description: describe.showVisual, inputSchema: schemas.showVisual, execute: execute("showVisual") }),

@@ -3,7 +3,7 @@ import { appPath, viewFromPathname, viewFromSegments } from "./app-routes";
 
 describe("workspace URLs", () => {
   it("gives every section its own path and reads it back", () => {
-    for (const view of ["dashboard", "planilla", "ventas", "gastos", "compras", "resultado", "analisis", "asistente", "historial", "presentaciones"] as const) {
+    for (const view of ["dashboard", "planilla", "ventas", "entregas", "gastos", "compras", "resultado", "analisis", "asistente", "historial", "presentaciones"] as const) {
       expect(viewFromPathname(appPath(view))).toEqual({ view });
     }
     expect(appPath("analisis")).toBe("/app/analisis");

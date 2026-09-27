@@ -30,7 +30,7 @@ import { TextShimmer } from "@/components/ui/text-shimmer";
 import { AssistantMarkdown } from "@/components/assistant-markdown";
 import { AudioWaveform, useVoiceDictation } from "@/components/use-voice-dictation";
 import { AnimatedIcon } from "@/components/animated-icon";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { PresentationCard } from "@/components/decks/presentation-card";
 import { CozteVisual, CozteVisualProvider } from "@/components/cozte/cozte-visuals";
 import { BoardPanel } from "@/components/cozte/board-panel";
@@ -404,10 +404,10 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
         <div className="flex flex-wrap items-center gap-2">
           {pendingProposals.length ? <Badge variant="outline">{pendingProposals.length} por confirmar</Badge> : null}
           <label className="flex items-center gap-2 text-xs text-muted-foreground">Cómo te explica
-            <NativeSelect aria-label="Nivel de explicación de Cozte" value={level ?? ""} onChange={(event) => void saveSettings({ level: event.target.value as ExplanationLevel })}>
-              {level === null ? <NativeSelectOption value="" disabled>Elegir</NativeSelectOption> : null}
-              {EXPLANATION_LEVELS.map((item) => <NativeSelectOption key={item.id} value={item.id}>{item.label}</NativeSelectOption>)}
-            </NativeSelect>
+            <Dropdown aria-label="Nivel de explicación de Cozte" value={level ?? ""} onChange={(event) => void saveSettings({ level: event.target.value as ExplanationLevel })}>
+              {level === null ? <DropdownOption value="" disabled>Elegir</DropdownOption> : null}
+              {EXPLANATION_LEVELS.map((item) => <DropdownOption key={item.id} value={item.id}>{item.label}</DropdownOption>)}
+            </Dropdown>
           </label>
           <Button type="button" size="sm" variant="outline" disabled={status !== "ready" || !messages.length} onClick={() => setConfirmReset(true)}><AnimatedIcon name="refresh" data-icon="inline-start" />Nueva conversación</Button>
         </div>

@@ -67,7 +67,158 @@ export type Sale = {
   documentId?: string | null;
   source: "user" | "cozte";
   items: SaleItem[];
+  /** The sale's delivery, when it has to reach the customer. */
+  delivery?: SaleDelivery | null;
 };
+
+export type DeliveryStatus = "pending" | "on_the_way" | "delivered" | "failed" | "cancelled";
+export const DELIVERY_STATUSES: DeliveryStatus[] = ["pending", "on_the_way", "delivered", "failed", "cancelled"];
+export const DELIVERY_STATUS_LABELS: Record<DeliveryStatus, string> = { pending: "Pendiente", on_the_way: "En camino", delivered: "Entregada", failed: "No se pudo entregar", cancelled: "Cancelada" };
+export const DELIVERY_STATUS_HINTS: Record<DeliveryStatus, string> = {
+  pending: "Todavía no salió",
+  on_the_way: "Ya salió hacia el cliente",
+  delivered: "El cliente la recibió",
+  failed: "Hubo un problema: hay que reprogramarla",
+  cancelled: "No se va a entregar",
+};
+export const isOpenDelivery = (status: DeliveryStatus) => status === "pending" || status === "on_the_way" || status === "failed";
+
+export type SaleDelivery = { id: string; status: DeliveryStatus; scheduledOn: string };
+
+export type Delivery = {
+  id: string;
+  saleId: string;
+  scheduledOn: string;
+  timeWindow: string;
+  status: DeliveryStatus;
+  method: string;
+  carrier: string;
+  recipient: string;
+  address: string;
+  contact: string;
+  tracking: string;
+  note: string;
+  deliveredOn: string | null;
+  source: "user" | "cozte";
+  /** What delivering costs, kept on the sale so the month's result reads it. */
+  costMinor: number;
+  sale: { soldOn: string; channelId: string | null; channelName: string; customer: string; totalMinor: number; items: string };
+};
+
+/** Where each currency's businesses usually are, for the calendar day on the server. */
+const CURRENCY_ZONES: Record<string, string> = {
+  ARS: "America/Argentina/Buenos_Aires", CLP: "America/Santiago", MXN: "America/Mexico_City", COP: "America/Bogota", PEN: "America/Lima",
+  UYU: "America/Montevideo", BOB: "America/La_Paz", PYG: "America/Asuncion", BRL: "America/Sao_Paulo", USD: "America/New_York", EUR: "Europe/Madrid",
+};
+
+/**
+ * Today's date (AAAA-MM-DD) where the business is, not in UTC: at 22:00 in Buenos Aires it is still today there.
+ * Without a currency it uses Buenos Aires, the timezone of most of Cozte's businesses.
+ */
+export function businessToday(currency?: string, now = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: (currency && CURRENCY_ZONES[currency]) || "America/Argentina/Buenos_Aires", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+}
+
+/** Whole days from today to a date (positive: ahead, negative: past). */
+export function daysFrom(date: string, today: string): number {
+  return Math.round((Date.parse(`${date.slice(0, 10)}T12:00:00Z`) - Date.parse(`${today.slice(0, 10)}T12:00:00Z`)) / 86_400_000);
+}
+
+/** Closest to today first; between one day ahead and one day behind, the one ahead comes first. */
+export function byProximity<T>(items: T[], dateOf: (item: T) => string, today: string): T[] {
+  return [...items].sort((a, b) => {
+    const da = daysFrom(dateOf(a), today);
+    const db = daysFrom(dateOf(b), today);
+    return Math.abs(da) - Math.abs(db) || db - da;
+  });
+}
+
+/** Most recent first. */
+export function byRecency<T>(items: T[], dateOf: (item: T) => string): T[] {
+  return [...items].sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
+}
+
+/** Pickup and in-person sales do not need a delivery; anything with a delivery cost or method does. */
+export function needsDelivery(channel: Pick<SalesChannel, "deliveryMethod" | "deliveryCostPerOrderMinor">, deliveryCost?: number): boolean {
+  if ((deliveryCost ?? channel.deliveryCostPerOrderMinor) > 0) return true;
+  const method = channel.deliveryMethod.trim().toLowerCase();
+  return Boolean(method) && !/retir|en mano|local|presencial|mostrador|pickup/.test(method);
+}
+
+/** A new delivery's status: one scheduled before today already happened; otherwise it is pending. */
+export const initialDeliveryStatus = (scheduledOn: string, today: string): DeliveryStatus => scheduledOn < today ? "delivered" : "pending";
+
+export type DeliverySummary = { today: number; next7: number; overdue: number; onTheWay: number; delivered: number; failed: number; cost: number; averageCost: number | null };
+
+/** The logistics at a glance: what is due today and this week, what is late, and what delivering cost in the month. */
+export function deliverySummary(deliveries: Delivery[], today: string, month: string): DeliverySummary {
+  const active = deliveries.filter((item) => item.status !== "cancelled");
+  const open = active.filter((item) => isOpenDelivery(item.status));
+  const inMonth = active.filter((item) => item.scheduledOn.startsWith(month));
+  const delivered = inMonth.filter((item) => item.status === "delivered");
+  const cost = inMonth.reduce((sum, item) => sum + item.costMinor, 0);
+  return {
+    today: open.filter((item) => daysFrom(item.scheduledOn, today) === 0).length,
+    next7: open.filter((item) => { const days = daysFrom(item.scheduledOn, today); return days >= 0 && days <= 7; }).length,
+    overdue: open.filter((item) => daysFrom(item.scheduledOn, today) < 0).length,
+    onTheWay: open.filter((item) => item.status === "on_the_way").length,
+    delivered: delivered.length,
+    failed: active.filter((item) => item.status === "failed").length,
+    cost,
+    averageCost: inMonth.length ? Math.round(cost / inMonth.length) : null,
+  };
+}
+
+export type SalePatch = { soldOn?: string; channelId?: string | null; customer?: string; note?: string; items?: SaleRequest[]; deliveryCost?: number };
+
+/**
+ * A corrected sale. Prices charged and each product's cost at the time of the sale are kept unless the person
+ * changes them; a new product takes today's cost. Commission is recomputed only when the channel or items change,
+ * and the delivery cost follows a new channel unless it is given.
+ */
+export function repriceSale(sale: Sale, patch: SalePatch, state: Pick<DomainState, "products">, costs: ProductCost[], channels: SalesChannel[]): { sale: Omit<Sale, "id" | "documentId" | "source" | "delivery">; problems: string[] } {
+  const channelChanged = patch.channelId !== undefined && (patch.channelId ?? null) !== sale.channelId;
+  const channelId = patch.channelId !== undefined ? patch.channelId : sale.channelId;
+  const channel = channelId ? channels.find((item) => item.id === channelId) : DIRECT_CHANNEL;
+  if (!channel && (channelChanged || patch.items)) return { sale: { ...sale }, problems: ["Ese canal no existe"] };
+  const recorded = new Map(sale.items.map((item) => [item.productId, item]));
+  const itemsChanged = Boolean(patch.items);
+  let lines = sale.items;
+  let totalMinor = sale.totalMinor;
+  let sellingCostMinor = sale.sellingCostMinor;
+  let problems: string[] = [];
+  if ((itemsChanged || channelChanged) && channel) {
+    const requests: SaleRequest[] = (patch.items ?? sale.items.map((item): SaleRequest => ({ productId: item.productId, quantity: item.quantityMilli / 1000 })))
+      .map((item) => ({ ...item, unitPrice: item.unitPrice ?? recorded.get(item.productId)?.unitPriceMinor }));
+    const priced = priceSale(state, costs, channel, requests);
+    problems = priced.problems;
+    lines = priced.items.map((line) => {
+      const before = recorded.get(line.productId);
+      return before ? { ...line, unitVariableCostMinor: before.unitVariableCostMinor, unitCostMinor: before.unitCostMinor } : line;
+    });
+    totalMinor = priced.totalMinor;
+    sellingCostMinor = priced.sellingCostMinor;
+  }
+  const quantity = (line: SaleItem) => line.quantityMilli / 1000;
+  const sumOf = (pick: (line: SaleItem) => number | null) => lines.every((line) => pick(line) !== null) ? Math.round(lines.reduce((sum, line) => sum + quantity(line) * pick(line)!, 0)) : null;
+  return {
+    problems,
+    sale: {
+      soldOn: patch.soldOn ?? sale.soldOn,
+      channelId: channel && channel.id !== DIRECT_CHANNEL.id ? channel.id : channelId ?? null,
+      channelName: channelChanged && channel ? channel.name : sale.channelName,
+      customer: patch.customer ?? sale.customer,
+      note: patch.note ?? sale.note,
+      items: lines, totalMinor, sellingCostMinor,
+      deliveryCostMinor: Math.round(patch.deliveryCost ?? (channelChanged && channel ? channel.deliveryCostPerOrderMinor : sale.deliveryCostMinor)),
+      variableCostMinor: itemsChanged || channelChanged ? sumOf((line) => line.unitVariableCostMinor) : sale.variableCostMinor,
+      productionCostMinor: itemsChanged || channelChanged ? sumOf((line) => line.unitCostMinor) : sale.productionCostMinor,
+    },
+  };
+}
+
+/** Short text for a sale's products: "3 × Tofu 300g, 2 × Tofu ahumado". */
+export const saleItemsText = (items: Pick<SaleItem, "quantityMilli" | "productName">[]) => items.map((item) => `${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 3 }).format(item.quantityMilli / 1000)} × ${item.productName}`).join(", ");
 
 export const AREA_LABELS: Record<CostArea, string> = { production: "Producción", delivery: "Entregas", sales: "Ventas", admin: "Administración" };
 export const AREA_HINTS: Record<CostArea, string> = {
