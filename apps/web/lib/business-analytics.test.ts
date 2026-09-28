@@ -40,6 +40,8 @@ describe("business analytics", () => {
     const months = monthsBack(DEMO_MONTH, 3).map(summary);
     const insights = analysisInsights(months, 2, money);
     expect(insights[0].text).toMatch(/pérdida|ganancia/);
+    // Demo September sold more than its break-even; the one-off expenses are what left it in the red, and it says so.
+    expect(insights[0].text).toMatch(/las ventas cubrieron los gastos fijos, pero los gastos puntuales del mes/);
     expect(insights.some((item) => /Las ventas (subieron|bajaron)/.test(item.text))).toBe(true);
     expect(insights.some((item) => /gastos fijos se llevaron/.test(item.text))).toBe(true);
     const empty = { ...summary("2025-01"), revenue: 0, fixed: 0 };

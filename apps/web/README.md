@@ -103,3 +103,21 @@ Todo responde al pasar el mouse, un clic en cualquier mes enfoca el análisis en
 - Link público `/p/<token>`: sin cuenta, sin notas del presentador, fuera de buscadores; desactivarlo invalida el link. El origen del link sale de `NEXT_PUBLIC_SITE_URL`, o del dominio de producción de Vercel.
 - Sistema de diseño en `lib/deck-design.ts`: estructura, cuándo usar cada diseño, qué gráfico responde cada pregunta, estilos, colores con significado y cómo escribir. Lo lee Cozte en sus instrucciones y la persona en "Guía de diseño" del editor. Estilos: Cozte, Noche, Claro y Terracota (`app/deck.css`).
 - Presentar a pantalla completa (flechas, deslizar, F) y descargar en PDF (una diapositiva por página).
+
+## Página de inicio
+
+`app/page.tsx` presenta el producto completo (costos, Cozte AI, resultado y análisis, entregas y rutas, clientes y proveedores) con mockups animados en `components/landing/`:
+- Usan los mismos componentes que el espacio de trabajo (`ChartCard`, `MonthBars`, `LineChart`, `Treemap`, `Sparkline`, `Stat`, `ZoneModeChip`) y números calculados por el motor sobre la demo (`landing-data.ts`), así que se ven y suman igual que la app.
+- Cada escena es una línea de tiempo (`useSceneTime` en `scene.tsx`) que corre solo mientras el mockup está en pantalla, con cursor, conteos, el chat de Cozte trabajando y la ruta recorriéndose. Con "reducir movimiento" queda quieta en un cuadro terminado.
+- `?escena=<ms>` congela todas las escenas en ese momento, para capturas y para revisar un cuadro.
+
+## Pendiente
+
+- **Optimización automática de rutas (etapa 4 de logística):** hoy la hoja de ruta sugiere el orden por franja horaria y barrio, sin coordenadas, y Google Maps sigue ese orden sin optimizarlo. Queda para después:
+  - Geocodificar las direcciones de clientes una vez y guardarlas (latitud y longitud en `customer_addresses`).
+  - Calcular el orden óptimo con una API de rutas paga (Google Routes API con `optimizeWaypointOrder`, Mapbox Optimization u OpenRouteService), respetando franjas horarias y el punto de partida.
+  - Usarlo en `planRoute` y en "Usar orden sugerido", con tiempos y kilómetros estimados por parada y de la ruta completa.
+  - Mantener el orden actual como respaldo cuando no haya coordenadas o falle el servicio, y medir el costo por consulta antes de activarlo para todas las cuentas.
+- **Link público para el repartidor:** hoy el modo repartidor necesita una cuenta; un link sin cuenta (como `/p/<token>` de presentaciones) permitiría marcar entregas desde el celular del repartidor.
+- **Proveedor en los insumos al renombrar:** renombrar un proveedor actualiza sus compras y zonas, pero no el campo proveedor de cada insumo en Costos de producción (necesita pasar por una mutación del motor de costos).
+
