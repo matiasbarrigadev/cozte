@@ -7,6 +7,8 @@ import type { DomainState } from "@/lib/domain";
 import { demoDeliveryList, demoRecords, demoZoneData } from "@/lib/demo-store";
 import { ZONE_MODE_LABELS, type DeliveryZone } from "@/lib/delivery-zones";
 import { ZonesPanel, type ZonePlace } from "./delivery-zones";
+import { RouteSheet } from "./route-sheet";
+import { countryByCode } from "@/lib/locations";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,7 +30,7 @@ import { DELIVERY_TONE, relativeDay } from "./delivery-status";
 import { DeliveryCards } from "./mobile-cards";
 import { useIsMobile } from "@/hooks/use-mobile";
 
-type DeliveryData = { deliveries: Delivery[]; channels: SalesChannel[]; zones: DeliveryZone[]; places: ZonePlace[] };
+type DeliveryData = { deliveries: Delivery[]; channels: SalesChannel[]; zones: DeliveryZone[]; places: ZonePlace[]; routeOrigin: string };
 type Patch = Partial<Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "method" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn" | "zoneId">> & { cost?: number };
 
 /** The change that puts a delivery back as it was before an edit (including when it was delivered). */
@@ -111,6 +113,8 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
         <Stat label="Entregadas en el mes" value={String(summary.delivered)} note={summary.onTheWay ? `${summary.onTheWay} en camino ahora` : undefined} />
         <Stat label="Costo de entregar en el mes" value={money(summary.cost)} note={summary.averageCost !== null ? `${money(summary.averageCost)} por entrega` : undefined} />
       </div>
+
+      <RouteSheet deliveries={deliveries} zones={data.zones} routeOrigin={data.routeOrigin ?? ""} today={today} country={countryByCode(state.organization.country)?.name ?? ""} businessName={state.organization.name} demo={demo} onSave={(delivery, patch, message) => save(delivery, patch, message)} onChanged={reload} />
 
       {!data.channels.some((channel) => channel.deliveryMethod || channel.deliveryCostPerOrderMinor) ? <Tip title="Para que las entregas se creen solas">Indica en «Cómo entrega cada canal» (abajo) la forma y el costo de entregar de tus canales. Desde ahí, cada venta por un canal que entrega aparece acá con su fecha, y puedes seguirla hasta que llega.</Tip> : null}
       <Card className="gap-4">

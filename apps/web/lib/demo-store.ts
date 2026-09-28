@@ -12,7 +12,7 @@ import { monthsBack } from "./business-analytics";
  * the same engine as a real workspace. Nothing leaves the browser; a reload starts over.
  */
 
-type Store = { records: BusinessRecords; deliveries: Delivery[]; customers: Customer[]; history: Sale[]; zones: DeliveryZone[]; suppliers: Supplier[]; supplierHistory: (SupplierPurchase & { supplier: string })[] };
+type Store = { records: BusinessRecords; deliveries: Delivery[]; customers: Customer[]; history: Sale[]; zones: DeliveryZone[]; routeOrigin: string; suppliers: Supplier[]; supplierHistory: (SupplierPurchase & { supplier: string })[] };
 
 let store: Store | null = null;
 let version = 0;
@@ -44,7 +44,7 @@ function data(): Store {
     const linked = <P extends { supplier: string }>(purchase: P) => ({ ...purchase, supplierId: supplierOf(purchase.supplier) });
     store = {
       records: { ...records, sales: records.sales.map((sale) => ({ ...sale, delivery: undefined, customerId: idOf(sale.customer) })), purchases: records.purchases.map(linked), investments: records.investments.map(linked) },
-      deliveries, customers, history: history.map((sale) => ({ ...sale, customerId: idOf(sale.customer) })), zones: DEMO_ZONES, suppliers, supplierHistory: earlier.map(linked),
+      deliveries, customers, history: history.map((sale) => ({ ...sale, customerId: idOf(sale.customer) })), zones: DEMO_ZONES, routeOrigin: "Av. Matta 1200, Santiago", suppliers, supplierHistory: earlier.map(linked),
     };
   }
   return store;
@@ -176,9 +176,9 @@ export function demoDeliveryList(month: string): Delivery[] {
 }
 
 /** The demo's zones and where its customers receive, like /api/deliveries adds them. */
-export function demoZoneData(): { zones: DeliveryZone[]; places: { zone: string; address: string }[] } {
-  const { zones, customers } = data();
-  return { zones, places: customers.flatMap((customer) => customer.addresses.map((address) => ({ zone: address.zone, address: address.address }))) };
+export function demoZoneData(): { zones: DeliveryZone[]; places: { zone: string; address: string }[]; routeOrigin: string } {
+  const { zones, customers, routeOrigin } = data();
+  return { zones, routeOrigin, places: customers.flatMap((customer) => customer.addresses.map((address) => ({ zone: address.zone, address: address.address }))) };
 }
 
 /** What was typed before in the demo, for its suggestions. */
@@ -208,7 +208,7 @@ function newDelivery(sale: Sale, channel: Pick<SalesChannel, "deliveryMethod">, 
   return {
     id: `e-${Math.random().toString(36).slice(2, 10)}`, saleId: sale.id, scheduledOn, timeWindow: fields.timeWindow ?? "", status, method: fields.method ?? channel.deliveryMethod,
     carrier: fields.carrier ?? "", recipient: fields.recipient ?? sale.customer, address: fields.address ?? "", contact: fields.contact ?? "", tracking: fields.tracking ?? "", note: fields.note ?? "",
-    deliveredOn: status === "delivered" ? fields.deliveredOn ?? (scheduledOn < DEMO_TODAY ? scheduledOn : DEMO_TODAY) : null, zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", source: "user", costMinor: sale.deliveryCostMinor,
+    deliveredOn: status === "delivered" ? fields.deliveredOn ?? (scheduledOn < DEMO_TODAY ? scheduledOn : DEMO_TODAY) : null, zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", routePosition: null, source: "user", costMinor: sale.deliveryCostMinor,
     sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) },
   };
 }
@@ -269,7 +269,8 @@ export function demoBusinessAction<T>(body: Body): T {
         const zone = input.zoneId !== undefined ? demoZoneFor(current.zones, input.zoneId, undefined) : input.address?.trim() ? demoZoneFor(current.zones, undefined, input.address) : undefined;
         const moved = zone !== undefined && (zone?.id ?? null) !== existing.zoneId;
         const given = moved && zone ? zoneDeliveryFields(zone) : null;
-        deliveries = deliveries.map((item) => item.id === id ? { ...item, ...fields, ...(moved ? { zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", ...(given ? { method: input.method ?? given.method, carrier: input.carrier ?? given.carrier } : {}) } : {}) } : item);
+        const rescheduled = fields.scheduledOn !== undefined && fields.scheduledOn !== existing.scheduledOn;
+        deliveries = deliveries.map((item) => item.id === id ? { ...item, ...fields, ...(rescheduled ? { routePosition: null } : {}), ...(moved ? { zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", ...(given ? { method: input.method ?? given.method, carrier: input.carrier ?? given.carrier } : {}) } : {}) } : item);
         const cost = moved && zone && input.cost === undefined ? zoneCost(zone) : null;
         if (cost !== null) sales = sales.map((item) => item.id === saleId ? { ...item, deliveryCostMinor: cost } : item);
         if (input.status) done.push(`Entrega: ${DELIVERY_STATUS_LABELS[input.status]}`);
@@ -384,6 +385,16 @@ export function demoBusinessAction<T>(body: Body): T {
       const done = [existing ? `Zona actualizada: ${zone.name}` : `Zona creada: ${zone.name} (${ZONE_MODE_LABELS[zone.mode].toLowerCase()})`];
       if (assigned) done.push(`${assigned} entrega${assigned === 1 ? " abierta quedó" : "s abiertas quedaron"} en ${zone.name}`);
       return { id: zone.id, created: !existing, assigned, done } as T;
+    }
+    case "save-route-order": {
+      const ids = body.ids as string[];
+      commit({ ...current, deliveries: current.deliveries.map((item) => ids.includes(item.id) ? { ...item, routePosition: ids.indexOf(item.id) } : item) });
+      return { done: [`Orden de la ruta guardado (${ids.length} parada${ids.length === 1 ? "" : "s"})`] } as T;
+    }
+    case "save-route-origin": {
+      const origin = String(body.origin ?? "").trim().slice(0, 200);
+      commit({ ...current, routeOrigin: origin });
+      return { done: [origin ? `Las rutas salen desde ${origin}` : "Las rutas salen desde donde esté el repartidor"] } as T;
     }
     case "save-supplier": {
       const input = body.supplier as { id?: string; name?: string; kind?: SupplierKind; contactName?: string; phone?: string; email?: string; notes?: string };

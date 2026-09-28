@@ -4,6 +4,7 @@ import { ApiError, apiFailure, requirePrincipal } from "@/lib/server/auth";
 import { addressInputSchema, archiveCustomer, archiveCustomerAddress, customerInputSchema, mergeCustomers, saveCustomer, saveCustomerAddress } from "@/lib/server/customers";
 import { archiveZone, saveZone, zoneInputSchema } from "@/lib/server/delivery-zones";
 import { archiveSupplier, mergeSuppliers, saveSupplier, supplierInputSchema } from "@/lib/server/suppliers";
+import { routeOrderSchema, saveRouteOrder, saveRouteOrigin } from "@/lib/server/delivery-routes";
 import { archiveRecord, channelInputSchema, deliveryInputSchema, loadBusinessView, purchaseInputSchema, purchasePatchSchema, updatePurchase, recordPurchase, recordSale, saleInputSchema, salePatchSchema, saveChannel, saveDelivery, updateSale } from "@/lib/server/business";
 
 export const runtime = "nodejs";
@@ -38,6 +39,8 @@ const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("save-supplier"), supplier: supplierInputSchema }),
   z.object({ action: z.literal("merge-suppliers"), fromId: z.string().min(1).max(120), intoId: z.string().min(1).max(120) }),
   z.object({ action: z.literal("archive-supplier"), id: z.string().min(1).max(120) }),
+  z.object({ action: z.literal("save-route-order"), ids: routeOrderSchema }),
+  z.object({ action: z.literal("save-route-origin"), origin: z.string().max(200) }),
 ]);
 
 export async function POST(request: Request) {
@@ -62,6 +65,8 @@ export async function POST(request: Request) {
       case "save-supplier": return Response.json(await saveSupplier(principal, input.supplier, "user"));
       case "merge-suppliers": return Response.json(await mergeSuppliers(principal, input.fromId, input.intoId));
       case "archive-supplier": await archiveSupplier(principal, input.id); return Response.json({ ok: true });
+      case "save-route-order": return Response.json(await saveRouteOrder(principal, input.ids, "user"));
+      case "save-route-origin": return Response.json(await saveRouteOrigin(principal, input.origin));
     }
   } catch (error) {
     if (error instanceof z.ZodError) return Response.json({ error: error.issues[0]?.message ?? "Datos inválidos" }, { status: 400 });

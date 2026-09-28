@@ -63,11 +63,11 @@ describe("presentations", () => {
   it("shows the state of deliveries, the most urgent first, and counts what is late", () => {
     const withDeliveries = { ...sources, deliveries: demoDeliveries(DEMO_TODAY), today: DEMO_TODAY };
     const upcoming = buildChart("upcoming-deliveries", null, DEMO_MONTH, withDeliveries);
-    expect(upcoming.data.type === "table" && upcoming.data.rows.map((row) => row[0])).toEqual(["Atrasada 2 d", "Hoy", "29/09"]);
+    expect(upcoming.data.type === "table" && upcoming.data.rows.map((row) => row[0])).toEqual(["Atrasada 2 d", "Hoy", "Hoy", "Hoy", "Hoy", "29/09"]);
     expect(upcoming.insight).toMatch(/1 atrasada/);
     const status = buildChart("delivery-status", null, DEMO_MONTH, withDeliveries);
-    expect(status.data.type === "bars" && status.data.rows.map((row) => `${row.label}:${row.value}`)).toEqual(["Pendiente:1", "En camino:1", "Entregada:2", "No se pudo entregar:1"]);
-    expect(buildKpi("pending-deliveries", null, DEMO_MONTH, withDeliveries).value).toBe(3);
+    expect(status.data.type === "bars" && status.data.rows.map((row) => `${row.label}:${row.value}`)).toEqual(["Pendiente:4", "En camino:1", "Entregada:2", "No se pudo entregar:1"]);
+    expect(buildKpi("pending-deliveries", null, DEMO_MONTH, withDeliveries).value).toBe(6);
     expect(buildKpi("late-deliveries", null, DEMO_MONTH, withDeliveries).value).toBe(1);
     expect(buildKpi("deliveries", null, DEMO_MONTH, withDeliveries).value).toBe(2);
     expect(buildChart("upcoming-deliveries", null, DEMO_MONTH, sources).data.type).toBe("empty");

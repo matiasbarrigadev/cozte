@@ -28,8 +28,8 @@ vi.mock("./fx", () => ({ officialFxTable: async () => ({ asOf: new Date().toISOS
 
 import { cozteToolSucceeded, cozteToolWrote, questionsShown } from "@/lib/cozte-tool-catalog";
 import { loadCustomers, saveCustomer, saveCustomerAddress } from "./customers";
-import { loadDeliveries, recordPurchase, recordSale } from "./business";
-import { loadZones } from "./delivery-zones";
+import { loadDeliveries, organizationToday, recordPurchase, recordSale } from "./business";
+import { loadZones, saveZone } from "./delivery-zones";
 import { loadSuppliers } from "./suppliers";
 import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
@@ -435,6 +435,38 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
     console.log(`\n[${model}] location ${JSON.stringify(checks)}\n${first.answer}\n---\n${second?.answer ?? ""}`);
     results.push({ model, scenario: "location", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "Rosario", answer: first.answer }, { user: "¿Qué necesitás?", answer: second?.answer ?? "" }] });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("arranges tomorrow's route with someone first and hands back the map, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    const tools = createCozteTools(principal, crypto.randomUUID());
+    const run = async (name: keyof typeof tools, input: Record<string, unknown>) => await (tools[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<Record<string, unknown>>)(input, { toolCallId: crypto.randomUUID() });
+    await run("readCosts", {});
+    await dbBatch([{ sql: "UPDATE organizations SET currency='ARS', country='AR', city='Córdoba', time_zone='America/Argentina/Cordoba' WHERE id=?", params: [principal.organizationId] }]);
+    const product = await run("saveProduct", { name: "Tofu 300g", goodUnitsPerLot: 100, lotsPerMonth: 20, hoursPerLot: 5, salePrice: 2000 });
+    const productId = (product.ids as Record<string, string>).product;
+    await saveZone(principal, { name: "Córdoba", mode: "own", carrier: "Moto (Tomás)", areas: "Córdoba, Nueva Córdoba, Alta Córdoba" }, "user");
+    const todayThere = await organizationToday(principal);
+    const tomorrow = new Date(Date.parse(`${todayThere}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    for (const [customer, address, timeWindow] of [["Bar Tarde", "Colón 900, Alta Córdoba", "15 a 19"], ["Kiosco Libre", "Obispo Trejo 300, Nueva Córdoba", ""], ["Almacén Mañana", "Rondeau 200, Nueva Córdoba", "9 a 12"]] as const) {
+      await recordSale(principal, { soldOn: todayThere, customer, items: [{ productId, quantity: 2 }], delivery: { address, timeWindow, scheduledOn: tomorrow } }, { source: "user", idempotencyKey: crypto.randomUUID() });
+    }
+    const history: ModelMessage[] = [];
+    const turn = await productionTurn({ model, principal, history, text: "Armá la ruta de mañana y poné primero a Bar Tarde." });
+    const saved = (await loadDeliveries(principal, tomorrow.slice(0, 7))).filter((item) => item.scheduledOn === tomorrow).sort((a, b) => (a.routePosition ?? 99) - (b.routePosition ?? 99));
+    const checks = {
+      plannedTheRoute: turn.records.some((item) => item.name === "planRoute" && item.ok),
+      barFirst: saved[0]?.recipient === "Bar Tarde" && saved.every((item) => item.routePosition !== null),
+      mapsLink: /google\.com\/maps\/dir\//.test(turn.answer),
+      namedTheStops: /kiosco libre/i.test(turn.answer) && /almac[eé]n ma[ñn]ana/i.test(turn.answer),
+      verified: turn.verified,
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] routes ${JSON.stringify(checks)}\n${turn.answer}`);
+    results.push({ model, scenario: "routes", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "ruta", answer: turn.answer }] });
     expect(failures).toEqual([]);
   });
 

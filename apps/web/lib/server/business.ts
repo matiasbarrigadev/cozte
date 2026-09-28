@@ -155,7 +155,7 @@ type ChannelRow = { id: string; name: string; delivery_method: string; commissio
 type PurchaseRow = { id: string; purchased_on: string; description: string; supplier: string; supplier_id: string | null; amount_minor: number; kind: PurchaseKind; area: CostArea; material_name: string | null; quantity_milli: number | null; expense_id: string | null; expense_name: string | null; useful_life_months: number | null; include_in_unit_cost: number; document_id: string | null; source: "user" | "cozte" };
 type SaleRow = { id: string; sold_on: string; channel_id: string | null; channel_name: string; customer: string; customer_id?: string | null; note: string; total_minor: number; selling_cost_minor: number; delivery_cost_minor: number; variable_cost_minor: number | null; production_cost_minor: number | null; document_id: string | null; source: "user" | "cozte" };
 type SaleDeliveryRow = { sale_id: string; id: string; status: DeliveryStatus; scheduled_on: string; delivered_on: string | null; zone_id: string | null; zone_name: string | null; carrier: string };
-type DeliveryRow = { id: string; sale_id: string; scheduled_on: string; time_window: string; status: DeliveryStatus; method: string; carrier: string; recipient: string; address: string; contact: string; tracking: string; note: string; delivered_on: string | null; zone_id: string | null; zone_name: string | null; source: "user" | "cozte"; sold_on: string; channel_id: string | null; channel_name: string; customer: string; total_minor: number; delivery_cost_minor: number };
+type DeliveryRow = { id: string; sale_id: string; scheduled_on: string; time_window: string; status: DeliveryStatus; method: string; carrier: string; recipient: string; address: string; contact: string; tracking: string; note: string; delivered_on: string | null; zone_id: string | null; zone_name: string | null; route_position: number | null; source: "user" | "cozte"; sold_on: string; channel_id: string | null; channel_name: string; customer: string; total_minor: number; delivery_cost_minor: number };
 type SaleItemRow = { sale_id: string; product_id: string; product_name: string; quantity_milli: number; unit_price_minor: number; unit_variable_cost_minor: number | null; unit_cost_minor: number | null };
 
 const toChannel = (row: ChannelRow): SalesChannel => ({ id: row.id, name: row.name, deliveryMethod: row.delivery_method, commissionBps: row.commission_bps, feePerOrderMinor: row.fee_per_order_minor, deliveryCostPerOrderMinor: row.delivery_cost_per_order_minor, unitsPerOrderMilli: row.units_per_order_milli, priceAdjustmentBps: row.price_adjustment_bps });
@@ -530,14 +530,14 @@ export async function loadDeliveries(principal: Principal, forMonth: string): Pr
   const org = principal.organizationId;
   const scope = "d.organization_id=? AND d.archived_at IS NULL AND s.archived_at IS NULL AND ((d.scheduled_on >= ? AND d.scheduled_on < ?) OR d.status IN ('pending', 'on_the_way', 'failed'))";
   const [rows, items] = await dbBatch<DeliveryRow | SaleItemRow>([
-    { sql: `SELECT d.id, d.sale_id, d.scheduled_on, d.time_window, d.status, d.method, d.carrier, d.recipient, d.address, d.contact, d.tracking, d.note, d.delivered_on, d.zone_id, z.name AS zone_name, d.source, s.sold_on, s.channel_id, s.channel_name, s.customer, s.total_minor, s.delivery_cost_minor FROM deliveries d JOIN sales s ON s.id=d.sale_id LEFT JOIN delivery_zones z ON z.id=d.zone_id AND z.organization_id=d.organization_id WHERE ${scope} LIMIT 800`, params: [org, from, to] },
+    { sql: `SELECT d.id, d.sale_id, d.scheduled_on, d.time_window, d.status, d.method, d.carrier, d.recipient, d.address, d.contact, d.tracking, d.note, d.delivered_on, d.zone_id, z.name AS zone_name, d.route_position, d.source, s.sold_on, s.channel_id, s.channel_name, s.customer, s.total_minor, s.delivery_cost_minor FROM deliveries d JOIN sales s ON s.id=d.sale_id LEFT JOIN delivery_zones z ON z.id=d.zone_id AND z.organization_id=d.organization_id WHERE ${scope} LIMIT 800`, params: [org, from, to] },
     { sql: `SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN deliveries d ON d.sale_id=si.sale_id JOIN sales s ON s.id=si.sale_id WHERE ${scope}`, params: [org, from, to] },
   ], { retrySafe: true });
   const itemsBySale = new Map<string, SaleItemRow[]>();
   for (const row of items as SaleItemRow[]) itemsBySale.set(row.sale_id, [...itemsBySale.get(row.sale_id) ?? [], row]);
   const list = (rows as DeliveryRow[]).map((row): Delivery => ({
     id: row.id, saleId: row.sale_id, scheduledOn: row.scheduled_on, timeWindow: row.time_window, status: row.status, method: row.method, carrier: row.carrier,
-    recipient: row.recipient, address: row.address, contact: row.contact, tracking: row.tracking, note: row.note, deliveredOn: row.delivered_on, zoneId: row.zone_id, zoneName: row.zone_name ?? "", source: row.source,
+    recipient: row.recipient, address: row.address, contact: row.contact, tracking: row.tracking, note: row.note, deliveredOn: row.delivered_on, zoneId: row.zone_id, zoneName: row.zone_name ?? "", routePosition: row.route_position, source: row.source,
     costMinor: row.delivery_cost_minor,
     sale: { soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, totalMinor: row.total_minor, items: saleItemsText((itemsBySale.get(row.sale_id) ?? []).map((item) => ({ productName: item.product_name, quantityMilli: item.quantity_milli }))) },
   }));
@@ -560,7 +560,7 @@ export async function saveDelivery(principal: Principal, input: DeliveryInput, s
   const statements: SqlStatement[] = [];
   const done: string[] = [];
   if (id) {
-    const [row] = await dbQuery<{ sale_id: string; status: DeliveryStatus; delivered_on: string | null; zone_id: string | null }>("SELECT d.sale_id, d.status, d.delivered_on, d.zone_id FROM deliveries d WHERE d.id=? AND d.organization_id=? AND d.archived_at IS NULL", [id, org]);
+    const [row] = await dbQuery<{ sale_id: string; status: DeliveryStatus; delivered_on: string | null; zone_id: string | null; scheduled_on: string }>("SELECT d.sale_id, d.status, d.delivered_on, d.zone_id, d.scheduled_on FROM deliveries d WHERE d.id=? AND d.organization_id=? AND d.archived_at IS NULL", [id, org]);
     if (!row) throw new ApiError(404, "Entrega no encontrada");
     saleId = row.sale_id;
     const fields = { ...value };
@@ -568,6 +568,8 @@ export async function saveDelivery(principal: Principal, input: DeliveryInput, s
     if (fields.status && fields.status !== "delivered" && fields.deliveredOn === undefined) fields.deliveredOn = null;
     const sets = Object.entries(DELIVERY_COLUMNS).filter(([key]) => fields[key as keyof typeof fields] !== undefined);
     if (sets.length) statements.push({ sql: `UPDATE deliveries SET ${sets.map(([, column]) => `${column}=?`).join(", ")}, updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`, params: [...sets.map(([key]) => (fields[key as keyof typeof fields] ?? null) as string | null), id, org] });
+    // Another day means another route: it loses its place in the old one.
+    if (value.scheduledOn !== undefined && value.scheduledOn !== row.scheduled_on) statements.push({ sql: "UPDATE deliveries SET route_position=NULL WHERE id=? AND organization_id=?", params: [id, org] });
     // A new address for this delivery is kept in the customer's record, and the delivery points to it.
     let placeZone: string | null = null;
     if (value.address?.trim()) {

@@ -25,13 +25,13 @@ describe("business analytics", () => {
     expect(month.byChannel.reduce((sum, item) => sum + item.revenue, 0)).toBeCloseTo(month.revenue, 1);
     expect(month.byWeekday.reduce((sum, value) => sum + value, 0)).toBeCloseTo(month.revenue, 1);
     expect(month.byProduct[0].revenue).toBeGreaterThanOrEqual(month.byProduct.at(-1)!.revenue);
-    expect(month.sales).toBe(6);
+    expect(month.sales).toBe(9);
   });
 
   it("counts deliveries by how they went, late ones included", () => {
     const month = summary(DEMO_MONTH);
-    // Demo September: two delivered on the day, one failed, one on the way today and one pending.
-    expect(month.deliveries).toMatchObject({ total: 5, delivered: 2, onTime: 2, failed: 1, open: 2 });
+    // Demo September: two delivered on the day, one failed, one on the way today and four pending (today's route and one coming up).
+    expect(month.deliveries).toMatchObject({ total: 8, delivered: 2, onTime: 2, failed: 1, open: 5 });
     const july = summary("2026-07");
     expect(july.deliveries.delivered + july.deliveries.cancelled + july.deliveries.open + july.deliveries.failed).toBe(july.deliveries.total);
   });

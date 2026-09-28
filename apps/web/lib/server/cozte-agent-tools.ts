@@ -24,6 +24,9 @@ import { saveOrganizationLocation } from "./organization-location";
 import { findCustomer, loadCustomer, loadCustomers, saveCustomer, saveCustomerAddress } from "./customers";
 import { loadZonePlaces, loadZones, saveZone } from "./delivery-zones";
 import { findSupplier, loadSupplier, loadSuppliers, saveSupplier } from "./suppliers";
+import { loadRouteOrigin, saveRouteOrder, saveRouteOrigin } from "./delivery-routes";
+import { mapsRouteLinks, routeDayLabel, routeSheet, suggestRouteOrder, type RouteStop } from "@/lib/delivery-routes";
+import { countryByCode } from "@/lib/locations";
 import { SUPPLIER_KINDS, SUPPLIER_KIND_LABELS, supplierKey, type SupplierKind, type SupplierRow } from "@/lib/suppliers";
 import { WEEKDAY_NAMES, ZONE_MODE_LABELS, leadText, placesByZone, weekdaysText, zoneTallies, type DeliveryZone } from "@/lib/delivery-zones";
 import { CUSTOMER_STATUS_LABELS, customerKey, type CustomerStats } from "@/lib/customers";
@@ -193,7 +196,7 @@ export const cozteToolInputSchemas = {
     customer: z.string().trim().max(120).optional(),
     note: z.string().trim().max(300).optional(),
     receipt: receipt.optional().describe("Remito o factura: número del archivo adjunto en el mensaje (1, 2…) o su nombre"),
-    delivery: z.object({ ...deliveryDetails, status: deliveryStatus.optional() }).optional().describe("Datos de la entrega si la persona los da. Sin dirección se usa la principal del cliente; sin fecha, el próximo día de salida de su zona (o la fecha de la venta), con el costo de la zona. Si el canal entrega, la entrega se crea igual; para que haya entrega en un canal que no entrega, pasa delivery: {}"),
+    delivery: z.object({ ...deliveryDetails, status: deliveryStatus.optional() }).optional().describe("Datos de la entrega si la persona los da. No pidas la dirección antes de registrar: sin dirección se usa sola la principal del cliente y el recibo avisa si no tiene ninguna; sin fecha, el próximo día de salida de su zona (o la fecha de la venta), con el costo de la zona. Si el canal entrega, la entrega se crea igual; para que haya entrega en un canal que no entrega, pasa delivery: {}"),
   }),
   updateSale: z.object({
     sale: z.string().min(1).max(120).describe("ID de la venta (de readBusiness o de un registro)"),
@@ -213,6 +216,13 @@ export const cozteToolInputSchemas = {
     method: z.string().trim().max(80).optional().describe("Forma de entrega: retiro, moto propia, correo…"),
     cost: amount.optional().describe("Lo que cuesta esta entrega; se guarda en la venta y cambia el resultado del mes"),
     zone: z.string().trim().min(1).max(120).optional().describe("Zona de entrega (nombre o ID de readDeliveries), o 'ninguna' para dejarla sin zona. Toma la forma, quién la lleva y el costo de la zona, salvo lo que indiques"),
+  }),
+  planRoute: z.object({
+    date: isoDateToolInputSchema.optional().describe("Día de la ruta (AAAA-MM-DD); por defecto hoy. Para hoy incluye las atrasadas que siguen abiertas"),
+    zone: z.string().trim().min(1).max(120).optional().describe("Zona a ordenar (nombre o ID); por defecto el reparto propio y las entregas sin zona"),
+    first: z.array(z.string().trim().min(1).max(120)).max(20).optional().describe("Quiénes van primero, en ese orden (quien recibe o el cliente)"),
+    last: z.array(z.string().trim().min(1).max(120)).max(20).optional().describe("Quiénes van al final, en ese orden"),
+    origin: z.string().trim().max(200).optional().describe("Desde dónde salen las rutas (la dirección del taller); vacío = desde donde esté el repartidor"),
   }),
   readSuppliers: z.object({
     supplier: z.string().trim().min(1).max(120).optional().describe("Nombre o ID de un proveedor para ver su ficha (qué te vende con sus precios, compras por mes y últimas compras); omítelo para listar"),
@@ -342,6 +352,7 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   updateSale: "Corrige una venta ya registrada: fecha, canal, cliente, nota, productos (cantidades o precios) o costo de entrega. Conserva el precio cobrado y el costo de cada producto del día de la venta salvo que los cambies; recalcula lo que dejó y el resultado del mes.",
   updateDelivery: "Cambia una entrega (fecha, franja, estado, quién recibe, dirección, zona, contacto, quién la lleva, seguimiento, nota o costo) o crea la entrega de una venta que no la tiene. Marcar 'delivered' registra la fecha de hoy. Cambiar la zona (o una dirección que cae en otra zona) aplica el costo de esa zona.",
   readDeliveries: "Lista las entregas del mes y todas las abiertas, la más cercana a hoy primero, con su estado, fecha, quién recibe, dirección, zona, quién la lleva, costo y la venta; y las zonas de entrega con su forma, costo, días, lo que cubren, cómo les fue en el mes y los lugares de clientes que no tienen zona.",
+  planRoute: "Arma la ruta de un día: ordena las entregas de reparto propio (y las sin zona) por franja horaria y barrio, pone primero o al final a quien se pida, guarda el orden (se ve en Entregas → Hoja de ruta) y devuelve las paradas numeradas con los links de Google Maps de la ruta, lo que va con cada transportista y lo que hay que reprogramar.",
   readSuppliers: "Lista los proveedores con lo que les compraste en el año, qué te venden, su última compra y el cambio de precio más grande, o muestra la ficha de uno: cada insumo con su precio por unidad en cada compra (primero, último y cambio), compras por mes, últimas compras y, si lleva pedidos, sus zonas y entregas.",
   saveSupplier: "Crea un proveedor o corrige sus datos (nombre, tipo, contacto, teléfono, email, notas). No hace falta crearlo antes de registrar una compra: se crea solo con el nombre.",
   saveDeliveryZone: "Crea o cambia una zona de entrega: reparto propio, transportista o retiro; qué barrios o ciudades cubre, costo por pedido, días que sale y cuánto tarda. Las entregas nuevas a esa zona toman su forma, quién la lleva, el próximo día de salida y su costo; las abiertas sin zona que caen en ella se suman.",
@@ -862,6 +873,49 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         note: "Ordenadas por cercanía a hoy (daysFromToday negativo = ya pasó).",
       };
     }
+    case "planRoute": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.planRoute>;
+      const now = today();
+      const date = value.date ?? now;
+      const [deliveries, zones, savedOrigin, place] = await Promise.all([loadDeliveries(principal, date.slice(0, 7)), loadZones(principal), loadRouteOrigin(principal), organizationPlace(principal)]);
+      const done: string[] = [];
+      let origin = savedOrigin;
+      if (value.origin !== undefined && value.origin.trim() !== savedOrigin) { done.push(...(await saveRouteOrigin(principal, value.origin)).done); origin = value.origin.trim(); }
+      const sheet = routeSheet(deliveries, date, now, zones);
+      let targets = sheet.groups.filter((group) => group.mode === "own" || group.mode === "none");
+      if (value.zone) {
+        const found = resolveEntity(zones, value.zone);
+        if (!found.item) return notFound("la zona", value.zone, zones.map((zone) => zone.name));
+        targets = sheet.groups.filter((group) => group.zone?.id === found.item!.id && group.mode !== "carrier" && group.mode !== "pickup");
+      }
+      const country = countryByCode(place.country)?.name ?? "";
+      const named = (stop: RouteStop, name: string) => stop.id === name || [stop.recipient, stop.sale.customer].some((text) => customerKey(text).includes(customerKey(name)));
+      const matched = new Set<string>();
+      const stopOf = (stop: RouteStop, index: number) => ({ n: index + 1, recipient: stop.recipient || stop.sale.customer || undefined, address: stop.address || "sin dirección", window: stop.timeWindow || undefined, products: stop.sale.items, contact: stop.contact || undefined, note: stop.note || undefined, late: stop.late || undefined });
+      const routes = [];
+      for (const group of targets) {
+        let ordered = suggestRouteOrder(group.stops);
+        const pick = (names: string[]) => names.flatMap((name) => { const hit = ordered.filter((stop) => named(stop, name)); if (hit.length) matched.add(name); return hit; });
+        const front = pick(value.first ?? []);
+        const back = pick(value.last ?? []).filter((stop) => !front.includes(stop));
+        ordered = [...front, ...ordered.filter((stop) => !front.includes(stop) && !back.includes(stop)), ...back];
+        await saveRouteOrder(principal, ordered.map((stop) => stop.id), "cozte");
+        done.push(`Ruta ${group.title} armada: ${ordered.length} parada${ordered.length === 1 ? "" : "s"}`);
+        routes.push({ zone: group.title, carrier: group.carrier || undefined, stops: ordered.map(stopOf), mapsLinks: mapsRouteLinks(ordered.map((stop) => stop.address).filter(Boolean), origin, country) });
+      }
+      const notMatched = [...(value.first ?? []), ...(value.last ?? [])].filter((name) => !matched.has(name));
+      const next = [...new Set(deliveries.filter((item) => ["pending", "on_the_way"].includes(item.status) && item.scheduledOn > date).map((item) => item.scheduledOn))].sort()[0];
+      return {
+        ok: true, date, day: routeDayLabel(date, now), origin: origin || "donde esté el repartidor",
+        ...(done.length ? { done } : {}),
+        routes,
+        carriers: sheet.groups.filter((group) => group.mode === "carrier").map((group) => ({ carrier: group.carrier || group.title, zone: group.title, packages: group.stops.length, toDispatch: group.stops.filter((stop) => stop.status === "pending").map((stop) => stop.recipient || stop.sale.customer) })),
+        pickups: sheet.groups.filter((group) => group.mode === "pickup").flatMap((group) => group.stops.map((stop) => stop.recipient || stop.sale.customer)),
+        toReschedule: sheet.toReschedule.map((item) => `${item.recipient || item.sale.customer || "cliente"} (${item.address || "sin dirección"})`),
+        ...(notMatched.length ? { notFound: notMatched, next: "Esas personas no tienen entrega abierta ese día; díselo." } : {}),
+        ...(!routes.length && !sheet.groups.length ? { note: `No hay entregas abiertas para ese día.${next ? ` La próxima es el ${routeDayLabel(next, now)}.` : ""}` } : { note: "El orden quedó guardado y se ve en Entregas → Hoja de ruta. Muestra cada link de mapsLinks tal cual, como [Abrir la ruta en Google Maps](link)." }),
+      };
+    }
     case "readSuppliers": {
       const value = args as z.infer<typeof cozteToolInputSchemas.readSuppliers>;
       const priceOf = (price: SupplierRow["prices"][number]) => ({ material: price.name, unit: price.unit || undefined, first: price.first, last: price.last, changePercent: price.change === null ? null : Math.round(price.change * 100), purchases: price.points.length, lastOn: price.lastOn });
@@ -1202,6 +1256,7 @@ export function createCozteTools(principal: Principal, runId: string) {
     saveCustomer: tool({ description: describe.saveCustomer, inputSchema: schemas.saveCustomer, execute: execute("saveCustomer") }),
     saveDeliveryZone: tool({ description: describe.saveDeliveryZone, inputSchema: schemas.saveDeliveryZone, execute: execute("saveDeliveryZone") }),
     readSuppliers: tool({ description: describe.readSuppliers, inputSchema: schemas.readSuppliers, execute: execute("readSuppliers") }),
+    planRoute: tool({ description: describe.planRoute, inputSchema: schemas.planRoute, execute: execute("planRoute") }),
     saveSupplier: tool({ description: describe.saveSupplier, inputSchema: schemas.saveSupplier, execute: execute("saveSupplier") }),
     sharePresentation: tool({ description: describe.sharePresentation, inputSchema: schemas.sharePresentation, execute: execute("sharePresentation") }),
     askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),

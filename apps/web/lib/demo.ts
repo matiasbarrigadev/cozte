@@ -93,6 +93,9 @@ export function demoBusinessRecords(): BusinessRecords {
     investments: purchases.filter((item) => item.kind === "investment"),
     sales: [
       sale("v6", "2026-09-25", tienda, [{ productId: "bolsillo", quantity: 5 }]),
+      sale("v7", "2026-09-25", tienda, [{ productId: "bolsillo", quantity: 3 }]),
+      sale("v9", "2026-09-25", tienda, [{ productId: "dura", quantity: 2 }]),
+      sale("v8", "2026-09-24", librerias, [{ productId: "blanda", quantity: 40 }]),
       sale("v1", "2026-09-22", librerias, [{ productId: "bolsillo", quantity: 80 }]),
       sale("v2", "2026-09-19", tienda, [{ productId: "bolsillo", quantity: 4 }, { productId: "blanda", quantity: 2 }]),
       sale("v3", "2026-09-18", tienda, [{ productId: "dura", quantity: 3 }]),
@@ -106,16 +109,18 @@ export function demoBusinessRecords(): BusinessRecords {
   };
 }
 
-/** Logistics of the demo's sales: one delivered long ago, one on the way today, one that failed and one coming up. */
+/** Logistics of the demo's sales: today's motorbike route around Santiago, one on the way with the courier, one that failed, one coming up and two delivered. */
 const DEMO_DELIVERY_DETAILS: Record<string, Pick<Delivery, "scheduledOn" | "timeWindow" | "status" | "carrier" | "recipient" | "address" | "contact" | "tracking" | "note" | "deliveredOn">> = {
   v6: { scheduledOn: "2026-09-29", timeWindow: "9 a 13", status: "pending", carrier: "Moto propia (Tomás)", recipient: "Lucía Ferreyra", address: "Av. Providencia 1450, Providencia", contact: "+56 9 5555 0142", tracking: "", note: "Timbre 3B", deliveredOn: null },
   v1: { scheduledOn: "2026-09-23", timeWindow: "Mañana", status: "delivered", carrier: "Moto propia (Tomás)", recipient: "Librería El Ateneo", address: "Merced 220, Santiago Centro", contact: "Depósito, preguntar por Marta", tracking: "", note: "", deliveredOn: "2026-09-23" },
   v2: { scheduledOn: "2026-09-26", timeWindow: "14 a 18", status: "on_the_way", carrier: "Starken", recipient: "Martín Ruiz", address: "Av. Libertad 88, Viña del Mar", contact: "+56 9 5555 0199", tracking: "STK-4821-77", note: "", deliveredOn: null },
   v3: { scheduledOn: "2026-09-24", timeWindow: "", status: "failed", carrier: "Starken", recipient: "Sofía Paz", address: "Barros Arana 1020, Concepción", contact: "+56 9 5555 0110", tracking: "STK-4790-12", note: "No había nadie: reprogramar", deliveredOn: null },
+  v7: { scheduledOn: "2026-09-26", timeWindow: "10 a 12", status: "pending", carrier: "Moto propia (Tomás)", recipient: "Diego Luna", address: "Av. Irarrázaval 2100, Ñuñoa", contact: "+56 9 5555 0177", tracking: "", note: "", deliveredOn: null },
+  v8: { scheduledOn: "2026-09-26", timeWindow: "Mañana", status: "pending", carrier: "Moto propia (Tomás)", recipient: "Librería El Ateneo", address: "Merced 220, Santiago Centro", contact: "Depósito, preguntar por Marta", tracking: "", note: "Entrar por calle lateral", deliveredOn: null },
+  v9: { scheduledOn: "2026-09-26", timeWindow: "15 a 19", status: "pending", carrier: "Moto propia (Tomás)", recipient: "Paula Rojas", address: "Av. Apoquindo 3400, Las Condes", contact: "+56 9 5555 0133", tracking: "", note: "Dejar en conserjería", deliveredOn: null },
   v5: { scheduledOn: "2026-09-05", timeWindow: "Tarde", status: "delivered", carrier: "Moto propia (Tomás)", recipient: "Librería Rayuela", address: "Irarrázaval 540, Ñuñoa", contact: "", tracking: "", note: "", deliveredOn: "2026-09-05" },
 };
 
-/** The demo's deliveries, closest to the demo's today first. */
 /**
  * Supplies bought before September, only for the suppliers' price history: paper rises month after month, the covers
  * a little, the rings get cheaper, and paper was bought once from a second supplier.
@@ -141,6 +146,7 @@ export const DEMO_ZONES: DeliveryZone[] = [
   { id: "z-retiro", name: "Retiro en el taller", mode: "pickup", carrier: "", areas: [], costPerOrderMinor: 0, weekdays: [], leadDays: 0, isFallback: false, notes: "" },
 ];
 
+/** The demo's deliveries, closest to the demo's today first. */
 export function demoDeliveries(today = DEMO_TODAY): Delivery[] {
   const records = demoBusinessRecords();
   const list = records.sales.flatMap((sale): Delivery[] => {
@@ -148,7 +154,7 @@ export function demoDeliveries(today = DEMO_TODAY): Delivery[] {
     if (!details) return [];
     const channel = records.channels.find((item) => item.id === sale.channelId);
     const zone = matchZone(DEMO_ZONES, { address: details.address });
-    return [{ id: `e-${sale.id}`, saleId: sale.id, ...details, method: channel?.deliveryMethod ?? "", zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", source: "cozte", costMinor: sale.deliveryCostMinor, sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) } }];
+    return [{ id: `e-${sale.id}`, saleId: sale.id, ...details, method: channel?.deliveryMethod ?? "", zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", routePosition: null, source: "cozte", costMinor: sale.deliveryCostMinor, sale: { soldOn: sale.soldOn, channelId: sale.channelId, channelName: sale.channelName, customer: sale.customer, totalMinor: sale.totalMinor, items: saleItemsText(sale.items) } }];
   });
   return byProximity(list, (item) => item.scheduledOn, today);
 }

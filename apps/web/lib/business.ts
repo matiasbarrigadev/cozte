@@ -107,6 +107,8 @@ export type Delivery = {
   /** The delivery zone it goes to, picked from the address or by hand. */
   zoneId: string | null;
   zoneName: string;
+  /** Its place in its day's route; null until someone or Cozte arranges it. */
+  routePosition: number | null;
   source: "user" | "cozte";
   /** What delivering costs, kept on the sale so the month's result reads it. */
   costMinor: number;
