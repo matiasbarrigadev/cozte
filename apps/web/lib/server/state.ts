@@ -54,6 +54,8 @@ async function clerkOrganizationName(organizationId: string): Promise<string | n
 }
 
 export async function ensureOrganization(principal: Principal): Promise<void> {
+  // A superadmin opens an organization that already exists and never becomes one of its members.
+  if (principal.adminView) return;
   const name = await clerkOrganizationName(principal.organizationId);
   await dbBatch([
     { sql: "INSERT OR IGNORE INTO organizations (id) VALUES (?)", params: [principal.organizationId] },

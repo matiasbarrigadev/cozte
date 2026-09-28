@@ -2,7 +2,7 @@ import { convertToModelMessages, createUIMessageStreamResponse, validateUIMessag
 import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
 import { start } from "workflow/api";
 import { z } from "zod";
-import { ApiError, apiFailure, requirePrincipal } from "@/lib/server/auth";
+import { ApiError, apiFailure, forbidAdminView, requirePrincipal } from "@/lib/server/auth";
 import { loadMessagePage, loadRecentMessages, saveMessages } from "@/lib/server/cozte-messages";
 import { reserveAssistantRequest } from "@/lib/server/assistant-limits";
 import { addAssistantEvent, errorDetails, finishAssistantRun, getActiveAssistantWorkflow, listAssistantToolExecutions, linkAssistantWorkflowRun, startAssistantRun } from "@/lib/server/assistant-trace";
@@ -114,6 +114,7 @@ export async function POST(request: Request) {
   let runId: string | null = null;
   try {
     const principal = await requirePrincipal();
+    forbidAdminView(principal);
     if (!process.env.AI_GATEWAY_API_KEY) throw new ApiError(503, "Cozte AI aún no tiene configurada su clave de AI Gateway");
     if (Number(request.headers.get("content-length") ?? 0) > 17_000_000) throw new ApiError(413, "El mensaje o los archivos adjuntos superan el límite de tamaño");
     const { message } = incomingSchema.parse(await request.json());

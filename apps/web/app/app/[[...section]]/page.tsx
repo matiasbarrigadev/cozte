@@ -1,9 +1,10 @@
-import { auth } from "@clerk/nextjs/server";
 import { CreateOrganization, OrganizationSwitcher } from "@clerk/nextjs";
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { CostosApp } from "@/components/costos-app";
 import { loadDashboard } from "@/lib/server/state";
+import { sessionPrincipal } from "@/lib/server/auth";
+import { superadminEmail } from "@/lib/server/platform-admin";
 import { viewFromSegments } from "@/lib/app-routes";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,9 +23,11 @@ export default async function AppPage({ params }: { params: Promise<{ section?: 
       </Card>
     </main>
   );
-  const session = await auth();
-  if (!session.userId) redirect("/sign-in");
-  if (!session.orgId) return (
+  const { userId, principal } = await sessionPrincipal();
+  if (!userId) redirect("/sign-in");
+  // A superadmin without a company of their own still gets to the panel of every company.
+  const superadmin = Boolean(await superadminEmail(userId).catch(() => null));
+  if (!principal) return (
     <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col items-center justify-center gap-6 p-6">
       <Card className="w-full">
         <CardHeader><CardTitle>Tu empresa</CardTitle><CardDescription>Crea o selecciona una empresa para comenzar a costear.</CardDescription></CardHeader>
@@ -32,17 +35,14 @@ export default async function AppPage({ params }: { params: Promise<{ section?: 
           <OrganizationSwitcher hidePersonal />
           <CreateOrganization afterCreateOrganizationUrl="/app" />
           <Button variant="outline" render={<Link href="/demo" />} nativeButton={false}>Ver una demostración</Button>
+          {superadmin ? <Button variant="outline" render={<Link href="/admin" />} nativeButton={false}>Panel de superadmin</Button> : null}
         </CardContent>
       </Card>
     </main>
   );
   let initial;
   try {
-    initial = await loadDashboard({
-      userId: session.userId,
-      organizationId: session.orgId,
-      role: session.orgRole === "org:admin" ? "owner" : session.orgRole === "org:member" ? "editor" : "viewer",
-    });
+    initial = await loadDashboard(principal);
   } catch {
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-xl items-center p-6">
@@ -53,5 +53,5 @@ export default async function AppPage({ params }: { params: Promise<{ section?: 
       </main>
     );
   }
-  return <CostosApp initial={initial} initialSection={section} />;
+  return <CostosApp initial={initial} initialSection={section} adminView={Boolean(principal.adminView)} superadmin={superadmin} />;
 }

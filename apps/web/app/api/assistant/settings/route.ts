@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { apiFailure, requirePrincipal } from "@/lib/server/auth";
+import { apiFailure, forbidAdminView, requirePrincipal } from "@/lib/server/auth";
 import { archiveConversation, loadCozteSettings, saveBoard, saveExplanationLevel } from "@/lib/server/cozte-settings";
 import { MAX_BOARD_WIDGETS, parseBoard } from "@/lib/cozte-widgets";
 
@@ -22,6 +22,7 @@ const updateSchema = z.object({
 export async function PUT(request: Request) {
   try {
     const principal = await requirePrincipal();
+    forbidAdminView(principal);
     const input = updateSchema.parse(await request.json());
     if (input.level) await saveExplanationLevel(principal, input.level);
     if (input.board) await saveBoard(principal, parseBoard(input.board));
@@ -36,6 +37,7 @@ export async function PUT(request: Request) {
 export async function POST() {
   try {
     const principal = await requirePrincipal();
+    forbidAdminView(principal);
     return Response.json(await archiveConversation(principal));
   } catch (error) { return apiFailure(error); }
 }
