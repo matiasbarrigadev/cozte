@@ -85,7 +85,7 @@ export function DeliveriesSection({ state, demo, month, onMonthChange, onOpenSal
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo guardar"); return false; }
   }
   async function remove(delivery: Delivery) {
-    try { await businessAction({ action: "archive", kind: "delivery", id: delivery.id }, demo); notifySaved("Entrega quitada; la venta sigue registrada"); reload(); }
+    try { await businessAction({ action: "archive", kind: "delivery", id: delivery.id }, demo); notifySaved("Entrega quitada; la venta sigue registrada, sin costo de entrega"); reload(); }
     catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo quitar"); }
   }
   async function saveChannel(channel: SalesChannel, change: { deliveryMethod?: string; deliveryCostPerOrder?: number }) {
@@ -331,7 +331,7 @@ function ScheduleDialog({ zones, directory, state, demo, month, today, existing,
       <Field><FieldLabel htmlFor="schedule-address">Dirección</FieldLabel><SuggestInput id="schedule-address" value={address ?? known?.address ?? ""} placeholder="Calle, número, ciudad" suggestions={directory.addresses.map((value) => ({ value }))} onValueChange={(value) => setAddress(value)} /></Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field><FieldLabel htmlFor="schedule-carrier">Quién entrega</FieldLabel><SuggestInput id="schedule-carrier" value={carrier} placeholder="Ej. moto propia, correo" suggestions={directory.carriers.map((value) => ({ value }))} onValueChange={(value) => setCarrier(value)} /></Field>
-        <Field><FieldLabel htmlFor="schedule-cost">Costo</FieldLabel><Input id="schedule-cost" name="cost" type="number" min="0" step="1" placeholder={selected ? money(selected.deliveryCostMinor) : ""} /><FieldDescription>Vacío: el de la zona o el de la venta.</FieldDescription></Field>
+        <Field><FieldLabel htmlFor="schedule-cost">Costo</FieldLabel><Input id="schedule-cost" name="cost" type="number" min="0" step="any" inputMode="decimal" placeholder={selected ? money(selected.deliveryCostMinor) : ""} /><FieldDescription>Vacío: el de la zona o el de la venta.</FieldDescription></Field>
       </div>
       {zones.length ? <Field><FieldLabel htmlFor="schedule-zone">Zona</FieldLabel>
         <Dropdown id="schedule-zone" name="zone" className="w-full" defaultValue="auto">

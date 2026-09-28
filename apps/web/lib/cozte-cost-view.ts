@@ -1,3 +1,4 @@
+import { roundMoney } from "./money";
 import { calculateCosts, investmentMonthlyShare, productionCostSources, productionExpenses, type DomainState, type ProductCost } from "./domain";
 
 /** Accent-, case- and punctuation-insensitive key used to match names people type. */
@@ -146,6 +147,10 @@ export function costGaps(state: DomainState, costs: ProductCost[]): string[] {
   const gaps = new Set<string>();
   for (const cost of costs) for (const warning of cost.warnings) gaps.add(warning);
   const activeExpenses = productionExpenses(state).filter((item) => item.amountMinor > 0);
+  // The same people paid twice: direct labor per lot and, again, a workshop salary spread over every product.
+  const salaries = activeExpenses.filter((item) => /sueldo|salario|mano de obra|remunera|jornal|operari|planilla|n[oó]mina/i.test(`${item.name} ${item.category}`));
+  const withLabor = state.products.filter((product) => product.laborLotMinor > 0);
+  if (salaries.length && withLabor.length) gaps.add(`Revisa que la mano de obra no se cuente dos veces: ${withLabor.slice(0, 3).map((product) => product.name).join(", ")} ${withLabor.length === 1 ? "tiene" : "tienen"} trabajo directo por lote y además el taller tiene el gasto ${salaries[0].name}. Si paga a las mismas personas, deja solo uno`);
   for (const product of state.products) {
     if (activeExpenses.length && product.batchesPerMonthMilli == null) gaps.add(`Lotes que se producen al mes de ${product.name}`);
     if (activeExpenses.some((item) => item.allocationBasis === "hours") && product.productionHoursMilli <= 0) gaps.add(`Horas de trabajo por lote de ${product.name}`);
@@ -183,7 +188,7 @@ export function buildCostOverview(state: DomainState, costs: ProductCost[] = cal
         return {
           materialId: item.materialId, material: materialNames.get(item.materialId) ?? "Insumo no encontrado",
           quantityPerLot: quantity, perUnit: Math.round(quantity / Math.max(product.lotUnits, 1) * 100000) / 100000, unit: material?.purchaseUnit ?? "",
-          costPerLot: material?.priceMinor == null ? null : Math.round(material.priceMinor * quantity),
+          costPerLot: material?.priceMinor == null ? null : roundMoney(material.priceMinor * quantity, state.organization.currency),
           costPerUnit: material?.priceMinor == null ? null : Math.round(material.priceMinor * quantity / Math.max(product.lotUnits, 1) * 100) / 100,
         };
       }),
@@ -206,7 +211,7 @@ export function buildCostOverview(state: DomainState, costs: ProductCost[] = cal
     // Workshop investments: the person decides whether their monthly share goes into each unit's cost.
     workshopInvestments: (state.investments ?? []).filter((item) => item.area === "production").map((item) => ({
       id: item.id, name: item.name, price: item.amountMinor, usefulLifeMonths: item.usefulLifeMonths,
-      monthlyShare: investmentMonthlyShare(item, state.activePeriod), includedInUnitCost: item.includeInUnitCost,
+      monthlyShare: investmentMonthlyShare(item, state.activePeriod, state.organization.currency), includedInUnitCost: item.includeInUnitCost,
       splitBy: item.includeInUnitCost ? (item.allocationBasis === "hours" ? "production hours" : "good units") : undefined,
     })).filter((item) => item.monthlyShare > 0),
     gaps: costGaps(state, costs),
@@ -262,12 +267,12 @@ export function simulateScenario(state: DomainState, scenario: ScenarioInput) {
   const unresolved: string[] = [];
   for (const change of scenario.materialPrices ?? []) {
     const found = resolveEntity(next.materials, change.material);
-    if (found.item) found.item.priceMinor = Math.round(change.price);
+    if (found.item) found.item.priceMinor = Math.round(change.price * 1000) / 1000;
     else unresolved.push(`Insumo "${change.material}" no identificado (opciones: ${found.candidates.join(", ")})`);
   }
   for (const change of scenario.expenseAmounts ?? []) {
     const found = resolveEntity(next.expenses.filter((item) => item.period === next.activePeriod), change.expense);
-    if (found.item) found.item.amountMinor = Math.round(change.monthlyAmount);
+    if (found.item) found.item.amountMinor = roundMoney(change.monthlyAmount, next.organization.currency);
     else unresolved.push(`Gasto "${change.expense}" no identificado (opciones: ${found.candidates.join(", ")})`);
   }
   for (const change of scenario.products ?? []) {
@@ -276,8 +281,8 @@ export function simulateScenario(state: DomainState, scenario: ScenarioInput) {
     if (change.goodUnitsPerLot !== undefined) found.item.lotUnits = Math.round(change.goodUnitsPerLot);
     if (change.lotsPerMonth !== undefined) found.item.batchesPerMonthMilli = Math.round(change.lotsPerMonth * 1000);
     if (change.hoursPerLot !== undefined) found.item.productionHoursMilli = Math.round(change.hoursPerLot * 1000);
-    if (change.directLaborPerLot !== undefined) found.item.laborLotMinor = Math.round(change.directLaborPerLot);
-    if (change.salePrice !== undefined) found.item.salePriceMinor = Math.round(change.salePrice);
+    if (change.directLaborPerLot !== undefined) found.item.laborLotMinor = roundMoney(change.directLaborPerLot, next.organization.currency);
+    if (change.salePrice !== undefined) found.item.salePriceMinor = roundMoney(change.salePrice, next.organization.currency);
   }
   for (const change of scenario.recipe ?? []) {
     const product = resolveEntity(next.products, change.product);

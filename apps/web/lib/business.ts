@@ -1,5 +1,9 @@
 import { locationTimeZone } from "./locations";
-import { calculateCosts, type CostArea, type DomainState, type Product, type ProductCost } from "./domain";
+import { calculateCosts, expensesInForce, investmentMonthlyShare, type CostArea, type DomainState, type Product, type ProductCost } from "./domain";
+import { roundMoney } from "./money";
+
+/** The organization's currency, when the caller has it: amounts follow its money precision (cents or whole units). */
+type WithCurrency = { organization?: { currency: string } };
 
 /**
  * Beyond the cost of making a product: what it costs to sell and deliver it, the company's own structure
@@ -195,7 +199,7 @@ export function deliverySummary(deliveries: Delivery[], today: string, month: st
     delivered: delivered.length,
     failed: active.filter((item) => item.status === "failed").length,
     cost,
-    averageCost: inMonth.length ? Math.round(cost / inMonth.length) : null,
+    averageCost: inMonth.length ? Math.round(cost / inMonth.length * 100) / 100 : null,
   };
 }
 
@@ -213,28 +217,51 @@ export function canFillSaleCosts(sale: Pick<Sale, "items">, costs: ProductCost[]
  * changes them; a new product takes today's cost. Commission is recomputed only when the channel or items change,
  * and the delivery cost follows a new channel unless it is given.
  */
-export function repriceSale(sale: Sale, patch: SalePatch, state: Pick<DomainState, "products">, costs: ProductCost[], channels: SalesChannel[]): { sale: Omit<Sale, "id" | "documentId" | "source" | "delivery">; problems: string[] } {
+export function repriceSale(sale: Sale, patch: SalePatch, state: Pick<DomainState, "products"> & WithCurrency, costs: ProductCost[], channels: SalesChannel[]): { sale: Omit<Sale, "id" | "documentId" | "source" | "delivery">; problems: string[] } {
+  const currency = state.organization?.currency;
   const channelChanged = patch.channelId !== undefined && (patch.channelId ?? null) !== sale.channelId;
   const channelId = patch.channelId !== undefined ? patch.channelId : sale.channelId;
   const channel = channelId ? channels.find((item) => item.id === channelId) : DIRECT_CHANNEL;
   if (!channel && (channelChanged || patch.items)) return { sale: { ...sale }, problems: ["Ese canal no existe"] };
   const recorded = new Map(sale.items.map((item) => [item.productId, item]));
   const itemsChanged = Boolean(patch.items) || Boolean(patch.fillMissingCosts);
+  const quantity = (line: SaleItem) => line.quantityMilli / 1000;
+  // What the sale recorded as its own costs per unit sold (packaging, bags): its selling cost without the channel's part.
+  const before = sale.channelId ? channels.find((item) => item.id === sale.channelId) : DIRECT_CHANNEL;
+  const recordedPerUnitSelling = before ? Math.max(0, sale.sellingCostMinor - sale.totalMinor * before.commissionBps / 10_000 - (sale.items.length ? before.feePerOrderMinor : 0)) : null;
   let lines = sale.items;
   let totalMinor = sale.totalMinor;
   let sellingCostMinor = sale.sellingCostMinor;
   let problems: string[] = [];
-  if ((Boolean(patch.items) || channelChanged) && channel) {
-    const requests: SaleRequest[] = (patch.items ?? sale.items.map((item): SaleRequest => ({ productId: item.productId, quantity: item.quantityMilli / 1000 })))
-      .map((item) => ({ ...item, unitPrice: item.unitPrice ?? recorded.get(item.productId)?.unitPriceMinor }));
-    const priced = priceSale(state, costs, channel, requests);
+  if (patch.items && channel) {
+    const requests: SaleRequest[] = patch.items.map((item) => ({ ...item, unitPrice: item.unitPrice ?? recorded.get(item.productId)?.unitPriceMinor }));
+    // A product taken out of the catalog since the sale keeps what was recorded for it (price and costs); only its
+    // quantity or price can change. A product that was never in the sale and no longer exists cannot be added.
+    const inCatalog = new Set(state.products.map((product) => product.id));
+    const retired = requests.filter((item) => !inCatalog.has(item.productId) && recorded.has(item.productId));
+    const priced = priceSale(state, costs, channel, requests.filter((item) => !retired.includes(item)));
     problems = priced.problems;
-    lines = priced.items.map((line) => {
-      const before = recorded.get(line.productId);
-      return before ? { ...line, unitVariableCostMinor: before.unitVariableCostMinor, unitCostMinor: before.unitCostMinor } : line;
-    });
-    totalMinor = priced.totalMinor;
-    sellingCostMinor = priced.sellingCostMinor;
+    lines = [
+      ...priced.items.map((line) => {
+        const before = recorded.get(line.productId);
+        return before ? { ...line, unitVariableCostMinor: before.unitVariableCostMinor, unitCostMinor: before.unitCostMinor } : line;
+      }),
+      ...retired.map((item): SaleItem => ({ ...recorded.get(item.productId)!, quantityMilli: Math.round(item.quantity * 1000), unitPriceMinor: roundMoney(item.unitPrice ?? recorded.get(item.productId)!.unitPriceMinor, currency) })),
+    ];
+    totalMinor = roundMoney(lines.reduce((sum, line) => sum + quantity(line) * line.unitPriceMinor, 0), currency);
+    const retiredRevenue = retired.reduce((sum, item) => sum + item.quantity * (item.unitPrice ?? recorded.get(item.productId)!.unitPriceMinor), 0);
+    // A retired product's cost per unit sold is what the sale recorded beyond the products still in the catalog.
+    const catalogPerUnit = sale.items.filter((item) => inCatalog.has(item.productId)).reduce((sum, item) => sum + quantity(item) * (state.products.find((product) => product.id === item.productId)?.salesVariableMinor ?? 0), 0);
+    const retiredUnitsBefore = sale.items.filter((item) => !inCatalog.has(item.productId)).reduce((sum, item) => sum + quantity(item), 0);
+    const retiredPerUnit = recordedPerUnitSelling !== null && retiredUnitsBefore > 0 ? Math.max(0, recordedPerUnitSelling - catalogPerUnit) / retiredUnitsBefore : 0;
+    const retiredSelling = retired.reduce((sum, item) => sum + item.quantity * retiredPerUnit, 0);
+    sellingCostMinor = roundMoney(priced.sellingCostMinor + retiredRevenue * channel.commissionBps / 10_000 + retiredSelling + (!priced.items.length && retired.length ? channel.feePerOrderMinor : 0), currency);
+  } else if (channelChanged && channel) {
+    // Another channel with the same products: prices and costs stay as recorded; its commission and fee replace the
+    // old channel's, and the sale's own costs per unit sold (packaging, bags) stay as they were recorded.
+    const perUnitSelling = recordedPerUnitSelling
+      ?? sale.items.reduce((sum, item) => sum + quantity(item) * (state.products.find((product) => product.id === item.productId)?.salesVariableMinor ?? 0), 0);
+    sellingCostMinor = roundMoney(sale.totalMinor * channel.commissionBps / 10_000 + (sale.items.length ? channel.feePerOrderMinor : 0) + perUnitSelling, currency);
   }
   if (patch.fillMissingCosts) {
     // Only the missing costs are completed; what was known when the sale was recorded stays.
@@ -243,13 +270,12 @@ export function repriceSale(sale: Sale, patch: SalePatch, state: Pick<DomainStat
       const cost = costs.find((item) => item.productId === line.productId);
       return {
         ...line,
-        unitVariableCostMinor: line.unitVariableCostMinor ?? (cost?.perUnit ? cost.perUnit.materialMinor + cost.perUnit.laborMinor : null),
+        unitVariableCostMinor: line.unitVariableCostMinor ?? (cost?.perUnit ? roundMoney(cost.perUnit.materialMinor + cost.perUnit.laborMinor, currency) : null),
         unitCostMinor: line.unitCostMinor ?? cost?.unitMinor ?? null,
       };
     });
   }
-  const quantity = (line: SaleItem) => line.quantityMilli / 1000;
-  const sumOf = (pick: (line: SaleItem) => number | null) => lines.every((line) => pick(line) !== null) ? Math.round(lines.reduce((sum, line) => sum + quantity(line) * pick(line)!, 0)) : null;
+  const sumOf = (pick: (line: SaleItem) => number | null) => lines.every((line) => pick(line) !== null) ? roundMoney(lines.reduce((sum, line) => sum + quantity(line) * pick(line)!, 0), currency) : null;
   return {
     problems,
     sale: {
@@ -259,7 +285,7 @@ export function repriceSale(sale: Sale, patch: SalePatch, state: Pick<DomainStat
       customer: patch.customer ?? sale.customer,
       note: patch.note ?? sale.note,
       items: lines, totalMinor, sellingCostMinor,
-      deliveryCostMinor: Math.round(patch.deliveryCost ?? (channelChanged && channel ? channel.deliveryCostPerOrderMinor : sale.deliveryCostMinor)),
+      deliveryCostMinor: roundMoney(patch.deliveryCost ?? (channelChanged && channel ? channel.deliveryCostPerOrderMinor : sale.deliveryCostMinor), currency),
       variableCostMinor: itemsChanged || channelChanged ? sumOf((line) => line.unitVariableCostMinor) : sale.variableCostMinor,
       productionCostMinor: itemsChanged || channelChanged ? sumOf((line) => line.unitCostMinor) : sale.productionCostMinor,
     },
@@ -289,9 +315,9 @@ export const DIRECT_CHANNEL: SalesChannel = { id: "direct", name: "Venta directa
 
 const round2 = (value: number) => Math.round(value * 100) / 100;
 
-export function channelPrice(product: Pick<Product, "salePriceMinor">, channel: SalesChannel): number | null {
+export function channelPrice(product: Pick<Product, "salePriceMinor">, channel: SalesChannel, currency?: string | null): number | null {
   if (product.salePriceMinor <= 0) return null;
-  return Math.round(product.salePriceMinor * (10_000 + channel.priceAdjustmentBps) / 10_000);
+  return roundMoney(product.salePriceMinor * (10_000 + channel.priceAdjustmentBps) / 10_000, currency);
 }
 
 export type ChannelEconomics = {
@@ -314,11 +340,11 @@ export type ChannelEconomics = {
 };
 
 /** Per unit, for every product in every channel: price, what it costs to make, sell and deliver, and what is left. */
-export function channelEconomics(state: Pick<DomainState, "products">, costs: ProductCost[], channels: SalesChannel[]): ChannelEconomics[] {
+export function channelEconomics(state: Pick<DomainState, "products"> & WithCurrency, costs: ProductCost[], channels: SalesChannel[]): ChannelEconomics[] {
   const list = channels.length ? channels : [DIRECT_CHANNEL];
   return list.flatMap((channel) => state.products.map((product) => {
     const cost = costs.find((item) => item.productId === product.id);
-    const price = channelPrice(product, channel);
+    const price = channelPrice(product, channel, state.organization?.currency);
     const unitsPerOrder = Math.max(channel.unitsPerOrderMilli / 1000, 0.001);
     const deliveryCost = round2(channel.deliveryCostPerOrderMinor / unitsPerOrder);
     const sellingCost = price === null ? null : round2(price * channel.commissionBps / 10_000 + channel.feePerOrderMinor / unitsPerOrder + product.salesVariableMinor);
@@ -348,7 +374,8 @@ export type PricedSale = {
 };
 
 /** Prices a sale with the channel's rules and fixes its costs as of now. */
-export function priceSale(state: Pick<DomainState, "products">, costs: ProductCost[], channel: SalesChannel, items: SaleRequest[], deliveryCost?: number): PricedSale {
+export function priceSale(state: Pick<DomainState, "products"> & WithCurrency, costs: ProductCost[], channel: SalesChannel, items: SaleRequest[], deliveryCost?: number): PricedSale {
+  const currency = state.organization?.currency;
   const problems: string[] = [];
   const lines: SaleItem[] = [];
   let salesVariable = 0;
@@ -356,23 +383,23 @@ export function priceSale(state: Pick<DomainState, "products">, costs: ProductCo
     const product = state.products.find((entry) => entry.id === item.productId);
     if (!product) { problems.push("Un producto de la venta no existe"); continue; }
     if (!(item.quantity > 0)) { problems.push(`Falta la cantidad vendida de ${product.name}`); continue; }
-    const price = item.unitPrice ?? channelPrice(product, channel);
+    const price = item.unitPrice ?? channelPrice(product, channel, currency);
     if (price === null) { problems.push(`Falta el precio de venta de ${product.name}`); continue; }
     const cost = costs.find((entry) => entry.productId === product.id);
     lines.push({
-      productId: product.id, productName: product.name, quantityMilli: Math.round(item.quantity * 1000), unitPriceMinor: Math.round(price),
+      productId: product.id, productName: product.name, quantityMilli: Math.round(item.quantity * 1000), unitPriceMinor: roundMoney(price, currency),
       unitVariableCostMinor: cost?.perUnit ? cost.perUnit.materialMinor + cost.perUnit.laborMinor : null,
       unitCostMinor: cost?.unitMinor ?? null,
     });
     salesVariable += item.quantity * product.salesVariableMinor;
   }
   const quantity = (line: SaleItem) => line.quantityMilli / 1000;
-  const totalMinor = Math.round(lines.reduce((sum, line) => sum + quantity(line) * line.unitPriceMinor, 0));
-  const sumOf = (pick: (line: SaleItem) => number | null) => lines.every((line) => pick(line) !== null) ? Math.round(lines.reduce((sum, line) => sum + quantity(line) * pick(line)!, 0)) : null;
+  const totalMinor = roundMoney(lines.reduce((sum, line) => sum + quantity(line) * line.unitPriceMinor, 0), currency);
+  const sumOf = (pick: (line: SaleItem) => number | null) => lines.every((line) => pick(line) !== null) ? roundMoney(lines.reduce((sum, line) => sum + quantity(line) * pick(line)!, 0), currency) : null;
   return {
     items: lines, totalMinor,
-    sellingCostMinor: Math.round(totalMinor * channel.commissionBps / 10_000 + (lines.length ? channel.feePerOrderMinor : 0) + salesVariable),
-    deliveryCostMinor: Math.round(deliveryCost ?? channel.deliveryCostPerOrderMinor),
+    sellingCostMinor: roundMoney(totalMinor * channel.commissionBps / 10_000 + (lines.length ? channel.feePerOrderMinor : 0) + salesVariable, currency),
+    deliveryCostMinor: roundMoney(deliveryCost ?? channel.deliveryCostPerOrderMinor, currency),
     variableCostMinor: sumOf((line) => line.unitVariableCostMinor),
     productionCostMinor: sumOf((line) => line.unitCostMinor),
     problems,
@@ -381,22 +408,28 @@ export function priceSale(state: Pick<DomainState, "products">, costs: ProductCo
 
 const monthIndex = (month: string) => Number(month.slice(0, 4)) * 12 + Number(month.slice(5, 7)) - 1;
 
-/** The part of an investment that belongs to a month: its price spread evenly over its useful life. */
-export function investmentShare(purchase: Pick<Purchase, "kind" | "amountMinor" | "purchasedOn" | "usefulLifeMonths">, month: string): number {
+/**
+ * The part of an investment that belongs to a month: its price spread evenly over its useful life, in whole units
+ * whose monthly roundings add up to exactly its price (the same share the unit cost uses).
+ */
+export function investmentShare(purchase: Pick<Purchase, "kind" | "amountMinor" | "purchasedOn" | "usefulLifeMonths">, month: string, currency?: string | null): number {
   if (purchase.kind !== "investment" || !purchase.usefulLifeMonths) return 0;
-  const elapsed = monthIndex(month) - monthIndex(purchase.purchasedOn.slice(0, 7));
-  return elapsed >= 0 && elapsed < purchase.usefulLifeMonths ? purchase.amountMinor / purchase.usefulLifeMonths : 0;
+  return investmentMonthlyShare({ amountMinor: purchase.amountMinor, purchasedOn: purchase.purchasedOn, usefulLifeMonths: purchase.usefulLifeMonths }, month, currency);
 }
 
+/** Months of useful life still to spread, counting this one; before it was bought, its whole life. */
 export function monthsLeft(purchase: Pick<Purchase, "purchasedOn" | "usefulLifeMonths">, month: string): number {
   if (!purchase.usefulLifeMonths) return 0;
-  return Math.max(0, purchase.usefulLifeMonths - (monthIndex(month) - monthIndex(purchase.purchasedOn.slice(0, 7))));
+  const elapsed = monthIndex(month) - monthIndex(purchase.purchasedOn.slice(0, 7));
+  return Math.max(0, purchase.usefulLifeMonths - Math.max(0, elapsed));
 }
 
 const emptyAreas = (): Record<CostArea, number> => ({ production: 0, delivery: 0, sales: 0, admin: 0 });
 
 export type CompanyStructure = {
   month: string;
+  /** The costing period whose monthly expenses are in force this month; null before any was recorded. */
+  period: string | null;
   areas: {
     area: CostArea;
     label: string;
@@ -409,29 +442,42 @@ export type CompanyStructure = {
   monthlyFixedTotal: number;
 };
 
-/** The company's monthly structure by area: fixed expenses and investments spread over their useful life. */
-export function companyStructure(state: Pick<DomainState, "expenses" | "activePeriod">, investments: Purchase[], month: string): CompanyStructure {
-  const active = state.expenses.filter((item) => item.period === state.activePeriod);
+/**
+ * The company's monthly structure by area in a month: the fixed expenses in force that month and the investments
+ * being spread over their useful life (bought on or before it and not yet fully spread).
+ */
+export function companyStructure(state: Pick<DomainState, "expenses" | "activePeriod"> & WithCurrency, investments: Purchase[], month: string, hasActivity = true): CompanyStructure {
+  const currency = state.organization?.currency;
+  const { period, expenses: active } = expensesInForce(state, month, hasActivity);
+  const bought = (item: Purchase) => item.purchasedOn.slice(0, 7) <= month;
   const areas = (["production", "delivery", "sales", "admin"] as CostArea[]).map((area) => {
     const expenses = active.filter((item) => (item.area ?? "production") === area).map((item) => ({ id: item.id, name: item.name, category: item.category, monthlyAmount: item.amountMinor }));
-    const assets = investments.filter((item) => item.kind === "investment" && item.area === area && item.usefulLifeMonths)
-      .map((item) => ({ id: item.id, description: item.description, amount: item.amountMinor, monthlyShare: round2(investmentShare(item, month)), usefulLifeMonths: item.usefulLifeMonths!, monthsLeft: monthsLeft(item, month), includeInUnitCost: Boolean(item.includeInUnitCost), documentId: item.documentId }))
+    const assets = investments.filter((item) => item.kind === "investment" && item.area === area && item.usefulLifeMonths && bought(item))
+      .map((item) => ({ id: item.id, description: item.description, amount: item.amountMinor, monthlyShare: investmentShare(item, month, currency), usefulLifeMonths: item.usefulLifeMonths!, monthsLeft: monthsLeft(item, month), includeInUnitCost: Boolean(item.includeInUnitCost), documentId: item.documentId }))
       .filter((item) => item.monthsLeft > 0);
     return {
       area, label: AREA_LABELS[area], hint: AREA_HINTS[area], expenses, investments: assets,
-      monthlyTotal: round2(expenses.reduce((sum, item) => sum + item.monthlyAmount, 0) + assets.reduce((sum, item) => sum + item.monthlyShare, 0)),
+      monthlyTotal: roundMoney(expenses.reduce((sum, item) => sum + item.monthlyAmount, 0) + assets.reduce((sum, item) => sum + item.monthlyShare, 0), currency),
     };
   });
-  return { month, areas, monthlyFixedTotal: round2(areas.reduce((sum, item) => sum + item.monthlyTotal, 0)) };
+  return { month, period, areas, monthlyFixedTotal: roundMoney(areas.reduce((sum, item) => sum + item.monthlyTotal, 0), currency) };
 }
+
+/** A month has activity of its own when it has sales or purchases recorded. */
+const monthHasActivity = (month: string, sales: Pick<Sale, "soldOn">[], purchases: Pick<Purchase, "purchasedOn">[]) =>
+  sales.some((sale) => sale.soldOn.startsWith(month)) || purchases.some((purchase) => purchase.purchasedOn.startsWith(month));
 
 export type MonthResult = {
   month: string;
   sales: number;
   revenue: number;
-  /** Materials and direct labor of what was sold. */
+  /** Materials and direct labor of what was sold (recorded with each sale, or estimated with today's cost). */
   variableProductionCost: number;
-  /** Sales whose products had no complete cost when they were recorded. */
+  /** Part of `variableProductionCost` estimated with today's cost, for sales recorded without a product's full cost. */
+  estimatedVariableCost: number;
+  /** Sales recorded without a product's full cost whose cost was estimated with today's. */
+  salesWithEstimatedCost: number;
+  /** Sales with a product whose cost is still unknown: that part of their cost is not deducted. */
   salesWithoutCost: number;
   sellingCost: number;
   deliveryCost: number;
@@ -448,37 +494,68 @@ export type MonthResult = {
   fixedPayments: { expenseName: string; paid: number; estimated: number | null }[];
   contributionRatio: number | null;
   breakEvenRevenue: number | null;
+  /** The month has more records than were read, so its totals may be short. */
+  incompleteRecords: boolean;
 };
 
 /**
- * The month in the order a person reads it: what came in, what each sale cost, what was left, the month's fixed
- * costs and the result. Fixed costs are the monthly amounts in force; supplies bought are not an expense of the
- * month (they become cost when what they made is sold), and an investment counts only its monthly share.
+ * What producing a sale's products cost (materials and direct labor). The cost recorded with the sale wins; a product
+ * recorded without its full cost takes today's, marked as estimated; one still without a cost adds nothing and the
+ * sale is counted as missing a cost.
  */
-export function monthResult(input: { state: Pick<DomainState, "expenses" | "activePeriod" | "products">; costs: ProductCost[]; channels: SalesChannel[]; month: string; sales: Sale[]; purchases: Purchase[]; investments: Purchase[] }): MonthResult {
+export function saleVariableCost(sale: Pick<Sale, "variableCostMinor" | "items">, costs: ProductCost[], currency?: string | null): { amount: number; estimated: number; usedToday: boolean; missing: boolean } {
+  if (sale.variableCostMinor !== null) return { amount: sale.variableCostMinor, estimated: 0, usedToday: false, missing: false };
+  if (!sale.items.length) return { amount: 0, estimated: 0, usedToday: false, missing: true };
+  let recorded = 0;
+  let estimated = 0;
+  let usedToday = false;
+  let missing = false;
+  for (const item of sale.items) {
+    const quantity = item.quantityMilli / 1000;
+    if (item.unitVariableCostMinor !== null) { recorded += quantity * item.unitVariableCostMinor; continue; }
+    const today = costs.find((cost) => cost.productId === item.productId)?.perUnit;
+    if (today) { estimated += quantity * (today.materialMinor + today.laborMinor); usedToday = true; }
+    else missing = true;
+  }
+  return { amount: roundMoney(recorded + estimated, currency), estimated: roundMoney(estimated, currency), usedToday, missing };
+}
+
+/**
+ * The month in the order a person reads it: what came in, what each sale cost, what was left, the month's fixed
+ * costs and the result. Fixed costs are the monthly amounts in force that month; supplies bought are not an expense
+ * of the month (they become cost when what they made is sold), and an investment counts only its monthly share.
+ */
+export function monthResult(input: { state: Pick<DomainState, "expenses" | "activePeriod" | "products"> & WithCurrency; costs: ProductCost[]; channels: SalesChannel[]; month: string; sales: Sale[]; purchases: Purchase[]; investments: Purchase[]; incompleteRecords?: boolean }): MonthResult {
   const { month } = input;
+  const currency = input.state.organization?.currency;
+  // Sums of amounts that carry cents are rounded back to money, so no float residue reaches a total.
+  const money = (value: number) => roundMoney(value, currency);
+  const sum = <T,>(list: T[], pick: (item: T) => number) => money(list.reduce((total, item) => total + pick(item), 0));
   const sales = input.sales.filter((sale) => sale.soldOn.startsWith(month));
   const purchases = input.purchases.filter((purchase) => purchase.purchasedOn.startsWith(month));
-  const revenue = sales.reduce((sum, sale) => sum + sale.totalMinor, 0);
-  const variableProductionCost = sales.reduce((sum, sale) => sum + (sale.variableCostMinor ?? 0), 0);
-  const sellingCost = sales.reduce((sum, sale) => sum + sale.sellingCostMinor, 0);
-  const deliveryCost = sales.reduce((sum, sale) => sum + sale.deliveryCostMinor, 0);
-  const contribution = revenue - variableProductionCost - sellingCost - deliveryCost;
+  const revenue = sum(sales, (sale) => sale.totalMinor);
+  const saleCosts = sales.map((sale) => saleVariableCost(sale, input.costs, currency));
+  const variableProductionCost = sum(saleCosts, (cost) => cost.amount);
+  const estimatedVariableCost = sum(saleCosts, (cost) => cost.estimated);
+  const sellingCost = sum(sales, (sale) => sale.sellingCostMinor);
+  const deliveryCost = sum(sales, (sale) => sale.deliveryCostMinor);
+  const contribution = money(revenue - variableProductionCost - sellingCost - deliveryCost);
 
-  const structure = companyStructure(input.state, input.investments, month);
+  const structure = companyStructure(input.state, input.investments, month, monthHasActivity(month, sales, purchases));
   const fixedByArea = emptyAreas();
   let investmentsShare = 0;
   for (const area of structure.areas) {
-    fixedByArea[area.area] = round2(area.expenses.reduce((sum, item) => sum + item.monthlyAmount, 0));
-    investmentsShare += area.investments.reduce((sum, item) => sum + item.monthlyShare, 0);
+    fixedByArea[area.area] = sum(area.expenses, (item) => item.monthlyAmount);
+    investmentsShare += area.investments.reduce((total, item) => total + item.monthlyShare, 0);
   }
-  const fixedTotal = round2(Object.values(fixedByArea).reduce((sum, value) => sum + value, 0));
+  const fixedTotal = sum(Object.values(fixedByArea), (value) => value);
   const oneOffByArea = emptyAreas();
-  for (const purchase of purchases.filter((item) => item.kind === "expense")) oneOffByArea[purchase.area] += purchase.amountMinor;
-  const oneOffTotal = Object.values(oneOffByArea).reduce((sum, value) => sum + value, 0);
-  investmentsShare = round2(investmentsShare);
+  for (const purchase of purchases.filter((item) => item.kind === "expense")) oneOffByArea[purchase.area] = money(oneOffByArea[purchase.area] + purchase.amountMinor);
+  const oneOffTotal = sum(Object.values(oneOffByArea), (value) => value);
+  investmentsShare = money(investmentsShare);
 
-  const expenses = new Map(input.state.expenses.filter((item) => item.period === input.state.activePeriod).map((item) => [item.id, item]));
+  // A payment may be for an expense of an earlier period: every expense row is looked up by its id.
+  const expenses = new Map(input.state.expenses.map((item) => [item.id, item]));
   const fixedPayments = purchases.filter((item) => item.kind === "fixed_payment").map((item) => ({
     expenseName: item.expenseName ?? item.description, paid: item.amountMinor,
     estimated: item.expenseId ? expenses.get(item.expenseId)?.amountMinor ?? null : null,
@@ -495,17 +572,20 @@ export function monthResult(input: { state: Pick<DomainState, "expenses" | "acti
     const plannedRevenue = weights.reduce((sum, { row, units }) => sum + row.price! * units, 0);
     if (plannedRevenue > 0) contributionRatio = weights.reduce((sum, { row, units }) => sum + row.contribution! * units, 0) / plannedRevenue;
   }
-  const fixedToCover = fixedTotal + investmentsShare;
+  // Everything the month's sales have to cover, one-off purchases included: selling the break-even means not losing.
+  const fixedToCover = fixedTotal + investmentsShare + oneOffTotal;
   return {
-    month, sales: sales.length, revenue, variableProductionCost,
-    salesWithoutCost: sales.filter((sale) => sale.variableCostMinor === null).length,
+    month, sales: sales.length, revenue, variableProductionCost, estimatedVariableCost,
+    salesWithEstimatedCost: saleCosts.filter((cost) => cost.usedToday && !cost.missing).length,
+    salesWithoutCost: saleCosts.filter((cost) => cost.missing).length,
     sellingCost, deliveryCost, contribution,
     fixedByArea, fixedTotal, oneOffByArea, oneOffTotal, investmentsShare,
-    result: round2(contribution - fixedTotal - oneOffTotal - investmentsShare),
-    purchasedMaterials: purchases.filter((item) => item.kind === "material").reduce((sum, item) => sum + item.amountMinor, 0),
+    result: money(contribution - fixedTotal - oneOffTotal - investmentsShare),
+    purchasedMaterials: sum(purchases.filter((item) => item.kind === "material"), (item) => item.amountMinor),
     fixedPayments,
     contributionRatio: contributionRatio === null ? null : round2(contributionRatio * 10_000) / 10_000,
-    breakEvenRevenue: contributionRatio && contributionRatio > 0 && fixedToCover > 0 ? Math.round(fixedToCover / contributionRatio) : null,
+    breakEvenRevenue: contributionRatio && contributionRatio > 0 && fixedToCover > 0 ? money(fixedToCover / contributionRatio) : null,
+    incompleteRecords: Boolean(input.incompleteRecords),
   };
 }
 
@@ -526,7 +606,7 @@ export function monthLessons(result: MonthResult, money: (value: number) => stri
   if (result.breakEvenRevenue !== null) {
     lessons.push({
       id: "break-even", title: "Tu punto de equilibrio",
-      text: `Tus gastos fijos del mes suman ${money(result.fixedTotal + result.investmentsShare)}. Para no perder necesitas vender unos ${money(result.breakEvenRevenue)} al mes; ${result.revenue > 0 ? result.revenue >= result.breakEvenRevenue ? `este mes vendiste ${money(result.revenue)}, así que lo superaste.` : `este mes vas ${money(result.revenue)}, te faltan ${money(result.breakEvenRevenue - result.revenue)}.` : "todavía no registraste ventas este mes."}`,
+      text: `Tus gastos del mes suman ${money(result.fixedTotal + result.investmentsShare + result.oneOffTotal)}${result.oneOffTotal ? ` (${money(result.oneOffTotal)} son compras que se usaron este mes)` : ""}. Para no perder necesitas vender unos ${money(result.breakEvenRevenue)} al mes; ${result.revenue > 0 ? result.revenue >= result.breakEvenRevenue ? `este mes vendiste ${money(result.revenue)}, así que lo superaste.` : `este mes vas ${money(result.revenue)}, te faltan ${money(result.breakEvenRevenue - result.revenue)}.` : "todavía no registraste ventas este mes."}`,
     });
   }
   if (result.purchasedMaterials > 0) {
@@ -552,7 +632,8 @@ export function monthLessons(result: MonthResult, money: (value: number) => stri
   return lessons;
 }
 
-export type BusinessRecords = { channels: SalesChannel[]; purchases: Purchase[]; investments: Purchase[]; sales: Sale[] };
+/** `capped` when the month had more sales or purchases than were read. */
+export type BusinessRecords = { channels: SalesChannel[]; purchases: Purchase[]; investments: Purchase[]; sales: Sale[]; capped?: boolean };
 
 /** Everything the business sections show for a month, computed from the stored records. */
 export function buildBusinessView(state: DomainState, records: BusinessRecords, month: string) {
@@ -562,8 +643,8 @@ export function buildBusinessView(state: DomainState, records: BusinessRecords, 
     currency: state.organization.currency,
     channels: records.channels,
     economics: channelEconomics(state, costs, records.channels),
-    structure: companyStructure(state, records.investments, month),
-    result: monthResult({ state, costs, channels: records.channels, month, sales: records.sales, purchases: records.purchases, investments: records.investments }),
+    structure: companyStructure(state, records.investments, month, monthHasActivity(month, records.sales, records.purchases)),
+    result: monthResult({ state, costs, channels: records.channels, month, sales: records.sales, purchases: records.purchases, investments: records.investments, incompleteRecords: records.capped }),
     purchases: records.purchases,
     investments: records.investments,
     sales: records.sales,
@@ -647,5 +728,6 @@ export function describeHistoryEvent(action: string, details: Record<string, unk
   if (action === "record-sale" && typeof details.totalMinor === "number") lines.push(`Total: ${money(details.totalMinor)}${typeof details.channel === "string" ? ` por ${details.channel}` : ""}`);
   if (action === "record-purchase" && typeof details.amount === "number") lines.push(`${typeof details.description === "string" ? details.description : "Compra"}: ${money(details.amount)}`);
   if (action.startsWith("archive") && typeof details.reason === "string" && details.reason) lines.push(`Motivo: ${details.reason}`);
+  if (action === "archive-delivery" && typeof details.deliveryCostBefore === "number") lines.push(`Costo de entrega de la venta: ${money(details.deliveryCostBefore)} → ${money(0)}`);
   return { title: TITLES[action] ?? action, lines };
 }

@@ -2,7 +2,12 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
-import { calculateCosts, convertToOrganizationCurrency, type CostArea, type DomainState } from "@/lib/domain";
+import { formatMoney, roundMoney } from "@/lib/money";
+import { calculateCosts, convertToOrganizationCurrency, type CostArea, type DomainState, type ProductCost } from "@/lib/domain";
+import { convertNativeMilli } from "@/lib/currency";
+import { costsAsOf } from "@/lib/cost-snapshots";
+import type { SnapshotRow } from "@/lib/cost-analysis";
+import { fxTableNear, quotesFor } from "./fx";
 import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, buildCustomerDirectory, businessToday, describeHistoryEvent, type HistoryEvent, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement, type SqlValue } from "./db";
@@ -41,6 +46,8 @@ export const purchaseInputSchema = z.object({
   materialId: z.string().min(1).max(120).optional(),
   quantity: z.number().positive().max(1_000_000_000).optional(),
   updateMaterialPrice: z.boolean().default(true),
+  /** For a purchase in another currency: organization currency per unit of it, as on the invoice. */
+  exchangeRate: z.number().positive().max(1_000_000_000).optional(),
   expenseId: z.string().min(1).max(120).optional(),
   usefulLifeMonths: z.number().int().min(1).max(600).optional(),
   /** Workshop investments: spread their monthly share into each unit's cost (the person's decision). */
@@ -168,15 +175,19 @@ export async function loadChannels(principal: Principal): Promise<SalesChannel[]
   return rows.map(toChannel);
 }
 
+/** Most sales or purchases of one month read for its result; beyond it the result says its totals may be short. */
+const MONTH_RECORDS_LIMIT = 5000;
+
 /** Channels, the month's purchases and sales, and every investment still being spread. */
 export async function loadBusinessRecords(principal: Principal, forMonth: string) {
   const [from, to] = monthBounds(month.parse(forMonth));
   const org = principal.organizationId;
   const [channels, purchases, investments, sales, items, deliveries] = await dbBatch<ChannelRow | PurchaseRow | SaleRow | SaleItemRow | SaleDeliveryRow>([
     { sql: "SELECT id, name, delivery_method, commission_bps, fee_per_order_minor, delivery_cost_per_order_minor, units_per_order_milli, price_adjustment_bps FROM sales_channels WHERE organization_id=? AND archived_at IS NULL ORDER BY created_at", params: [org] },
-    { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.purchased_on >= ? AND p.purchased_on < ? ORDER BY p.purchased_on DESC, p.created_at DESC LIMIT 500`, params: [org, from, to] },
-    { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.kind='investment' ORDER BY p.purchased_on DESC LIMIT 500`, params: [org] },
-    { sql: "SELECT id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE organization_id=? AND archived_at IS NULL AND sold_on >= ? AND sold_on < ? ORDER BY sold_on DESC, created_at DESC LIMIT 500", params: [org, from, to] },
+    { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.purchased_on >= ? AND p.purchased_on < ? ORDER BY p.purchased_on DESC, p.created_at DESC LIMIT ${MONTH_RECORDS_LIMIT + 1}`, params: [org, from, to] },
+    // Every investment whose useful life may still reach this month (bought on or before it).
+    { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.kind='investment' AND p.purchased_on < ? ORDER BY p.purchased_on DESC LIMIT 2000`, params: [org, to] },
+    { sql: `SELECT id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE organization_id=? AND archived_at IS NULL AND sold_on >= ? AND sold_on < ? ORDER BY sold_on DESC, created_at DESC LIMIT ${MONTH_RECORDS_LIMIT + 1}`, params: [org, from, to] },
     { sql: "SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE s.organization_id=? AND s.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
     { sql: "SELECT d.sale_id, d.id, d.status, d.scheduled_on, d.delivered_on, d.zone_id, z.name AS zone_name, d.carrier FROM deliveries d JOIN sales s ON s.id=d.sale_id LEFT JOIN delivery_zones z ON z.id=d.zone_id AND z.organization_id=d.organization_id WHERE s.organization_id=? AND s.archived_at IS NULL AND d.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
   ], { retrySafe: true });
@@ -187,11 +198,13 @@ export async function loadBusinessRecords(principal: Principal, forMonth: string
     list.push({ productId: row.product_id, productName: row.product_name, quantityMilli: row.quantity_milli, unitPriceMinor: row.unit_price_minor, unitVariableCostMinor: row.unit_variable_cost_minor, unitCostMinor: row.unit_cost_minor });
     itemsBySale.set(row.sale_id, list);
   }
+  const capped = purchases.length > MONTH_RECORDS_LIMIT || sales.length > MONTH_RECORDS_LIMIT;
   return {
+    capped,
     channels: (channels as ChannelRow[]).map(toChannel),
-    purchases: (purchases as PurchaseRow[]).map(toPurchase),
+    purchases: (purchases as PurchaseRow[]).slice(0, MONTH_RECORDS_LIMIT).map(toPurchase),
     investments: (investments as PurchaseRow[]).map(toPurchase),
-    sales: (sales as SaleRow[]).map((row): Sale => ({
+    sales: (sales as SaleRow[]).slice(0, MONTH_RECORDS_LIMIT).map((row): Sale => ({
       id: row.id, soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, customerId: row.customer_id ?? null, note: row.note,
       totalMinor: row.total_minor, sellingCostMinor: row.selling_cost_minor, deliveryCostMinor: row.delivery_cost_minor,
       variableCostMinor: row.variable_cost_minor, productionCostMinor: row.production_cost_minor, documentId: row.document_id, source: row.source,
@@ -209,14 +222,14 @@ export async function loadBusinessView(principal: Principal, forMonth: string) {
 export async function saveChannel(principal: Principal, input: ChannelInput): Promise<{ id: string; created: boolean; channel: SalesChannel }> {
   assertEditor(principal);
   const value = channelInputSchema.parse(input);
-  const channels = await loadChannels(principal);
+  const [channels, place] = await Promise.all([loadChannels(principal), organizationPlace(principal)]);
   const clash = channels.find((item) => item.id !== value.id && item.name.toLocaleLowerCase("es") === value.name.toLocaleLowerCase("es"));
   if (clash) throw new ApiError(400, `Ya existe el canal ${clash.name}`);
   if (value.id && !channels.some((item) => item.id === value.id)) throw new ApiError(404, "Canal no encontrado");
   const channel: SalesChannel = {
     id: value.id ?? crypto.randomUUID(), name: value.name, deliveryMethod: value.deliveryMethod,
-    commissionBps: Math.round(value.commissionPercent * 100), feePerOrderMinor: Math.round(value.feePerOrder),
-    deliveryCostPerOrderMinor: Math.round(value.deliveryCostPerOrder), unitsPerOrderMilli: Math.max(1, Math.round(value.unitsPerOrder * 1000)),
+    commissionBps: Math.round(value.commissionPercent * 100), feePerOrderMinor: roundMoney(value.feePerOrder, place.currency),
+    deliveryCostPerOrderMinor: roundMoney(value.deliveryCostPerOrder, place.currency), unitsPerOrderMilli: Math.max(1, Math.round(value.unitsPerOrder * 1000)),
     priceAdjustmentBps: Math.round(value.priceAdjustmentPercent * 100),
   };
   const fields = [channel.name, channel.deliveryMethod, channel.commissionBps, channel.feePerOrderMinor, channel.deliveryCostPerOrderMinor, channel.unitsPerOrderMilli, channel.priceAdjustmentBps];
@@ -240,10 +253,13 @@ export async function archiveRecord(principal: Principal, kind: "channel" | "pur
     const [row] = await dbQuery<{ include_in_unit_cost: number }>("SELECT include_in_unit_cost FROM purchases WHERE id=? AND organization_id=? AND kind='investment' AND archived_at IS NULL", [id, principal.organizationId]);
     if (row?.include_in_unit_cost === 1) await commitOnce(principal, crypto.randomUUID(), "user", () => ({ action: "set-investment-cost", id, include: false }));
   }
+  // A sale left without its delivery is not delivered: it stops carrying a delivery cost in the month's result.
+  const [owner] = kind === "delivery" ? await dbQuery<{ sale_id: string; delivery_cost_minor: number }>("SELECT d.sale_id, s.delivery_cost_minor FROM deliveries d JOIN sales s ON s.id=d.sale_id AND s.organization_id=d.organization_id WHERE d.id=? AND d.organization_id=? AND d.archived_at IS NULL", [id, principal.organizationId]) : [];
   const table = { channel: "sales_channels", purchase: "purchases", sale: "sales", delivery: "deliveries" }[kind];
   const [rows] = await dbBatch<{ id: string }>([
     { sql: `UPDATE ${table} SET archived_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND archived_at IS NULL RETURNING id`, params: [id, principal.organizationId] },
-    audit(principal, `archive-${kind}`, id, { reason }),
+    ...(owner?.delivery_cost_minor ? [{ sql: "UPDATE sales SET delivery_cost_minor=0 WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [owner.sale_id, principal.organizationId] }] : []),
+    audit(principal, `archive-${kind}`, id, { reason, ...(owner?.delivery_cost_minor ? { saleId: owner.sale_id, deliveryCostBefore: owner.delivery_cost_minor, deliveryCost: 0 } : {}) }),
   ]);
   if (!rows.length) throw new ApiError(404, { channel: "Canal no encontrado", purchase: "Compra no encontrada", sale: "Venta no encontrada", delivery: "Entrega no encontrada" }[kind]);
   // A voided sale takes its delivery with it.
@@ -261,6 +277,36 @@ function toOrganizationAmount(state: DomainState, value: number, currency: Curre
   const converted = convertToOrganizationCurrency(state, toNativeMilli(value), currency);
   if (converted === null) throw new ApiError(503, `Falta cotización vigente de ${currency} a ${state.organization.currency}`);
   return converted;
+}
+
+/**
+ * What a purchase in another currency cost in the organization's: at the rate on its invoice when the person gives it,
+ * else at the rate published closest to its date, else (a date before the app kept rates) at today's. Accounting books
+ * a purchase at its own date's rate, not at the rate of the day it was typed in.
+ */
+async function purchaseAmount(state: DomainState, value: number, currency: Currency, purchasedOn: string, exchangeRate?: number): Promise<{ amountMinor: number; rate: string }> {
+  const base = state.organization.currency;
+  if (currency === base) return { amountMinor: roundMoney(value, base), rate: "misma moneda" };
+  if (exchangeRate) return { amountMinor: roundMoney(value * exchangeRate, base), rate: `${exchangeRate} indicado en la factura` };
+  const table = await fxTableNear(purchasedOn).catch(() => null);
+  const quote = table ? quotesFor(base, table)[currency] : undefined;
+  if (quote) return { amountMinor: convertNativeMilli(toNativeMilli(value), quote), rate: `${quote.ratePpm / 1_000_000} (${quote.source}, ${quote.asOf.slice(0, 10)})` };
+  return { amountMinor: toOrganizationAmount(state, value, currency), rate: "cotización de hoy (no hay una guardada de esa fecha)" };
+}
+
+/**
+ * The costs a sale carries: as they stood on its date when that day is past (each product's latest complete snapshot
+ * then), today's otherwise or for a product without one. A sale typed in late keeps the cost of the day it happened.
+ */
+async function saleCostsOn(principal: Principal, state: DomainState, soldOn: string, productIds: string[]): Promise<ProductCost[]> {
+  const costs = calculateCosts(state);
+  const ids = [...new Set(productIds)];
+  if (!ids.length || soldOn >= businessToday(state.organization)) return costs;
+  const rows = await dbQuery<SnapshotRow>(
+    `SELECT product_id, total_lot_minor, unit_minor, lines_json, warnings_json, context_json, created_at FROM (SELECT product_id, total_lot_minor, unit_minor, lines_json, warnings_json, context_json, created_at, ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY created_at DESC) AS position FROM cost_snapshots WHERE organization_id=? AND product_id IN (${ids.map(() => "?").join(", ")}) AND created_at <= ? AND unit_minor IS NOT NULL AND warnings_json='[]') WHERE position=1`,
+    [principal.organizationId, ...ids, `${soldOn} 23:59:59`],
+  );
+  return costsAsOf(costs, rows, soldOn, state.organization.currency);
 }
 
 export type RecordedPurchase = { id: string; duplicate: boolean; purchase: Purchase; priceUpdated: { material: string; unitPrice: number; currency: Currency } | null };
@@ -286,7 +332,7 @@ export async function recordPurchase(principal: Principal, input: PurchaseInput,
   if (value.kind === "investment" && !value.usefulLifeMonths) throw new ApiError(400, "Indica cuántos meses se va a usar la inversión");
   const area: CostArea | undefined = value.area ?? (value.kind === "material" ? "production" : value.kind === "fixed_payment" ? expense?.area ?? "production" : undefined);
   if (!area) throw new ApiError(400, "Indica a qué área corresponde: producción, entregas, ventas o administración");
-  const amountMinor = toOrganizationAmount(state, value.amount, currency);
+  const { amountMinor, rate } = await purchaseAmount(state, value.amount, currency, value.purchasedOn, value.exchangeRate);
   const documentId = await documentBelongs(principal, value.documentId);
   const supplierId = await resolveSupplier(principal, value.supplier, kindForPurchase(value.kind), options.source);
 
@@ -309,7 +355,7 @@ export async function recordPurchase(principal: Principal, input: PurchaseInput,
       id, principal.organizationId, value.purchasedOn, value.description, value.supplier, supplierId, amountMinor, currency, toNativeMilli(value.amount), value.kind, area,
       material?.id ?? null, value.quantity ? Math.round(value.quantity * 1000) : null, expense?.id ?? null, lifeMonths, documentId, options.source, principal.userId, options.idempotencyKey,
     ] },
-    audit(principal, "record-purchase", id, { ...value, amountMinor, area, source: options.source }),
+    audit(principal, "record-purchase", id, { ...value, amountMinor, area, ...(currency !== state.organization.currency ? { exchangeRate: rate } : {}), source: options.source }),
   ]);
   const includeInUnitCost = value.kind === "investment" && area === "production" && Boolean(value.includeInUnitCost);
   if (includeInUnitCost) await commitOnce(principal, derivedKey(options.idempotencyKey, "investment"), options.source, () => ({ action: "set-investment-cost", id, include: true, allocationBasis: value.allocationBasis ?? "hours" }));
@@ -335,7 +381,7 @@ export async function recordSale(principal: Principal, input: SaleInput, options
   const [state, channels] = await Promise.all([loadState(principal), loadChannels(principal)]);
   const channel = value.channelId ? channels.find((item) => item.id === value.channelId) : DIRECT_CHANNEL;
   if (!channel) throw new ApiError(404, "Canal no encontrado");
-  const priced = priceSale(state, calculateCosts(state), channel, value.items, value.deliveryCost);
+  const priced = priceSale(state, await saleCostsOn(principal, state, value.soldOn, value.items.map((item) => item.productId)), channel, value.items, value.deliveryCost);
   if (priced.problems.length) throw new ApiError(400, priced.problems.join(". "));
   const sale = {
     soldOn: value.soldOn, channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id, channelName: channel.name, customer: value.customer, note: value.note,
@@ -424,7 +470,17 @@ export async function updateSale(principal: Principal, id: string, input: SalePa
   assertEditor(principal);
   const patch = salePatchSchema.parse(input);
   const [sale, state, channels] = await Promise.all([loadSale(principal, id), loadState(principal), loadChannels(principal)]);
-  const { sale: next, problems } = repriceSale(sale, patch, state, calculateCosts(state), channels);
+  // Another channel brings its delivery cost, unless the delivery already has one of its own: none if it was cancelled,
+  // its zone's when the zone sets one (the same rule as when the sale was recorded).
+  if (patch.channelId !== undefined && (patch.channelId ?? null) !== sale.channelId && patch.deliveryCost === undefined) {
+    const [delivery] = await dbQuery<{ status: DeliveryStatus; zone_id: string | null }>("SELECT status, zone_id FROM deliveries WHERE sale_id=? AND organization_id=? AND archived_at IS NULL", [id, principal.organizationId]);
+    const zone = delivery?.zone_id ? (await loadZones(principal)).find((item) => item.id === delivery.zone_id) : undefined;
+    const own = delivery?.status === "cancelled" ? 0 : zone ? zoneCost(zone) : null;
+    if (own !== null) patch.deliveryCost = own;
+  }
+  // New products and missing costs take the cost of the sale's day.
+  const costs = patch.items || patch.fillMissingCosts ? await saleCostsOn(principal, state, patch.soldOn ?? sale.soldOn, [...sale.items.map((item) => item.productId), ...(patch.items ?? []).map((item) => item.productId)]) : calculateCosts(state);
+  const { sale: next, problems } = repriceSale(sale, patch, state, costs, channels);
   if (problems.length) throw new ApiError(400, problems.join(". "));
   const customerChange: SqlStatement[] = patch.customer !== undefined && patch.customer.trim() !== sale.customer
     ? [{ sql: "UPDATE sales SET customer_id=? WHERE id=? AND organization_id=?", params: [await resolveCustomer(principal, patch.customer, source), id, principal.organizationId] }]
@@ -458,13 +514,15 @@ export async function loadRecordHistory(principal: Principal, kind: "sale" | "de
   ], { retrySafe: true });
   const events = rows as { id: string; actor_id: string; action: string; details_json: string; created_at: string }[];
   const currency = (organizations as { currency: string }[])[0]?.currency ?? "CLP";
-  const money = (value: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: Math.abs(value) < 100 && currency !== "CLP" ? 2 : 0 }).format(value);
-  const others = [...new Set(events.map((event) => event.actor_id).filter((actor) => actor !== principal.userId))];
+  const money = (value: number) => formatMoney(value, currency);
+  // "system" marks corrections made by a data migration, not by a person.
+  const others = [...new Set(events.map((event) => event.actor_id).filter((actor) => actor !== principal.userId && actor !== "system"))];
   const known = others.length ? await names(others).catch(() => ({} as Record<string, string>)) : {};
   return events.map((event) => {
     let details: Record<string, unknown> = {};
     try { details = JSON.parse(event.details_json) as Record<string, unknown>; } catch { /* Old or malformed details: title only. */ }
     const byCozte = details.source === "cozte";
+    if (event.actor_id === "system") return { id: event.id, at: event.created_at, who: "Corrección automática", byCozte: false, ...describeHistoryEvent(event.action, details, money) };
     const person = event.actor_id === principal.userId ? "Tú" : known[event.actor_id] ?? "Alguien del equipo";
     return { id: event.id, at: event.created_at, who: byCozte ? `Cozte (a pedido de ${person === "Tú" ? "ti" : person})` : person, byCozte, ...describeHistoryEvent(event.action, details, money) };
   });
@@ -512,7 +570,7 @@ export async function updatePurchase(principal: Principal, id: string, input: Pu
   if (patch.area !== undefined) set("area", patch.area);
   if (patch.usefulLifeMonths !== undefined) set("useful_life_months", patch.usefulLifeMonths);
   if (patch.amount !== undefined) {
-    set("amount_minor", Math.round(patch.amount));
+    set("amount_minor", roundMoney(patch.amount, (organizations as { currency: string }[])[0]?.currency));
     set("currency", (organizations as { currency: string }[])[0]?.currency ?? "CLP");
     set("native_amount_milli", Math.round(patch.amount * 1000));
   }
@@ -544,6 +602,16 @@ export async function loadDeliveries(principal: Principal, forMonth: string): Pr
   return byProximity(list, (item) => item.scheduledOn, await organizationToday(principal));
 }
 
+/** What a delivery brought back from cancelled costs: its zone's cost when the zone has one, else its sale's channel's. */
+async function restoredDeliveryCost(principal: Principal, saleId: string, zone: DeliveryZone | string | null): Promise<number> {
+  const found = typeof zone === "string" ? (await loadZones(principal)).find((item) => item.id === zone) ?? null : zone;
+  const fromZone = found ? zoneCost(found) : null;
+  if (fromZone !== null) return fromZone;
+  const [sale] = await dbQuery<{ channel_id: string | null }>("SELECT channel_id FROM sales WHERE id=? AND organization_id=?", [saleId, principal.organizationId]);
+  const channel = sale?.channel_id ? (await loadChannels(principal)).find((item) => item.id === sale.channel_id) : undefined;
+  return channel?.deliveryCostPerOrderMinor ?? 0;
+}
+
 const DELIVERY_COLUMNS: Record<string, string> = { scheduledOn: "scheduled_on", timeWindow: "time_window", status: "status", method: "method", carrier: "carrier", recipient: "recipient", address: "address", contact: "contact", tracking: "tracking", note: "note", deliveredOn: "delivered_on" };
 
 /**
@@ -559,6 +627,8 @@ export async function saveDelivery(principal: Principal, input: DeliveryInput, s
   let created = false;
   const statements: SqlStatement[] = [];
   const done: string[] = [];
+  // A delivery cost set by the zone, a cancellation or a restore; the audit keeps it with the change.
+  let autoCost: number | undefined;
   if (id) {
     const [row] = await dbQuery<{ sale_id: string; status: DeliveryStatus; delivered_on: string | null; zone_id: string | null; scheduled_on: string }>("SELECT d.sale_id, d.status, d.delivered_on, d.zone_id, d.scheduled_on FROM deliveries d WHERE d.id=? AND d.organization_id=? AND d.archived_at IS NULL", [id, org]);
     if (!row) throw new ApiError(404, "Entrega no encontrada");
@@ -579,26 +649,37 @@ export async function saveDelivery(principal: Principal, input: DeliveryInput, s
       placeZone = place?.zone ?? null;
     }
     // A zone chosen by hand, or an address that falls in another zone, moves the delivery there.
+    let zoneAfter: DeliveryZone | null | undefined;
     if (value.zoneId !== undefined || value.address?.trim()) {
       const zones = await loadZones(principal);
       const zone = value.zoneId !== undefined ? await deliveryZoneFor(principal, { zoneId: value.zoneId }, zones) : zones.length ? await deliveryZoneFor(principal, { zone: placeZone, address: value.address }, zones) : undefined;
       if (zone !== undefined && (zone?.id ?? null) !== row.zone_id) {
+        zoneAfter = zone;
         // Leaving it without a zone keeps how it goes and who takes it.
         const given = zone ? zoneDeliveryFields(zone) : null;
         statements.push(given
           ? { sql: "UPDATE deliveries SET zone_id=?, method=?, carrier=? WHERE id=? AND organization_id=?", params: [zone!.id, value.method ?? given.method, value.carrier ?? given.carrier, id, org] }
           : { sql: "UPDATE deliveries SET zone_id=NULL WHERE id=? AND organization_id=?", params: [id, org] });
         const cost = zone && value.cost === undefined ? zoneCost(zone) : null;
-        if (cost !== null) statements.push({ sql: "UPDATE sales SET delivery_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [cost, saleId, org] });
+        if (cost !== null) { statements.push({ sql: "UPDATE sales SET delivery_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [cost, saleId, org] }); autoCost = cost; }
         done.push(zone ? `Zona: ${zone.name}${cost !== null ? " (costo de la zona aplicado)" : ""}` : "Entrega sin zona");
       }
+    }
+    // A cancelled delivery costs nothing; bringing it back restores its zone's cost, or else its channel's.
+    const cancelling = value.status === "cancelled" && row.status !== "cancelled";
+    const reopening = row.status === "cancelled" && value.status !== undefined && value.status !== "cancelled";
+    if (value.cost === undefined && (cancelling || reopening)) {
+      const cost = cancelling ? 0 : await restoredDeliveryCost(principal, saleId, zoneAfter !== undefined ? zoneAfter : row.zone_id);
+      statements.push({ sql: "UPDATE sales SET delivery_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [cost, saleId, org] });
+      autoCost = cost;
+      done.push(cancelling ? "Costo de entrega en 0: la entrega se canceló" : "Costo de entrega restituido");
     }
     if (value.status) done.push(`Entrega: ${DELIVERY_STATUS_LABELS[value.status]}`);
     if (value.scheduledOn) done.push(`Entrega programada para el ${value.scheduledOn}`);
     if (sets.some(([key]) => !["status", "scheduledOn", "deliveredOn"].includes(key))) done.push("Datos de la entrega actualizados");
   } else {
     if (!saleId) throw new ApiError(400, "Indica la venta a entregar");
-    const [sale] = await dbQuery<{ sold_on: string; customer: string; channel_id: string | null; customer_id: string | null }>("SELECT sold_on, customer, channel_id, customer_id FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL", [saleId, org]);
+    const [sale] = await dbQuery<{ sold_on: string; customer: string; channel_id: string | null; customer_id: string | null; delivery_cost_minor: number }>("SELECT sold_on, customer, channel_id, customer_id, delivery_cost_minor FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL", [saleId, org]);
     if (!sale) throw new ApiError(404, "Venta no encontrada");
     const [existing] = await dbQuery<{ id: string }>("SELECT id FROM deliveries WHERE sale_id=? AND organization_id=? AND archived_at IS NULL", [saleId, org]);
     if (existing) throw new ApiError(409, "Esa venta ya tiene una entrega: cámbiala en lugar de crear otra");
@@ -608,19 +689,21 @@ export async function saveDelivery(principal: Principal, input: DeliveryInput, s
     const zone = await deliveryZoneFor(principal, { zoneId: value.zoneId, zone: place?.zone, address: given.address });
     const fields = zone ? withZone(given, zone, sale.sold_on) : given;
     const row = newDeliveryRow(principal, saleId, sale.sold_on, channel, sale.customer, fields, source, await organizationToday(principal), place?.id ?? null, zone?.id ?? null);
-    const cost = zone && value.cost === undefined ? zoneCost(zone) : null;
-    if (cost !== null) statements.push({ sql: "UPDATE sales SET delivery_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [cost, saleId, org] });
+    // Its zone's cost; without one, a sale that carried no delivery cost takes its channel's (a delivery removed and made again).
+    const cost = value.cost !== undefined || row.status === "cancelled" ? null : zone ? zoneCost(zone) : null;
+    const fallback = value.cost === undefined && cost === null && row.status !== "cancelled" && !sale.delivery_cost_minor && channel.deliveryCostPerOrderMinor > 0 ? channel.deliveryCostPerOrderMinor : null;
+    if (cost !== null || fallback !== null) { statements.push({ sql: "UPDATE sales SET delivery_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [cost ?? fallback, saleId, org] }); autoCost = (cost ?? fallback)!; }
     id = row.id;
     created = true;
     statements.push(row.statement);
     done.push(`Entrega ${row.status === "delivered" ? "registrada como entregada" : `programada para el ${row.scheduledOn}`}${zone ? ` (zona ${zone.name})` : ""}`);
   }
   if (value.cost !== undefined) {
-    statements.push({ sql: "UPDATE sales SET delivery_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [Math.round(value.cost), saleId!, org] });
+    statements.push({ sql: "UPDATE sales SET delivery_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [roundMoney(value.cost, (await organizationPlace(principal)).currency), saleId!, org] });
     done.push("Costo de entrega actualizado");
   }
   if (!statements.length) return { id: id!, created, done: [] };
-  statements.push(audit(principal, created ? "create-delivery" : "update-delivery", id!, { ...value, source }));
+  statements.push(audit(principal, created ? "create-delivery" : "update-delivery", id!, { ...value, ...(value.cost === undefined && autoCost !== undefined ? { cost: autoCost } : {}), source }));
   await dbBatch(statements);
   return { id: id!, created, done };
 }

@@ -49,14 +49,16 @@ export function ResultSection({ state, demo, month, onMonthChange, onOpenSales, 
       </div>
 
       {!result.sales ? <Alert><AlertTitle>Registra tus ventas para ver el resultado</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-2"><span>Sin ventas, el mes muestra solo los gastos. Cárgalas en Ventas o mándale los remitos a Cozte.</span><Button size="sm" variant="outline" onClick={onOpenSales}>Ir a ventas</Button><Button size="sm" variant="ghost" onClick={onOpenCozte}>Hablar con Cozte</Button></div></AlertDescription></Alert> : null}
-      {result.salesWithoutCost ? <Alert><AlertTitle>{result.salesWithoutCost} venta{result.salesWithoutCost === 1 ? "" : "s"} sin costo completo</AlertTitle><AlertDescription>Algún producto vendido no tenía su costo completo al registrar la venta, así que su costo no se descuenta. Completa sus datos en Costos de producción.</AlertDescription></Alert> : null}
+      {result.incompleteRecords ? <Alert variant="destructive"><AlertTitle>El mes tiene más registros de los que se pudieron leer</AlertTitle><AlertDescription>Se calculó con las 5.000 ventas y compras más recientes del mes, así que los totales pueden quedar cortos.</AlertDescription></Alert> : null}
+      {result.salesWithEstimatedCost ? <Alert><AlertTitle>{result.salesWithEstimatedCost} venta{result.salesWithEstimatedCost === 1 ? "" : "s"} con costo estimado</AlertTitle><AlertDescription>Se registraron cuando algún producto no tenía su costo completo; el resultado usa el costo de hoy ({money(result.estimatedVariableCost)}). En Ventas puedes completarlas para dejar ese costo fijo.</AlertDescription></Alert> : null}
+      {result.salesWithoutCost ? <Alert><AlertTitle>{result.salesWithoutCost} venta{result.salesWithoutCost === 1 ? "" : "s"} sin costo</AlertTitle><AlertDescription>Algún producto vendido todavía no tiene su costo completo, así que esa parte de su costo no se descuenta y el resultado queda más alto de lo real. Completa sus datos en Costos de producción.</AlertDescription></Alert> : null}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <Card>
           <CardHeader><CardTitle>Cómo se llega al resultado</CardTitle><CardDescription>De arriba hacia abajo: lo que entró y lo que se fue.</CardDescription></CardHeader>
           <CardContent className="text-sm">
             <Line label="Lo que vendiste" value={result.revenue} money={money} tone="plus" strong />
-            <Line label="Insumos y mano de obra de lo vendido" value={result.variableProductionCost} money={money} />
+            <Line label="Insumos y mano de obra de lo vendido" value={result.variableProductionCost} money={money} hint={result.estimatedVariableCost ? `${money(result.estimatedVariableCost)} estimado con el costo de hoy` : undefined} />
             <Line label="Comisiones y cargos por vender" value={result.sellingCost} money={money} />
             <Line label="Entregas de esas ventas" value={result.deliveryCost} money={money} />
             <Line label="Lo que dejaron las ventas" value={result.contribution} money={money} tone="total" strong hint="Con esto se pagan los gastos fijos" />

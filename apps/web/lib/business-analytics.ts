@@ -143,7 +143,7 @@ export function analysisInsights(months: MonthSummary[], focus: number, money: (
   if (current.revenue) {
     insights.push(current.result >= 0
       ? { tone: "good", text: `Quedó una ganancia de ${money(current.result)}: de cada $100 vendidos quedaron $${Math.round((current.result / current.revenue) * 100)}.` }
-      : current.breakEven && current.revenue >= current.breakEven && current.purchases.expense > 0
+      : current.purchases.expense > 0 && current.contribution >= current.fixed - current.purchases.expense
         // Sales covered the regular fixed costs; the month's one-off expenses are what left it in the red.
         ? { tone: "bad", text: `El mes cerró con una pérdida de ${money(-current.result)}: las ventas cubrieron los gastos fijos, pero los gastos puntuales del mes (${money(current.purchases.expense)}) la dejaron en rojo.` }
         : { tone: "bad", text: `El mes cerró con una pérdida de ${money(-current.result)}.${current.breakEven ? ` Para no perder hacía falta vender ${money(current.breakEven)}.` : ""}` });

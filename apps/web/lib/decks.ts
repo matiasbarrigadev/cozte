@@ -1,3 +1,4 @@
+import { formatMoney as currencyText } from "./money";
 import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, PURCHASE_KIND_LABELS, daysFrom, isOpenDelivery, monthLessons, type BusinessView, type Delivery } from "./business";
 import type { CostAnalysis } from "./cost-analysis";
 import { resolveEntity } from "./cozte-cost-view";
@@ -75,8 +76,8 @@ export const METRICS: Record<MetricKey, { label: string; hint: string; format: M
   "monthly-units": { label: "Unidades al mes", hint: "Unidades que se producen en un mes normal", format: "count" },
   "unit-cost": { label: "Costo por unidad", hint: "Lo que cuesta fabricar una unidad", format: "money", perProduct: true },
   "sale-price": { label: "Precio de venta", hint: "Precio de lista por unidad", format: "money", perProduct: true },
-  "unit-margin": { label: "Margen por unidad", hint: "Precio menos costo de fabricar", format: "money", perProduct: true },
-  "margin-percent": { label: "Margen", hint: "Qué parte del precio queda después de fabricar", format: "percent", perProduct: true },
+  "unit-margin": { label: "Margen por unidad", hint: "Precio menos costo de fabricar y gastos de venta por unidad", format: "money", perProduct: true },
+  "margin-percent": { label: "Margen", hint: "Qué parte del precio queda después de fabricar y de los gastos de venta por unidad", format: "percent", perProduct: true },
 };
 export const METRIC_KEYS = Object.keys(METRICS) as MetricKey[];
 
@@ -204,9 +205,9 @@ export function monthLabel(month: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** Readable money for slides and insights: whole amounts, a minus sign for negatives. */
+/** Readable money for slides and insights at the currency's precision, a minus sign for negatives. */
 export function formatMoney(value: number, currency: string): string {
-  const text = new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: Math.abs(value) < 100 && currency !== "CLP" ? 2 : 0 }).format(Math.abs(value));
+  const text = currencyText(Math.abs(value), currency);
   return value < -0.004 ? `−${text}` : text;
 }
 
@@ -367,7 +368,10 @@ export function buildChart(kind: ChartKind, productId: string | null, month: str
         { label: "Inversiones (parte del mes)", value: result.investmentsShare, kind: "minus" as const },
       ].filter((step) => step.kind === "start" || step.value > 0).map((step) => ({ ...step, value: round2(step.value) }));
       return {
-        ...base, title, caption: result.salesWithoutCost ? `${result.salesWithoutCost} venta(s) sin costo completo al registrarse.` : null,
+        ...base, title, caption: [
+          result.salesWithEstimatedCost ? `${result.salesWithEstimatedCost} venta(s) con costo estimado con el de hoy.` : "",
+          result.salesWithoutCost ? `${result.salesWithoutCost} venta(s) sin costo: esa parte no se descuenta.` : "",
+        ].filter(Boolean).join(" ") || null,
         insight: result.result >= 0
           ? `De ${money(result.revenue)} vendidos quedaron ${money(result.result)} de ganancia después de pagar todo.`
           : `Con ${money(result.revenue)} vendidos no alcanzó para cubrir los costos: el mes cerró con una pérdida de ${money(-result.result)}.`,
@@ -380,7 +384,7 @@ export function buildChart(kind: ChartKind, productId: string | null, month: str
       if (result.breakEvenRevenue === null) return { ...base, title, data: empty("Falta saber cuánto deja cada venta (precios y costos) para calcularlo.") };
       const progress = pct(result.revenue, result.breakEvenRevenue);
       return {
-        ...base, title, caption: `Gastos fijos del mes: ${money(result.fixedTotal + result.investmentsShare)}.`,
+        ...base, title, caption: `Gastos del mes: ${money(result.fixedTotal + result.investmentsShare + result.oneOffTotal)}${result.oneOffTotal ? `, ${money(result.oneOffTotal)} de ellos compras que se usaron este mes` : ""}.`,
         insight: result.revenue >= result.breakEvenRevenue
           ? `Se vendieron ${money(result.revenue)}: el ${progress} % de lo necesario para no perder (${money(result.breakEvenRevenue)}). Lo superaste.`
           : `Para no perder hay que vender ${money(result.breakEvenRevenue)} al mes; van ${money(result.revenue)} (${progress} %), faltan ${money(result.breakEvenRevenue - result.revenue)}.`,
@@ -541,7 +545,8 @@ export function buildKpi(metric: MetricKey, productId: string | null, month: str
     const unit = cost?.unitMinor ?? null;
     const price = product && product.salePriceMinor > 0 ? product.salePriceMinor : null;
     const value = metric === "unit-cost" ? unit : metric === "sale-price" ? price
-      : metric === "unit-margin" ? (unit !== null && price !== null ? price - unit : null)
+      // The same margin the engine's percentage uses: price minus the full unit cost and the sales cost per unit.
+      : metric === "unit-margin" ? (unit !== null && price !== null ? price - unit - product!.salesVariableMinor : null)
       : cost?.estimatedMarginPercent ?? null;
     return { ...base, value: value === null ? null : round2(value), note: product?.name ?? null };
   }

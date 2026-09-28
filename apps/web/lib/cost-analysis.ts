@@ -1,3 +1,4 @@
+import { moneyDecimals, roundMoney } from "./money";
 import { calculateCosts, type CostLine, type DomainState, type Product, type SharedExpense } from "./domain";
 
 /** A stored cost snapshot row (one per product per confirmed change). */
@@ -132,13 +133,30 @@ function decompose(row: SnapshotRow, fallbackName: string): Decomposed {
   };
 }
 
-const money = (value: number) => new Intl.NumberFormat("es-AR", { maximumFractionDigits: 0 }).format(Math.round(value));
+const money = (value: number, currency: string) => new Intl.NumberFormat("es-AR", { maximumFractionDigits: moneyDecimals(currency) }).format(roundMoney(value, currency));
 const percent = (value: number) => `${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 1 }).format(value)} %`;
+
+/**
+ * Older exchange-rate snapshots were stored without the allocation peers, so their shared line could not be split per
+ * expense and the analysis showed made-up moves between "Gastos compartidos" and each expense. The peers are the same
+ * for every product of the organization at a moment: such a snapshot borrows them from the closest one that has them.
+ */
+export function withAllocationPeers(rows: SnapshotRow[]): SnapshotRow[] {
+  const withPeers = rows.map((row) => ({ row, context: parse<SnapshotContext>(row.context_json, {}) }));
+  const donors = withPeers.filter((item) => item.context.allocationPeers?.length).map((item) => ({ at: Date.parse(item.row.created_at.replace(" ", "T") + "Z"), peers: item.context.allocationPeers! }));
+  if (!donors.length) return rows;
+  return withPeers.map(({ row, context }) => {
+    if (context.allocationPeers?.length || !context.expenses?.length) return row;
+    const at = Date.parse(row.created_at.replace(" ", "T") + "Z");
+    const closest = donors.reduce((best, donor) => Math.abs(donor.at - at) < Math.abs(best.at - at) ? donor : best);
+    return { ...row, context_json: JSON.stringify({ ...context, allocationPeers: closest.peers }) };
+  });
+}
 
 /** Time series, change drivers and deterministic insights from the stored snapshots. */
 export function analyzeCosts(rows: SnapshotRow[], options: { granularity: Granularity; currency: string; productNames?: Record<string, string> }): CostAnalysis {
   const { granularity, currency } = options;
-  const ordered = [...rows].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const ordered = withAllocationPeers(rows).sort((a, b) => a.created_at.localeCompare(b.created_at));
   const decomposed = ordered.map((row) => decompose(row, options.productNames?.[row.product_id] ?? "Producto"));
   const empty: CostAnalysis = { granularity, currency, periods: [], components: [], products: [], totals: [], insights: [], snapshotCount: rows.length };
   if (!decomposed.length) return { ...empty, insights: [{ kind: "data", severity: "info", title: "Todavía no hay historial", detail: "Cada cambio confirmado en costos guarda una foto. Con dos o más fotos en el tiempo aparece la evolución." }] };
@@ -187,7 +205,7 @@ export function analyzeCosts(rows: SnapshotRow[], options: { granularity: Granul
       insights.push({
         kind: up ? "increase" : "decrease", severity: up && product.change.deltaPercent >= 10 ? "risk" : up ? "warning" : "info",
         title: `El costo de ${product.name} ${up ? "subió" : "bajó"} ${percent(Math.abs(product.change.deltaPercent))}`,
-        detail: `Pasó de ${currency} ${money(product.change.from)} a ${currency} ${money(product.change.to)} por unidad.${main ? ` Lo explica sobre todo ${main.label} (${main.delta > 0 ? "+" : "−"}${currency} ${money(Math.abs(main.delta))} por unidad).` : ""}`,
+        detail: `Pasó de ${currency} ${money(product.change.from, currency)} a ${currency} ${money(product.change.to, currency)} por unidad.${main ? ` Lo explica sobre todo ${main.label} (${main.delta > 0 ? "+" : "−"}${currency} ${money(Math.abs(main.delta), currency)} por unidad).` : ""}`,
       });
     }
     const latest = [...product.points].reverse().find((point) => point.unitCost !== null && !point.incomplete);
@@ -197,7 +215,7 @@ export function analyzeCosts(rows: SnapshotRow[], options: { granularity: Granul
       if (key && share >= 35) insights.push({
         kind: "concentration", severity: share >= 50 ? "risk" : "warning",
         title: `${componentMeta.get(key)?.label ?? key} pesa ${percent(share)} del costo de ${product.name}`,
-        detail: `Si ese concepto sube 10 %, el costo por unidad sube cerca de ${percent(share / 10)} (${currency} ${money(value * 0.1)}). Es el primer lugar para negociar o buscar eficiencia.`,
+        detail: `Si ese concepto sube 10 %, el costo por unidad sube cerca de ${percent(share / 10)} (${currency} ${money(value * 0.1, currency)}). Es el primer lugar para negociar o buscar eficiencia.`,
       });
     }
     const lastPoint = product.points.at(-1);
@@ -212,7 +230,7 @@ export function analyzeCosts(rows: SnapshotRow[], options: { granularity: Granul
     const initial = seenFirst[id] ?? firstPrices[id]?.price;
     if (!initial || initial === latest.price) continue;
     const change = (latest.price - initial) / initial * 100;
-    if (Math.abs(change) >= 10) insights.push({ kind: "price", severity: change > 0 ? "warning" : "info", title: `${latest.name} ${change > 0 ? "subió" : "bajó"} ${percent(Math.abs(change))}`, detail: `El precio pasó de ${currency} ${money(initial)} a ${currency} ${money(latest.price)} por unidad de compra en el período analizado.` });
+    if (Math.abs(change) >= 10) insights.push({ kind: "price", severity: change > 0 ? "warning" : "info", title: `${latest.name} ${change > 0 ? "subió" : "bajó"} ${percent(Math.abs(change))}`, detail: `El precio pasó de ${currency} ${money(initial, currency)} a ${currency} ${money(latest.price, currency)} por unidad de compra en el período analizado.` });
   }
   if (periods.length < 2) insights.push({ kind: "data", severity: "info", title: "El historial recién empieza", detail: `Hay ${rows.length === 1 ? "una foto" : `${rows.length} fotos`} en un mismo período. La evolución se vuelve útil cuando registres cambios de precios, gastos o volumen a lo largo de las semanas.` });
 
@@ -246,7 +264,7 @@ export type CostsAt = {
 export function costsAt(rows: SnapshotRow[], date: string, options: { currency: string; productNames?: Record<string, string> }): CostsAt {
   const limit = `${date} 23:59:59`;
   const latest = new Map<string, SnapshotRow>();
-  for (const row of [...rows].sort((a, b) => a.created_at.localeCompare(b.created_at))) {
+  for (const row of withAllocationPeers(rows).sort((a, b) => a.created_at.localeCompare(b.created_at))) {
     if (row.created_at.replace("T", " ").slice(0, 19) <= limit) latest.set(row.product_id, row);
   }
   let expenses: CostsAt["expenses"] = [];

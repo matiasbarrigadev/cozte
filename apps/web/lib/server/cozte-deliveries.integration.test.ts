@@ -96,6 +96,28 @@ describe.skipIf(!bridgeUrl)("sales corrections and deliveries against D1", { tim
     expect(list.some((item) => item.saleId === pickupSale)).toBe(false);
   });
 
+  it("a cancelled or removed delivery stops costing, and its cost comes back when it goes out again", async () => {
+    const sold = await run("recordSale", { channel: "Instagram", items: [{ product: "Tofu 300g", quantity: 3 }], customer: "Carla", delivery: { date: shift(3), address: "Sarmiento 12" } });
+    const saleId = sold.ids!.sale;
+    const costOf = async () => (await loadBusinessView(principal, today.slice(0, 7))).sales.find((sale) => sale.id === saleId)?.deliveryCostMinor;
+    expect(await costOf()).toBe(1500);
+    const cancelled = await run("updateDelivery", { delivery: sold.delivery!.id, status: "cancelled" });
+    expect(cancelled.done).toEqual(expect.arrayContaining(["Costo de entrega en 0: la entrega se canceló"]));
+    expect(await costOf()).toBe(0);
+    // Moving the sale to another channel does not bring a cost back to a cancelled delivery.
+    await run("updateSale", { sale: saleId, channel: "Feria" });
+    await run("updateSale", { sale: saleId, channel: "Instagram" });
+    expect(await costOf()).toBe(0);
+    await run("updateDelivery", { delivery: sold.delivery!.id, status: "pending" });
+    expect(await costOf()).toBe(1500);
+    await archiveRecord(principal, "delivery", sold.delivery!.id);
+    expect(await costOf()).toBe(0);
+    const history = await loadRecordHistory(principal, "sale", saleId, async () => ({}));
+    expect(history.find((event) => event.title === "Entrega quitada")?.lines).toEqual([expect.stringMatching(/^Costo de entrega de la venta: .*1\.500 → .*0$/)]);
+    await run("updateDelivery", { sale: saleId, date: shift(5) });
+    expect(await costOf()).toBe(1500);
+  });
+
   it("keeps a history of each record and suggests known customers", async () => {
     const history = await loadRecordHistory(principal, "sale", deliveredSale, async () => ({}));
     expect(history.map((event) => event.title)).toEqual(expect.arrayContaining(["Venta registrada", "Venta corregida"]));

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { formatMoney } from "@/lib/money";
 import { toast } from "sonner";
 import { buildBusinessView, type BusinessView, type CustomerDirectory } from "@/lib/business";
 import type { DomainState } from "@/lib/domain";
@@ -30,10 +31,10 @@ export function notifySaved(message: string, undo?: () => void) {
   toast.success(message, { id: "cozte-edit", duration: undo ? 6000 : 2500, ...(undo ? { action: { label: "Deshacer", onClick: undo } } : {}) });
 }
 
-/** Whole amounts for reading: tables, totals and lessons. */
+/** Amounts for reading (tables, totals and lessons) at the currency's precision: whole units, or cents where it has them. */
 export function useMoney(currency: string) {
   return React.useCallback((value: number) => {
-    const text = new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: Math.abs(value) < 100 && currency !== "CLP" ? 2 : 0 }).format(Math.abs(value));
+    const text = formatMoney(Math.abs(value), currency);
     return value < -0.004 ? `−${text}` : text;
   }, [currency]);
 }

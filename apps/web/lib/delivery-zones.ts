@@ -121,11 +121,11 @@ export const emptyTally = (): DeliveryTally => ({ total: 0, delivered: 0, onTime
 
 /**
  * Adds a delivery to a tally. Delivered on the day or before counts as on time (without a recorded day too); an open
- * one past its day counts as late.
+ * one past its day counts as late. A cancelled delivery adds no cost: it did not go out.
  */
 export function tallyDelivery(tally: DeliveryTally, delivery: { status: DeliveryStatus; scheduledOn: string; deliveredOn?: string | null }, cost: number, today: string): DeliveryTally {
   tally.total += 1;
-  tally.cost += cost;
+  if (delivery.status !== "cancelled") tally.cost += cost;
   if (delivery.status === "delivered") {
     tally.delivered += 1;
     if (!delivery.deliveredOn || delivery.deliveredOn <= delivery.scheduledOn) tally.onTime += 1;

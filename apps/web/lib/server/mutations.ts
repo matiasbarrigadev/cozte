@@ -1,6 +1,8 @@
 import "server-only";
 import { z } from "zod";
-import { allocateMinor, calculateCosts, convertToOrganizationCurrency, productionCostSources, COST_AREAS, type DomainState } from "@/lib/domain";
+import { allocateMinor, calculateCosts, convertToOrganizationCurrency, convertUnitPrice, COST_AREAS, type DomainState } from "@/lib/domain";
+import { roundMoney } from "@/lib/money";
+import { snapshotContext } from "@/lib/cost-snapshots";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, type SqlStatement } from "./db";
@@ -10,7 +12,8 @@ import { officialFxTable, quotesFor } from "./fx";
 import { calculateProductionCosts, type ProductionProfile } from "@/lib/production-profile";
 
 const name = z.string().trim().min(2).max(120);
-const money = z.number().int().min(0).max(1_000_000_000_000);
+// Amounts in the organization's currency; rounded to its money precision (cents or whole units) before use.
+const money = z.number().min(0).max(1_000_000_000_000);
 const positive = z.number().int().min(1).max(1_000_000_000);
 const id = z.string().min(1).max(120);
 const category = z.string().trim().min(2).max(40);
@@ -79,6 +82,8 @@ export const mutationSchema = z.discriminatedUnion("action", [
     action: z.literal("create-expense"), name, period: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
     amount: sourceAmount, currency, allocationBasis: z.enum(["hours", "units", "manual"]), shares: z.record(z.string(), z.number().int().min(0).max(10000)).default({}), category: category.optional(), source: name,
     area: area.optional(),
+    /** Required when the expense starts a later period: the active period's expenses stop entering unit costs. */
+    acknowledgeImpact: z.boolean().optional(),
   }),
   common.extend({
     action: z.literal("update-expense-meta"), id,
@@ -103,6 +108,27 @@ export const mutationSchema = z.discriminatedUnion("action", [
 
 export type Mutation = z.infer<typeof mutationSchema>;
 
+/** A product's prices and costs at the organization's money precision, so what is stored is what is costed. */
+export function withMoneyPrecision(input: Mutation, currency: string): Mutation {
+  const round = <T extends { salePriceMinor: number; salesVariableMinor: number; laborLotMinor: number }>(item: T): T => ({
+    ...item, salePriceMinor: roundMoney(item.salePriceMinor, currency), salesVariableMinor: roundMoney(item.salesVariableMinor, currency), laborLotMinor: roundMoney(item.laborLotMinor, currency),
+  });
+  if (input.action === "create-product" || input.action === "update-product") return round(input);
+  if (input.action === "create-products") return { ...input, products: input.products.map(round) };
+  return input;
+}
+
+/**
+ * A later period starts a new month of costing. The monthly expenses in force do not stop because the month changed:
+ * each one continues into the new period with its amount, currency and allocation (a copy, so the previous period's
+ * history stays as it was). `except` is the expense that starts the period itself, by id or by name.
+ */
+function carryForward(next: DomainState, period: string, except: { id?: string; name?: string }) {
+  const key = except.name?.toLocaleLowerCase();
+  const continuing = next.expenses.filter((item) => item.period === next.activePeriod && item.id !== except.id && item.name.toLocaleLowerCase() !== key);
+  next.expenses.push(...continuing.map((item) => ({ ...item, id: crypto.randomUUID(), period, version: 1, carriedFrom: item.id })));
+}
+
 function assertUnique(values: string[]) {
   if (new Set(values).size !== values.length) throw new ApiError(400, "Hay filas duplicadas");
 }
@@ -117,7 +143,7 @@ function projection(state: DomainState, input: Mutation): DomainState {
         const material = next.materials.find((row) => row.id === item.id);
         if (!material) throw new ApiError(404, "Insumo no encontrado");
         const nativeMilli = toNativeMilli(item.amount);
-        const converted = convertToOrganizationCurrency(next, nativeMilli, item.currency);
+        const converted = convertUnitPrice(next, nativeMilli, item.currency);
         if (converted === null) throw new ApiError(503, `Falta cotización vigente de ${item.currency} a ${next.organization.currency}`);
         material.priceMinor = converted;
         material.currency = item.currency;
@@ -144,7 +170,7 @@ function projection(state: DomainState, input: Mutation): DomainState {
       if (!next.categories?.some((item) => item.name.toLocaleLowerCase() === (input.category ?? "Materia prima").toLocaleLowerCase())) next.categories = [...next.categories ?? [], { id: "new-category", name: input.category ?? "Materia prima" }];
       next.materials.push({ id: "new", name: input.name, supplier: input.supplier,
         purchaseUnit: input.purchaseUnit, category: input.category ?? "Materia prima",
-        priceMinor: input.price === undefined ? null : convertToOrganizationCurrency(next, toNativeMilli(input.price), input.currency ?? next.organization.currency),
+        priceMinor: input.price === undefined ? null : convertUnitPrice(next, toNativeMilli(input.price), input.currency ?? next.organization.currency),
         currency: input.currency ?? next.organization.currency, nativeAmountMilli: input.price === undefined ? null : toNativeMilli(input.price),
         source: input.source ?? null, effectiveDate: input.price === undefined ? null : input.effectiveDate ?? new Date().toISOString().slice(0, 10), version: 1 });
       if (input.price !== undefined && next.materials.at(-1)?.priceMinor === null) throw new ApiError(503, "Falta cotización vigente para el nuevo insumo");
@@ -229,6 +255,11 @@ function projection(state: DomainState, input: Mutation): DomainState {
     case "create-expense":
       if (!next.categories?.some((item) => item.name.toLocaleLowerCase() === (input.category ?? "Gastos generales").toLocaleLowerCase())) next.categories = [...next.categories ?? [], { id: "new-category", name: input.category ?? "Gastos generales" }];
       if (input.period < next.activePeriod) throw new ApiError(400, "El período es anterior al costeo activo");
+      // A later period starts a new month of costing: the current period's expenses stop counting, never silently.
+      if (input.period > next.activePeriod && next.expenses.some((item) => item.period === next.activePeriod)) {
+        if (!input.acknowledgeImpact) throw new ApiError(400, `Confirma que empieza el período ${input.period}: los gastos de ${next.activePeriod} siguen en ${input.period} con sus montos actuales y ${next.activePeriod} queda en el historial`);
+        carryForward(next, input.period, { name: input.name });
+      }
       next.activePeriod = input.period;
       const converted = convertToOrganizationCurrency(next, toNativeMilli(input.amount), input.currency);
       if (converted === null) throw new ApiError(503, "Falta cotización vigente para el nuevo gasto");
@@ -256,6 +287,8 @@ function projection(state: DomainState, input: Mutation): DomainState {
         expense.allocationBasis = input.value;
       } else if (input.field === "period") {
         if (input.value !== expense.period && expense.amountMinor > 0 && next.products.length > 0 && !input.acknowledgeImpact) throw new ApiError(400, "Confirma el cambio de período y su impacto antes de aplicar");
+        // Moving an expense into a later period starts it: the rest of the month's expenses continue there too.
+        if (input.value > next.activePeriod) carryForward(next, input.value, { id: expense.id });
         expense.period = input.value;
         next.activePeriod = next.expenses.map((item) => item.period).sort().at(-1) ?? next.activePeriod;
       } else expense[input.field] = input.value;
@@ -305,19 +338,20 @@ function projection(state: DomainState, input: Mutation): DomainState {
 
 export function previewMutation(state: DomainState, input: Mutation) {
   if (state.revision !== input.expectedRevision) throw new ApiError(409, "Los datos cambiaron. Actualiza la página antes de continuar");
-  const next = projection(state, input);
+  const next = projection(state, withMoneyPrecision(input, state.organization.currency));
   return { next, before: calculateCosts(state), after: calculateCosts(next) };
 }
 
 export async function commitMutation(principal: Principal, input: Mutation, options: { assistantProposalId?: string; source?: "cozte" | "user" } = {}) {
   if (principal.role === "viewer") throw new ApiError(403, "No tienes permiso para modificar costos");
   const [state, profile] = await Promise.all([loadState(principal), loadProductionProfile(principal)]);
+  input = withMoneyPrecision(input, state.organization.currency);
   const inputCurrencies: Currency[] = input.action === "bulk-prices" ? [...input.materials, ...input.expenses].map((item) => item.currency) : input.action === "create-material" ? [input.currency ?? state.organization.currency] : input.action === "create-expense" ? [input.currency] : [];
   const existingForeign = [...state.materials, ...state.expenses].some((item) => item.currency && item.currency !== state.organization.currency);
   if (existingForeign || inputCurrencies.some((item) => item !== state.organization.currency)) {
     state.fxQuotes = quotesFor(state.organization.currency, await officialFxTable());
     for (const material of state.materials) if (material.currency && material.currency !== state.organization.currency && material.nativeAmountMilli != null) {
-      material.priceMinor = convertToOrganizationCurrency(state, material.nativeAmountMilli, material.currency);
+      material.priceMinor = convertUnitPrice(state, material.nativeAmountMilli, material.currency);
       if (material.priceMinor === null) throw new ApiError(503, `Falta cotización vigente para ${material.currency}`);
     }
     for (const expense of state.expenses) if (expense.currency && expense.currency !== state.organization.currency && expense.nativeAmountMilli != null) {
@@ -362,7 +396,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
         const current = state.materials.find((row) => row.id === item.id)!;
         statements.push(
           { sql: "UPDATE materials SET version=version+1 WHERE id=? AND organization_id=?", params: [item.id, organizationId] },
-          { sql: "INSERT INTO material_prices (id, organization_id, material_id, version, amount_minor, source, effective_date, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, item.id, current.version + 1, next.materials.find((row) => row.id === item.id)!.priceMinor, input.source, input.effectiveDate, actorId, ...fxFields(item.currency, toNativeMilli(item.amount))] },
+          { sql: "INSERT INTO material_prices (id, organization_id, material_id, version, amount_minor, source, effective_date, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, item.id, current.version + 1, Math.round(next.materials.find((row) => row.id === item.id)!.priceMinor ?? 0), input.source, input.effectiveDate, actorId, ...fxFields(item.currency, toNativeMilli(item.amount))] },
           { sql: "UPDATE cost_alerts SET status='resolved', resolved_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP WHERE organization_id=? AND material_id=? AND kind='stale_price' AND status='open'", params: [organizationId, item.id] },
         );
       }
@@ -376,7 +410,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       break;
     case "create-material":
       statements.push({ sql: "INSERT INTO materials (id, organization_id, name, supplier, purchase_unit, category) VALUES (?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.name, input.supplier, input.purchaseUnit, input.category ?? "Materia prima"] });
-      if (input.price !== undefined) statements.push({ sql: "INSERT INTO material_prices (id, organization_id, material_id, version, amount_minor, source, effective_date, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, entityId, next.materials.find((item) => item.id === "new")!.priceMinor, input.source || "Carga manual", input.effectiveDate ?? new Date().toISOString().slice(0, 10), actorId, ...fxFields(input.currency ?? next.organization.currency, toNativeMilli(input.price))] });
+      if (input.price !== undefined) statements.push({ sql: "INSERT INTO material_prices (id, organization_id, material_id, version, amount_minor, source, effective_date, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, entityId, Math.round(next.materials.find((item) => item.id === "new")!.priceMinor ?? 0), input.source || "Carga manual", input.effectiveDate ?? new Date().toISOString().slice(0, 10), actorId, ...fxFields(input.currency ?? next.organization.currency, toNativeMilli(input.price))] });
       next.materials.find((item) => item.id === "new")!.id = entityId;
       break;
     case "delete-material":
@@ -475,25 +509,33 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       statements.push({ sql: "INSERT INTO decisions (id, organization_id, product_id, kind, note, actor_id) VALUES (?, ?, ?, ?, ?, ?)", params: [entityId, organizationId, input.productId, input.kind, input.note, actorId] });
       break;
   }
+  // Expenses that continue into a new period: copied from their rows, in groups that fit D1's bound-parameter limit.
+  const carried = next.expenses.filter((item) => item.carriedFrom);
+  for (let index = 0; index < carried.length; index += 40) {
+    const group = carried.slice(index, index + 40);
+    statements.push({
+      sql: `INSERT INTO shared_expenses (id, organization_id, name, period, area, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) SELECT m.new_id, e.organization_id, e.name, ?, e.area, e.amount_minor, e.allocation_basis, e.allocation_mode, e.allocation_shares_json, e.category, e.currency, e.native_amount_milli, e.fx_rate_ppm, e.fx_as_of, e.fx_source FROM (${group.map((_, position) => position === 0 ? "SELECT ? AS new_id, ? AS old_id" : "SELECT ?, ?").join(" UNION ALL ")}) m JOIN shared_expenses e ON e.id=m.old_id AND e.organization_id=?`,
+      params: [group[0].period, ...group.flatMap((item) => [item.id, item.carriedFrom!]), organizationId],
+    });
+    statements.push({
+      sql: `INSERT INTO shared_expense_versions (id, organization_id, expense_id, version, amount_minor, source, actor_id, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) SELECT lower(hex(randomblob(16))), organization_id, id, 1, amount_minor, ?, ?, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source FROM shared_expenses WHERE organization_id=? AND id IN (${group.map(() => "?").join(", ")})`,
+      params: [`Continúa desde ${state.activePeriod}`, actorId, organizationId, ...group.map((item) => item.id)],
+    });
+  }
   statements.push({ sql: "UPDATE organizations SET revision=revision+1 WHERE id=?", params: [organizationId] });
   statements.push({ sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, actorId, input.action, entityId, JSON.stringify(options.source ? { ...input, source: options.source } : input)] });
 
   // Snapshots are saved with the same transaction as the input change.
   for (const cost of calculateCosts(next)) {
-    const snapshotContext = {
-      product: next.products.find((item) => item.id === cost.productId),
-      components: next.components.filter((item) => item.productId === cost.productId),
-      materials: next.materials.filter((item) => next.components.some((component) => component.productId === cost.productId && component.materialId === item.id)),
-      expenses: productionCostSources(next),
-      allocationPeers: next.products.map((item) => ({ id: item.id, lotUnits: item.lotUnits, productionHoursMilli: item.productionHoursMilli, batchesPerMonthMilli: item.batchesPerMonthMilli ?? null })),
-      activePeriod: next.activePeriod,
+    const context = {
+      ...snapshotContext(next, cost.productId),
       baseCurrency: next.organization.currency,
       fxQuotes: Object.fromEntries([...usedCurrencies].filter((code) => code !== next.organization.currency).map((code) => [code, next.fxQuotes?.[code]])),
       organizationRevision: next.revision,
       productionProfileRevision: profile.confirmedRevision,
     };
     const productId = cost.productId === "new" ? entityId : cost.productId.startsWith("new:") ? productEntityIds[Number(cost.productId.slice(4))] ?? entityId : cost.productId;
-    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent === null ? null : String(cost.estimatedMarginPercent), JSON.stringify(cost.lines), JSON.stringify(cost.warnings), JSON.stringify(snapshotContext)] });
+    statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organizationId, productId, changeSetId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent === null ? null : String(cost.estimatedMarginPercent), JSON.stringify(cost.lines), JSON.stringify(cost.warnings), JSON.stringify(context)] });
   }
   const result = { revision: next.revision, entityId, ...(input.action === "create-products" ? { entityIds: productEntityIds } : {}), before, after: calculateCosts(next) };
   if (options.assistantProposalId) {

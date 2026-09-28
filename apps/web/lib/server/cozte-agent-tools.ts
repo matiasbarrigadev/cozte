@@ -15,7 +15,7 @@ import { addAssistantToolEvent, errorDetails } from "./assistant-trace";
 import { commitMutation, mutationSchema } from "./mutations";
 import { createMutationProposal } from "./assistant-proposals";
 import { archiveCozteNote, loadCozteNotes, saveCozteNote } from "./cozte-notes";
-import { AREA_LABELS, PURCHASE_KIND_LABELS, channelEconomics } from "@/lib/business";
+import { AREA_LABELS, PURCHASE_KIND_LABELS, channelEconomics, investmentShare } from "@/lib/business";
 import { archiveRecord, loadBusinessView, loadChannels, loadDeliveries, organizationPlace, recordPurchase, recordSale, saveChannel, saveDelivery, updateSale } from "./business";
 import { DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, businessTimeZone, businessToday, daysFrom, isOpenDelivery, type DeliveryStatus } from "@/lib/business";
 import { resolveDocument } from "./documents";
@@ -169,6 +169,7 @@ export const cozteToolInputSchemas = {
     supplier: z.string().trim().max(120).optional(),
     total: z.number().nonnegative().max(1_000_000_000_000).describe("Total pagado"),
     currency: currency.optional(),
+    exchangeRate: z.number().positive().max(1_000_000_000).optional().describe("Solo si la compra está en otra moneda y la factura dice el tipo de cambio: cuánto vale 1 unidad de esa moneda en la moneda de la empresa. Sin él se usa la cotización de la fecha de la compra"),
     kind: z.enum(["material", "expense", "fixed_payment", "investment"]).describe("material: insumo de una receta; expense: se usa y se termina en el mes; fixed_payment: pago de un gasto mensual ya cargado; investment: dura más de un año"),
     area: area.optional().describe("production, delivery, sales o admin. Un insumo es production; un pago de gasto fijo toma el área de ese gasto."),
     material: reference.optional().describe("Solo para material: nombre o ID del insumo (créalo antes con saveMaterial si no existe)"),
@@ -380,7 +381,6 @@ function stableKey(...parts: (string | number)[]): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-const whole = (value: number) => Math.round(value);
 const threeDecimals = (value: number) => Math.round(value * 1000) / 1000;
 
 function expectedFxRates(state: DomainState): Record<string, number> {
@@ -515,7 +515,8 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         if (missing.length) return { ok: false, error: "Faltan datos para crear el producto.", needs: missing };
         const { done, entityIds } = await commitPlans(input, [{ description: `Producto ${value.name} creado`, build: () => ({
           action: "create-product", name: value.name, lotUnits: value.goodUnitsPerLot,
-          salePriceMinor: whole(value.salePrice ?? 0), salesVariableMinor: whole(value.salesVariablePerUnit ?? 0), laborLotMinor: whole(value.directLaborPerLot ?? 0),
+          // Amounts go as said; the change rounds them to the organization's money precision (cents or whole units).
+          salePriceMinor: value.salePrice ?? 0, salesVariableMinor: value.salesVariablePerUnit ?? 0, laborLotMinor: value.directLaborPerLot ?? 0,
           productionHoursMilli: Math.round((value.hoursPerLot ?? 0) * 1000), batchesPerMonthMilli: batches(value.lotsPerMonth, null),
         }) }]);
         return { ok: true, done, ids: { product: entityIds[0] }, costs: await costReceipt(principal, entityIds) };
@@ -526,9 +527,9 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         if (!current) throw new Error("El producto ya no existe");
         return {
           action: "update-product", id: productId, name: value.name ?? current.name, lotUnits: value.goodUnitsPerLot ?? current.lotUnits,
-          salePriceMinor: value.salePrice === undefined ? current.salePriceMinor : whole(value.salePrice ?? 0),
-          salesVariableMinor: value.salesVariablePerUnit === undefined ? current.salesVariableMinor : whole(value.salesVariablePerUnit),
-          laborLotMinor: value.directLaborPerLot === undefined ? current.laborLotMinor : whole(value.directLaborPerLot),
+          salePriceMinor: value.salePrice === undefined ? current.salePriceMinor : value.salePrice ?? 0,
+          salesVariableMinor: value.salesVariablePerUnit === undefined ? current.salesVariableMinor : value.salesVariablePerUnit,
+          laborLotMinor: value.directLaborPerLot === undefined ? current.laborLotMinor : value.directLaborPerLot,
           productionHoursMilli: value.hoursPerLot === undefined ? current.productionHoursMilli : Math.round(value.hoursPerLot * 1000),
           batchesPerMonthMilli: batches(value.lotsPerMonth, current.batchesPerMonthMilli),
         };
@@ -727,7 +728,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       if (needs.length) return { ok: false, error: "Faltan datos para registrar la compra.", needs };
       const document = value.receipt ? await resolveDocument(principal, value.receipt) : null;
       const recorded = await recordPurchase(principal, {
-        purchasedOn: value.date ?? today(), description: value.description, supplier: value.supplier ?? "", amount: value.total, currency: value.currency,
+        purchasedOn: value.date ?? today(), description: value.description, supplier: value.supplier ?? "", amount: value.total, currency: value.currency, exchangeRate: value.exchangeRate,
         kind: value.kind, area: value.area, materialId: material?.item?.id, quantity: value.quantity, expenseId: expense?.item?.id,
         usefulLifeMonths: value.usefulLifeMonths, includeInUnitCost: value.includeInUnitCost, allocationBasis: value.splitBy, documentId: document?.id,
       }, { source: "cozte", idempotencyKey: stableKey(input.runId, input.toolCallId) });
@@ -740,7 +741,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       return {
         ok: true, done, ids: { purchase: recorded.id },
         ...(purchase.kind === "investment" && purchase.usefulLifeMonths ? {
-          monthlyShare: Math.round(purchase.amountMinor / purchase.usefulLifeMonths), includedInUnitCost: Boolean(purchase.includeInUnitCost),
+          monthlyShare: investmentShare(purchase, purchase.purchasedOn.slice(0, 7), state.organization.currency), includedInUnitCost: Boolean(purchase.includeInUnitCost),
           note: purchase.includeInUnitCost
             ? "Su parte mensual se suma al costo de cada producto y también cuenta en el resultado de cada mes durante su vida útil."
             : purchase.area === "production"
@@ -1016,6 +1017,8 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         perUnitByChannel: view.economics.map((row) => ({ channel: row.channelName, product: row.productName, price: row.price, productionCost: row.productionCost, sellingCost: row.sellingCost, deliveryCost: row.deliveryCost, leftPerUnit: row.left })),
         fixedCostsByArea: view.structure.areas.map((item) => ({ area: item.label, monthlyTotal: item.monthlyTotal, expenses: item.expenses.map((expense) => ({ name: expense.name, monthlyAmount: expense.monthlyAmount })), investments: item.investments.map((asset) => ({ description: asset.description, monthlyShare: asset.monthlyShare, monthsLeft: asset.monthsLeft, ...(item.area === "production" ? { includedInUnitCost: asset.includeInUnitCost } : {}) })) })),
         result: view.result,
+        fixedCostsPeriod: view.structure.period,
+        resultNote: "Los gastos fijos son los vigentes en ese mes (fixedCostsPeriod). variableProductionCost incluye estimatedVariableCost: ventas registradas sin el costo de algún producto, estimadas con el costo de hoy (salesWithEstimatedCost); se fijan con updateSale fillMissingCosts. salesWithoutCost son ventas con un producto que todavía no tiene costo: esa parte no se descuenta y el resultado queda alto.",
         purchases: view.purchases.slice(0, 40).map((purchase) => ({ id: purchase.id, date: purchase.purchasedOn, description: purchase.description, amount: purchase.amountMinor, kind: PURCHASE_KIND_LABELS[purchase.kind], area: AREA_LABELS[purchase.area], hasReceipt: Boolean(purchase.documentId) })),
         sales: view.sales.slice(0, 40).map((sale) => ({ id: sale.id, date: sale.soldOn, channel: sale.channelName, customer: sale.customer || undefined, total: sale.totalMinor, deliveryCost: sale.deliveryCostMinor, items: sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", "), hasReceipt: Boolean(sale.documentId), delivery: sale.delivery ? `${DELIVERY_STATUS_LABELS[sale.delivery.status]} (${sale.delivery.scheduledOn})` : "sin entrega" })),
       };

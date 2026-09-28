@@ -41,14 +41,14 @@ export async function PUT(request: Request) {
     const state = await loadState(principal);
     const materialIds = new Set(state.materials.map((item) => item.id));
     const expenseIds = new Set(state.expenses.filter((item) => item.period === state.activePeriod).map((item) => item.id));
-    if (Object.keys(draft.materials).some((id) => !materialIds.has(id)) || Object.keys(draft.expenses).some((id) => !expenseIds.has(id)) || Object.keys(draft.materialCurrencies).some((id) => !materialIds.has(id)) || Object.keys(draft.expenseCurrencies).some((id) => !expenseIds.has(id))) {
-      return Response.json({ error: "El borrador contiene filas que ya no existen" }, { status: 400 });
-    }
+    // Rows removed, or left in a closed period, since the draft was written cannot be applied: they are dropped, not an error.
+    const keep = <T,>(values: Record<string, T>, ids: Set<string>) => Object.fromEntries(Object.entries(values).filter(([id]) => ids.has(id)));
+    const cleaned = { ...draft, materials: keep(draft.materials, materialIds), expenses: keep(draft.expenses, expenseIds), materialCurrencies: keep(draft.materialCurrencies, materialIds), expenseCurrencies: keep(draft.expenseCurrencies, expenseIds) };
     await dbBatch([{
       sql: "INSERT INTO cost_edit_drafts (organization_id, user_id, payload_json) VALUES (?, ?, ?) ON CONFLICT (organization_id, user_id) DO UPDATE SET payload_json=excluded.payload_json, updated_at=CURRENT_TIMESTAMP",
-      params: [principal.organizationId, principal.userId, JSON.stringify(draft)],
+      params: [principal.organizationId, principal.userId, JSON.stringify(cleaned)],
     }]);
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, dropped: Object.keys(draft.materials).length + Object.keys(draft.expenses).length - Object.keys(cleaned.materials).length - Object.keys(cleaned.expenses).length });
   } catch (error) {
     if (error instanceof z.ZodError) return Response.json({ error: "Revisa el borrador" }, { status: 400 });
     return apiFailure(error);

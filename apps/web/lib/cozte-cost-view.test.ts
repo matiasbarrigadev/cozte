@@ -61,3 +61,13 @@ describe("cost views", () => {
     expect(volume.products.find((item) => item.product === "Cuaderno A5 · tapa dura")?.change).toBeLessThan(0);
   });
 });
+
+describe("cost gaps", () => {
+  it("asks to check labor counted twice: per lot and again as a workshop salary", async () => {
+    const { costGaps } = await import("./cozte-cost-view");
+    const { calculateCosts } = await import("./domain");
+    const state = { ...demoState, expenses: [...demoState.expenses, { id: "sueldos", name: "Sueldos del taller", period: demoState.activePeriod, amountMinor: 900_000, allocationBasis: "hours" as const, category: "Sueldos", version: 1 }] };
+    expect(costGaps(state, calculateCosts(state))[0]).toMatch(/mano de obra no se cuente dos veces/);
+    expect(costGaps(demoState, calculateCosts(demoState)).some((gap) => /dos veces/.test(gap))).toBe(false);
+  });
+});

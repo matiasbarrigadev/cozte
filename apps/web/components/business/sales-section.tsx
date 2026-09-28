@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { DIRECT_CHANNEL, canFillSaleCosts, channelPrice, needsDelivery, saleItemsText, type ChannelEconomics, type CustomerDirectory, type Sale, type SalePatch, type SalesChannel } from "@/lib/business";
+import { DIRECT_CHANNEL, canFillSaleCosts, channelPrice, needsDelivery, saleItemsText, saleVariableCost, type ChannelEconomics, type CustomerDirectory, type Sale, type SalePatch, type SalesChannel } from "@/lib/business";
 import { calculateCosts, type DomainState } from "@/lib/domain";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Badge } from "@/components/ui/badge";
@@ -107,7 +107,7 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
       </div>
 
       {fillable.length ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50/70 px-4 py-3 text-sm dark:border-amber-400/30 dark:bg-amber-500/5">
-        <p><span className="font-medium">{fillable.length} venta{fillable.length === 1 ? "" : "s"} con costo incompleto.</span> Cuando se registraron faltaba el costo de algún producto, así que no se sabe cuánto dejaron. Hoy ese costo está completo.</p>
+        <p><span className="font-medium">{fillable.length} venta{fillable.length === 1 ? "" : "s"} con costo incompleto.</span> Cuando se registraron faltaba el costo de algún producto; hoy ese costo está completo y el resultado del mes ya lo usa como estimación. Complétalas para dejarlo fijo en cada venta.</p>
         <Button type="button" size="sm" variant="outline" onClick={() => void fillAll()}>Completar con el costo de hoy</Button>
       </div> : null}
       <Card className="gap-4">
@@ -204,7 +204,8 @@ function SalesTable({ costs, month, today, customerSuggestions, sales, state, ch
     const value = (sale: Sale): string | number => !sort || sort.key === "date" ? sale.soldOn : sort.key === "customer" ? sale.customer.toLowerCase() : sort.key === "total" ? sale.totalMinor : leftOf(sale) ?? -Infinity;
     return [...filtered].sort((a, b) => { const x = value(a), y = value(b); return (x < y ? -1 : x > y ? 1 : 0) * (sort ? direction : -1); });
   }, [sales, search, channelFilter, deliveryFilter, sort]);
-  const totals = rows.reduce((sum, sale) => ({ total: sum.total + sale.totalMinor, selling: sum.selling + sale.sellingCostMinor, delivery: sum.delivery + sale.deliveryCostMinor, left: sum.left + (leftOf(sale) ?? 0) }), { total: 0, selling: 0, delivery: 0, left: 0 });
+  // The footer follows the month's result: a sale recorded without a product's cost counts it at today's cost.
+  const totals = rows.reduce((sum, sale) => ({ total: sum.total + sale.totalMinor, selling: sum.selling + sale.sellingCostMinor, delivery: sum.delivery + sale.deliveryCostMinor, left: sum.left + sale.totalMinor - saleVariableCost(sale, costs, state.organization.currency).amount - sale.sellingCostMinor - sale.deliveryCostMinor }), { total: 0, selling: 0, delivery: 0, left: 0 });
   const disabled = false;
   const [history, setHistory] = React.useState<Sale | null>(null);
   const exportRows = () => downloadCsv(`ventas-${month}`, ["Fecha", "Canal", "Cliente", "Productos", "Cobrado", "Comisiones y cargos", "Costo de entrega", "Te dejó", "Entrega", "Nota"],
@@ -336,7 +337,7 @@ function SaleItemsDialog({ sale, state, onClose, onSave }: { sale: Sale; state: 
           {state.products.map((product) => <DropdownOption key={product.id} value={product.id}>{product.name}</DropdownOption>)}
         </Dropdown>
         <Input aria-label="Cantidad" type="number" min="0.001" step="0.001" value={line.quantity} onChange={(event) => update(line.key, { quantity: event.target.value })} />
-        <Input aria-label="Precio por unidad" type="number" min="0" step="1" value={line.price} placeholder="De lista" onChange={(event) => update(line.key, { price: event.target.value })} />
+        <Input aria-label="Precio por unidad" type="number" min="0" step="any" inputMode="decimal" value={line.price} placeholder="De lista" onChange={(event) => update(line.key, { price: event.target.value })} />
         <Button type="button" size="icon-sm" variant="ghost" aria-label="Quitar producto" disabled={lines.length === 1} onClick={() => setLines((current) => current.filter((item) => item.key !== line.key))}><AnimatedIcon name="close" /></Button>
       </div>)}
       <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => setLines((current) => [...current, { key: Date.now(), productId: state.products[0]?.id ?? "", quantity: "1", price: "" }])}><AnimatedIcon name="plus" data-icon="inline-start" />Otro producto</Button>
@@ -374,8 +375,8 @@ export function ChannelDialog({ channel, demo, onClose, onSaved }: { channel: Sa
       <Field><FieldLabel htmlFor="channel-delivery">Cómo llega al cliente</FieldLabel><Input id="channel-delivery" name="deliveryMethod" defaultValue={channel?.deliveryMethod} placeholder="Ej. Moto propia, correo, retiro" /></Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field><FieldLabel htmlFor="channel-commission">Comisión (%)</FieldLabel><Input id="channel-commission" name="commission" type="number" min="0" max="100" step="0.01" defaultValue={channel ? channel.commissionBps / 100 : 0} /><FieldDescription>Lo que se queda la plataforma o la tarjeta.</FieldDescription></Field>
-        <Field><FieldLabel htmlFor="channel-fee">Cargo fijo por venta</FieldLabel><Input id="channel-fee" name="fee" type="number" min="0" step="1" defaultValue={channel?.feePerOrderMinor ?? 0} /></Field>
-        <Field><FieldLabel htmlFor="channel-delivery-cost">Te cuesta entregar un pedido</FieldLabel><Input id="channel-delivery-cost" name="delivery" type="number" min="0" step="1" defaultValue={channel?.deliveryCostPerOrderMinor ?? 0} /><FieldDescription>Combustible, correo o repartidor.</FieldDescription></Field>
+        <Field><FieldLabel htmlFor="channel-fee">Cargo fijo por venta</FieldLabel><Input id="channel-fee" name="fee" type="number" min="0" step="any" inputMode="decimal" defaultValue={channel?.feePerOrderMinor ?? 0} /></Field>
+        <Field><FieldLabel htmlFor="channel-delivery-cost">Te cuesta entregar un pedido</FieldLabel><Input id="channel-delivery-cost" name="delivery" type="number" min="0" step="any" inputMode="decimal" defaultValue={channel?.deliveryCostPerOrderMinor ?? 0} /><FieldDescription>Combustible, correo o repartidor.</FieldDescription></Field>
         <Field><FieldLabel htmlFor="channel-units">Unidades por pedido</FieldLabel><Input id="channel-units" name="units" type="number" min="0.001" step="0.001" defaultValue={channel ? channel.unitsPerOrderMilli / 1000 : 1} /><FieldDescription>En promedio; reparte el envío entre las unidades.</FieldDescription></Field>
       </div>
       <Field><FieldLabel htmlFor="channel-adjustment">Precio frente al de lista (%)</FieldLabel><Input id="channel-adjustment" name="adjustment" type="number" min="-90" max="100" step="0.5" defaultValue={channel ? channel.priceAdjustmentBps / 100 : 0} /><FieldDescription>0 si cobras el precio de lista; -30 si al mayorista le vendes 30 % más barato.</FieldDescription></Field>
@@ -445,18 +446,18 @@ export function SaleDialog({ directory, state, channels, demo, month, onClose, o
         <span className="text-sm font-medium">Productos</span>
         {lines.map((line) => {
           const product = state.products.find((item) => item.id === line.productId);
-          const listPrice = product ? channelPrice(product, channel) : null;
+          const listPrice = product ? channelPrice(product, channel, state.organization.currency) : null;
           return <div key={line.key} className="grid grid-cols-[minmax(0,1fr)_6rem_8rem_auto] items-center gap-2">
             <Dropdown aria-label="Producto" className="w-full" value={line.productId} onChange={(event) => update(line.key, { productId: event.target.value })}>{state.products.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}</Dropdown>
             <Input aria-label="Cantidad" type="number" min="0.001" step="0.001" required value={line.quantity} onChange={(event) => update(line.key, { quantity: event.target.value })} />
-            <Input aria-label="Precio por unidad" type="number" min="0" step="1" value={line.price} placeholder={listPrice === null ? "Precio" : money(listPrice)} onChange={(event) => update(line.key, { price: event.target.value })} />
+            <Input aria-label="Precio por unidad" type="number" min="0" step="any" inputMode="decimal" value={line.price} placeholder={listPrice === null ? "Precio" : money(listPrice)} onChange={(event) => update(line.key, { price: event.target.value })} />
             <Button type="button" size="icon-sm" variant="ghost" aria-label="Quitar producto" disabled={lines.length === 1} onClick={() => setLines((current) => current.filter((item) => item.key !== line.key))}><AnimatedIcon name="close" /></Button>
           </div>;
         })}
         <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => setLines((current) => [...current, { key: Date.now(), productId: state.products[0]?.id ?? "", quantity: "1", price: "" }])}><AnimatedIcon name="plus" data-icon="inline-start" />Otro producto</Button>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field><FieldLabel htmlFor="sale-delivery">Costo de entrega</FieldLabel><Input id="sale-delivery" name="delivery" type="number" min="0" step="1" placeholder={money(channel.deliveryCostPerOrderMinor)} /><FieldDescription>Déjalo vacío para usar el habitual del canal.</FieldDescription></Field>
+        <Field><FieldLabel htmlFor="sale-delivery">Costo de entrega</FieldLabel><Input id="sale-delivery" name="delivery" type="number" min="0" step="any" inputMode="decimal" placeholder={money(channel.deliveryCostPerOrderMinor)} /><FieldDescription>Déjalo vacío para usar el habitual del canal.</FieldDescription></Field>
         <Field><FieldLabel htmlFor="sale-customer">Cliente</FieldLabel><SuggestInput id="sale-customer" value={customer} placeholder="Opcional" suggestions={directory.customers.map((item) => ({ value: item.name, hint: item.address || undefined }))} onValueChange={(value, picked) => { setCustomer(value); if (picked) pickCustomer(value); }} /></Field>
       </div>
       {delivers ? <fieldset className="flex flex-col gap-3 rounded-lg border p-3">

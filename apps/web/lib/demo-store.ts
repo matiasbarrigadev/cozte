@@ -1,4 +1,5 @@
 import { calculateCosts, type CostArea } from "./domain";
+import { roundMoney } from "./money";
 import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, buildCustomerDirectory, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type BusinessRecords, type CustomerDirectory, type Delivery, type Purchase, type PurchaseKind, type Sale, type SalePatch, type SalesChannel } from "./business";
 import { DEMO_TODAY, DEMO_ZONES, demoBusinessRecords, demoDeliveries, demoHistorySales, demoState, demoSupplierHistory } from "./demo";
 import { emptyTally, tallyDelivery } from "./delivery-zones";
@@ -243,9 +244,16 @@ export function demoBusinessAction<T>(body: Body): T {
     case "update-sale": {
       const sale = current.records.sales.find((item) => item.id === body.id);
       if (!sale) throw new DemoError("Venta no encontrada");
-      const { sale: next, problems } = repriceSale(sale, body.patch as SalePatch, demoState, costs, current.records.channels);
+      const patch = { ...(body.patch as SalePatch) };
+      // Like the server: another channel keeps a cancelled delivery at no cost and a zone's own cost.
+      if (patch.channelId !== undefined && (patch.channelId ?? null) !== sale.channelId && patch.deliveryCost === undefined) {
+        const delivery = current.deliveries.find((item) => item.saleId === sale.id);
+        const zone = delivery?.zoneId ? current.zones.find((item) => item.id === delivery.zoneId) : undefined;
+        const own = delivery?.status === "cancelled" ? 0 : zone ? zoneCost(zone) : null;
+        if (own !== null) patch.deliveryCost = own;
+      }
+      const { sale: next, problems } = repriceSale(sale, patch, demoState, costs, current.records.channels);
       if (problems.length) throw new DemoError(problems.join(". "));
-      const patch = body.patch as SalePatch;
       const resolved = patch.customer !== undefined ? demoResolveCustomer(current, patch.customer) : { customers: current.customers, id: sale.customerId ?? null };
       const updated = { ...sale, ...next, customerId: resolved.id };
       commit({ ...current, customers: resolved.customers, records: { ...current.records, sales: current.records.sales.map((item) => item.id === sale.id ? updated : item) } });
@@ -276,6 +284,16 @@ export function demoBusinessAction<T>(body: Body): T {
         if (input.status) done.push(`Entrega: ${DELIVERY_STATUS_LABELS[input.status]}`);
         else if (moved) done.push(zone ? `Zona: ${zone.name}${cost !== null ? " (costo de la zona aplicado)" : ""}` : "Entrega sin zona");
         else done.push("Entrega actualizada");
+        // Like the server: a cancelled delivery costs nothing; bringing it back restores its zone's or its channel's cost.
+        const cancelling = input.status === "cancelled" && existing.status !== "cancelled";
+        const reopening = existing.status === "cancelled" && input.status !== undefined && input.status !== "cancelled";
+        if (input.cost === undefined && (cancelling || reopening)) {
+          const zoneNow = current.zones.find((item) => item.id === (moved ? zone?.id : existing.zoneId));
+          const sale = sales.find((item) => item.id === saleId);
+          const restored = cancelling ? 0 : (zoneNow ? zoneCost(zoneNow) : null) ?? channelOf(sale?.channelId)?.deliveryCostPerOrderMinor ?? 0;
+          sales = sales.map((item) => item.id === saleId ? { ...item, deliveryCostMinor: restored } : item);
+          done.push(cancelling ? "Costo de entrega en 0: la entrega se canceló" : "Costo de entrega restituido");
+        }
       } else {
         const sale = sales.find((item) => item.id === saleId);
         if (!sale) throw new DemoError("Venta no encontrada");
@@ -283,14 +301,16 @@ export function demoBusinessAction<T>(body: Body): T {
         const owner = current.customers.find((customer) => customer.id === sale.customerId);
         const main = owner?.addresses.find((address) => address.isDefault);
         const zone = demoZoneFor(current.zones, input.zoneId, input.address || main?.address, input.address ? undefined : main?.zone);
-        const delivery = newDelivery(sale, channelOf(sale.channelId) ?? DIRECT_CHANNEL, { ...input, address: input.address || main?.address }, zone);
+        const channel = channelOf(sale.channelId) ?? DIRECT_CHANNEL;
+        const delivery = newDelivery(sale, channel, { ...input, address: input.address || main?.address }, zone);
         id = delivery.id;
         deliveries = [...deliveries, delivery];
-        const cost = zone && input.cost === undefined ? zoneCost(zone) : null;
-        if (cost !== null) sales = sales.map((item) => item.id === sale.id ? { ...item, deliveryCostMinor: cost } : item);
+        const cost = input.cost !== undefined || delivery.status === "cancelled" ? null : zone ? zoneCost(zone) : null;
+        const fallback = input.cost === undefined && cost === null && delivery.status !== "cancelled" && !sale.deliveryCostMinor && channel.deliveryCostPerOrderMinor > 0 ? channel.deliveryCostPerOrderMinor : null;
+        if (cost !== null || fallback !== null) sales = sales.map((item) => item.id === sale.id ? { ...item, deliveryCostMinor: (cost ?? fallback)! } : item);
         done.push(`Entrega programada para el ${delivery.scheduledOn}`);
       }
-      if (input.cost !== undefined) { sales = sales.map((item) => item.id === saleId ? { ...item, deliveryCostMinor: Math.round(input.cost!) } : item); done.push("Costo de entrega actualizado"); }
+      if (input.cost !== undefined) { sales = sales.map((item) => item.id === saleId ? { ...item, deliveryCostMinor: roundMoney(input.cost!, demoState.organization.currency) } : item); done.push("Costo de entrega actualizado"); }
       const owner = sales.find((item) => item.id === saleId)?.customerId ?? null;
       commit({ ...current, customers: demoLearnAddress(current.customers, owner, input.address, input.recipient, input.contact), records: { ...current.records, sales }, deliveries });
       return { id, created: !input.id, done } as T;
@@ -445,7 +465,12 @@ export function demoBusinessAction<T>(body: Body): T {
       if (kind === "sale") { records.sales = records.sales.filter((item) => item.id !== id); deliveries = deliveries.filter((item) => item.saleId !== id); }
       if (kind === "purchase") { records.purchases = records.purchases.filter((item) => item.id !== id); records.investments = records.investments.filter((item) => item.id !== id); }
       if (kind === "channel") records.channels = records.channels.filter((item) => item.id !== id);
-      if (kind === "delivery") deliveries = deliveries.filter((item) => item.id !== id);
+      if (kind === "delivery") {
+        // A sale left without its delivery stops carrying a delivery cost.
+        const saleId = deliveries.find((item) => item.id === id)?.saleId;
+        deliveries = deliveries.filter((item) => item.id !== id);
+        records.sales = records.sales.map((item) => item.id === saleId ? { ...item, deliveryCostMinor: 0 } : item);
+      }
       commit({ ...current, records, deliveries });
       return { ok: true } as T;
     }

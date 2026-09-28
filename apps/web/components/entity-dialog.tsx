@@ -12,8 +12,10 @@ import { supportedCurrencies } from "@/lib/currency";
 
 type Kind = "product" | "material" | "expense" | "edit-product" | null;
 
-export function EntityDialog({ kind, product, products, categories, onClose, onSave, currency, busy, demo }: {
+export function EntityDialog({ kind, product, products, categories, activePeriod, onClose, onSave, currency, busy, demo }: {
   kind: Kind;
+  /** The costing period in force: a new expense belongs to it unless the person picks a later one on purpose. */
+  activePeriod?: string;
   product?: Product;
   products: Product[];
   categories: { id: string; name: string }[];
@@ -32,6 +34,8 @@ export function EntityDialog({ kind, product, products, categories, onClose, onS
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const integer = (key: string) => Math.trunc(Number(data.get(key) ?? 0));
+    // Money keeps its cents; the server rounds it to the currency's precision.
+    const amount = (key: string) => Math.max(0, Number(data.get(key) ?? 0) || 0);
     let action: Record<string, unknown>;
     if (kind === "material") action = {
       action: "create-material", name: String(data.get("name") ?? "").trim(), supplier: String(data.get("supplier") ?? "").trim(),
@@ -46,8 +50,8 @@ export function EntityDialog({ kind, product, products, categories, onClose, onS
     else action = {
       action: kind === "edit-product" ? "update-product" : "create-product",
       ...(kind === "edit-product" ? { id: product?.id } : { cloneProductId: String(data.get("cloneProductId") ?? "") || undefined }),
-      name: String(data.get("name") ?? "").trim(), lotUnits: integer("lotUnits"), salePriceMinor: integer("salePriceMinor"),
-      salesVariableMinor: integer("salesVariableMinor"), laborLotMinor: integer("laborLotMinor"),
+      name: String(data.get("name") ?? "").trim(), lotUnits: integer("lotUnits"), salePriceMinor: amount("salePriceMinor"),
+      salesVariableMinor: amount("salesVariableMinor"), laborLotMinor: amount("laborLotMinor"),
       productionHoursMilli: Math.round(Number(data.get("productionHours") ?? 0) * 1000),
       batchesPerMonthMilli: data.get("batchesPerMonth") === "" ? null : Math.round(Number(data.get("batchesPerMonth")) * 1000),
     };
@@ -67,7 +71,7 @@ export function EntityDialog({ kind, product, products, categories, onClose, onS
       {kind === "expense" ? <FieldGroup>
         <Field><FieldLabel htmlFor="expense-name">Gasto</FieldLabel><Input id="expense-name" name="name" required minLength={2} placeholder="Ej. Electricidad" /></Field>
         <Field><FieldLabel htmlFor="expense-category">Categoría</FieldLabel><Dropdown id="expense-category" name="category" className="w-full" defaultValue={categories.find((item) => item.name === "Gastos generales")?.name ?? categories[0]?.name}>{categories.map((item) => <DropdownOption key={item.id} value={item.name}>{item.name}</DropdownOption>)}</Dropdown></Field>
-        <Field><FieldLabel htmlFor="expense-period">Período</FieldLabel><MonthSelect id="expense-period" name="period" required defaultValue={new Date().toLocaleDateString("en-CA").slice(0, 7)} /></Field>
+        <Field><FieldLabel htmlFor="expense-period">Período</FieldLabel><MonthSelect id="expense-period" name="period" required defaultValue={activePeriod ?? new Date().toLocaleDateString("en-CA").slice(0, 7)} /></Field>
         <div className="grid grid-cols-[1fr_auto] gap-3"><Field><FieldLabel htmlFor="expense-amount">Importe</FieldLabel><Input id="expense-amount" name="amount" type="number" min="0" step="0.001" required /></Field><Field><FieldLabel htmlFor="expense-currency">Moneda</FieldLabel><Dropdown id="expense-currency" name="currency" defaultValue={currency}>{supportedCurrencies.map((code) => <DropdownOption key={code} value={code}>{code}</DropdownOption>)}</Dropdown></Field></div>
         <Field><FieldLabel htmlFor="allocation-basis">Base de reparto</FieldLabel><Dropdown id="allocation-basis" name="allocationBasis" className="w-full" value={expenseBasis} onChange={(event) => setExpenseBasis(event.target.value as "hours" | "units" | "manual")}><DropdownOption value="hours">Horas de producción</DropdownOption><DropdownOption value="units">Unidades del lote</DropdownOption><DropdownOption value="manual" disabled={!products.length}>Porcentajes acordados</DropdownOption></Dropdown></Field>
         {expenseBasis === "manual" ? <div className="space-y-2">{products.map((item) => <label key={item.id} className="flex items-center justify-between gap-3 text-sm"><span>{item.name}</span><div className="flex items-center gap-1"><Input className="w-24 text-right" type="number" min="0" max="100" step="0.01" value={expenseShares[item.id] ?? ""} onChange={(event) => setExpenseShares((current) => ({ ...current, [item.id]: event.target.value }))} /><span>%</span></div></label>)}<p className="text-xs text-muted-foreground">Total: {products.reduce((sum, item) => sum + Number(expenseShares[item.id] || 0), 0).toFixed(2)} %</p></div> : null}
@@ -77,8 +81,8 @@ export function EntityDialog({ kind, product, products, categories, onClose, onS
         {kind === "product" ? <Field><FieldLabel htmlFor="clone-product">Copiar composición de</FieldLabel><Dropdown id="clone-product" name="cloneProductId" className="w-full"><DropdownOption value="">Empezar vacío</DropdownOption>{products.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}</Dropdown></Field> : null}
         <Field><FieldLabel htmlFor="product-name">Producto</FieldLabel><Input id="product-name" name="name" required minLength={2} defaultValue={product?.name} placeholder="Ej. Cuaderno A5 · tapa dura" /></Field>
         <div className="grid gap-4 sm:grid-cols-2"><Field><FieldLabel htmlFor="lot-units">Unidades por lote</FieldLabel><Input id="lot-units" name="lotUnits" type="number" min="1" required defaultValue={product?.lotUnits ?? 100} /></Field><Field><FieldLabel htmlFor="batches-month">Lotes al mes</FieldLabel><Input id="batches-month" name="batchesPerMonth" type="number" min="0.001" step="0.001" placeholder="Reparte bien los gastos del mes" defaultValue={product?.batchesPerMonthMilli != null ? product.batchesPerMonthMilli / 1000 : ""} /></Field></div>
-        <Field><FieldLabel htmlFor="sale-price">Precio de venta ({currency})</FieldLabel><Input id="sale-price" name="salePriceMinor" type="number" min="0" defaultValue={product?.salePriceMinor ?? 0} /><p className="text-xs text-muted-foreground">Déjalo en 0 si aún no lo defines; no cambia el costo de fabricar.</p></Field>
-        <div className="grid gap-4 sm:grid-cols-2"><Field><FieldLabel htmlFor="sales-variable">Venta variable por unidad</FieldLabel><Input id="sales-variable" name="salesVariableMinor" type="number" min="0" defaultValue={product?.salesVariableMinor ?? 0} /></Field><Field><FieldLabel htmlFor="labor-lot">Trabajo directo por lote</FieldLabel><Input id="labor-lot" name="laborLotMinor" type="number" min="0" defaultValue={product?.laborLotMinor ?? 0} /></Field></div>
+        <Field><FieldLabel htmlFor="sale-price">Precio de venta ({currency})</FieldLabel><Input id="sale-price" name="salePriceMinor" type="number" min="0" step="any" inputMode="decimal" defaultValue={product?.salePriceMinor ?? 0} /><p className="text-xs text-muted-foreground">Déjalo en 0 si aún no lo defines; no cambia el costo de fabricar.</p></Field>
+        <div className="grid gap-4 sm:grid-cols-2"><Field><FieldLabel htmlFor="sales-variable">Venta variable por unidad</FieldLabel><Input id="sales-variable" name="salesVariableMinor" type="number" min="0" step="any" inputMode="decimal" defaultValue={product?.salesVariableMinor ?? 0} /></Field><Field><FieldLabel htmlFor="labor-lot">Trabajo directo por lote</FieldLabel><Input id="labor-lot" name="laborLotMinor" type="number" min="0" step="any" inputMode="decimal" defaultValue={product?.laborLotMinor ?? 0} /></Field></div>
         <Field><FieldLabel htmlFor="production-hours">Horas de producción por lote</FieldLabel><Input id="production-hours" name="productionHours" type="number" min="0" step="0.001" defaultValue={(product?.productionHoursMilli ?? 0) / 1000} /></Field>
       </FieldGroup> : null}
       <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancelar</Button><Button type="submit" disabled={busy || demo || (kind === "expense" && expenseBasis === "manual" && Math.round(products.reduce((sum, item) => sum + Number(expenseShares[item.id] || 0), 0) * 100) !== 10000)}>{kind === "edit-product" ? "Guardar producto" : "Crear"}</Button></DialogFooter>

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { formatMoney } from "@/lib/money";
 import type { DomainState } from "@/lib/domain";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Badge } from "@/components/ui/badge";
@@ -32,7 +33,7 @@ function labelChange(current: CostSnapshotRow, previous?: CostSnapshotRow): stri
 
 export function CostHistory({ state, events, snapshots, profileSnapshots }: { state: DomainState; events: HistoryEntry[]; snapshots: CostSnapshotRow[]; profileSnapshots: ProfileSnapshotRow[] }) {
   const [selected, setSelected] = React.useState<CostSnapshotRow | null>(null);
-  const money = (value: number | null) => value === null ? "Incompleto" : new Intl.NumberFormat("es-CL", { style: "currency", currency: state.organization.currency, maximumFractionDigits: 0 }).format(value);
+  const money = (value: number | null) => value === null ? "Incompleto" : formatMoney(value, state.organization.currency);
   return <>
     <div><p className="text-sm text-muted-foreground">Evolución</p><h1 className="text-3xl font-semibold tracking-tight">Historial de costos</h1><p className="text-sm text-muted-foreground">Cada cambio confirmado conserva su foto, incluso si después cambian las reglas.</p></div>
     <Card><CardHeader><CardTitle>Fotos de costos por producto</CardTitle><CardDescription>Variación frente a la foto anterior del mismo producto.</CardDescription></CardHeader><CardContent>{snapshots.length ? <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Producto</TableHead><TableHead>Costo por unidad apta</TableHead><TableHead>Variación</TableHead><TableHead>Principal cambio</TableHead><TableHead>Detalle</TableHead></TableRow></TableHeader><TableBody>{snapshots.slice(0, 50).map((item, index) => {

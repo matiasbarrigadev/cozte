@@ -36,6 +36,7 @@ export function ExpensesSection({ state, demo, month, onSave, onOpenProduction, 
         <Stat label="Todos los gastos fijos del mes" value={money(structure.monthlyFixedTotal)} note="Taller, entregas, ventas y administración" />
         {COMPANY_AREAS.map((area) => <Stat key={area} label={AREA_LABELS[area]} value={money(structure.areas.find((item) => item.area === area)?.monthlyTotal ?? 0)} note="por mes" />)}
       </div>
+      {structure.period !== state.activePeriod ? <p className="text-sm text-muted-foreground">{structure.period ? `Estos son los gastos que estaban vigentes en ese mes (período ${structure.period}). Los gastos se editan en el período activo, ${state.activePeriod}.` : "En ese mes todavía no había gastos mensuales registrados."}</p> : null}
 
       {COMPANY_AREAS.map((areaKey) => {
         const area = structure.areas.find((item) => item.area === areaKey)!;
@@ -51,7 +52,7 @@ export function ExpensesSection({ state, demo, month, onSave, onOpenProduction, 
                 <TableCell className="font-medium whitespace-normal">{expense.name}<div className="text-xs font-normal text-muted-foreground"><span className="sm:hidden">Gasto fijo · </span>{expense.category}</div></TableCell>
                 <TableCell className="hidden text-muted-foreground sm:table-cell">Gasto fijo</TableCell>
                 <TableCell className="text-right tabular-nums">{money(expense.monthlyAmount)}</TableCell>
-                <TableCell><Button size="icon-sm" variant="ghost" aria-label={`Editar ${expense.name}`} onClick={() => setDialog({ area: areaKey, expense: expenseById.get(expense.id) })}><AnimatedIcon name="edit" /></Button></TableCell>
+                <TableCell>{expenseById.get(expense.id)?.period === state.activePeriod ? <Button size="icon-sm" variant="ghost" aria-label={`Editar ${expense.name}`} onClick={() => setDialog({ area: areaKey, expense: expenseById.get(expense.id) })}><AnimatedIcon name="edit" /></Button> : null}</TableCell>
               </TableRow>)}
               {area.investments.map((asset) => <TableRow key={asset.id}>
                 <TableCell className="font-medium whitespace-normal">{asset.description}<div className="text-xs font-normal text-muted-foreground"><span className="sm:hidden">Inversión · </span>Costó {money(asset.amount)} · faltan {asset.monthsLeft} de {asset.usefulLifeMonths} meses</div></TableCell>

@@ -13,6 +13,15 @@ MVP de costeo continuo para PyMEs manufactureras con varios productos, insumos c
 
 El motor de costos es determinístico: un precio compartido se registra una vez y recalcula todos los productos que lo consumen. El costo por unidad es (insumos del lote + mano de obra directa del lote + la parte del lote en los gastos compartidos del mes) ÷ unidades buenas del lote. Cada gasto compartido es un monto mensual que se reparte por actividad del mes —horas por lote × lotes al mes, unidades buenas × lotes al mes o porcentajes acordados— y cada lote carga solo su parte. Si un producto no tiene lotes al mes, el motor supone uno y marca el costo como **estimado** con ese supuesto explícito; si falta un dato esencial (por ejemplo, el precio de un insumo usado) el costo queda **incompleto** y se muestra el costo conocido hasta ahora. Con precio de venta, el motor también calcula margen, margen de contribución y punto de equilibrio mensual. La IA no hace la aritmética financiera.
 
+Reglas contables del resultado y los registros:
+
+- **Precisión por moneda.** CLP, ARS, COP, PYG, CRC, UYU y DOP se registran en unidades enteras; USD, EUR, BRL, MXN, PEN, BOB, GTQ, HNL, NIO, PAB y BZD, con centavos. El motor calcula en la unidad mínima de cada moneda para que los repartos cuadren exactos. Los precios de insumos conservan sus milésimas hasta multiplicarse por el consumo del lote.
+- **Costeo variable.** El resultado del mes descuenta los insumos y la mano de obra de lo vendido. Ese costo queda fijado con cada venta al costo del día de la venta: una venta cargada con retraso usa la última foto de costo completa de esa fecha. Si al registrarla faltaba un costo, se estima con el de hoy y se informa aparte. Los gastos del taller cuentan como gastos fijos del mes.
+- **Gastos por período.** Cada mes usa los gastos mensuales vigentes en ese mes. Al iniciar un período nuevo, los gastos del anterior continúan con sus montos (se copian) y el período anterior queda en el historial.
+- **Inversiones.** Se deprecian en línea recta durante su vida útil, y las cuotas suman exactamente el precio.
+- **Compras en otra moneda.** Se convierten al tipo de cambio de su fecha (o al de la factura, si se indica). Los insumos comprados son caja, no gasto del mes.
+- **Entregas.** Una entrega cancelada o quitada no tiene costo. El punto de equilibrio incluye las compras consumidas en el mes, de modo que vender ese monto significa no perder.
+
 El perfil de producción registra ubicación, etapas, productos, categorías acordadas, conversión compra/consumo y reparto de gastos mensuales, trimestrales o anuales. Se puede revisar en cualquier momento. Cada confirmación del perfil guarda una versión inmutable con su costeo calculado; cada cambio confirmado de la planilla guarda una foto del costo y los datos usados para cada producto. El historial muestra variación y una explicación inicial de su principal componente.
 
 La planilla permite buscar y filtrar por tipo o categoría, con vistas de tabla, lista y tablero por categoría. En la tabla se editan en contexto los nombres, categorías, proveedor, unidad de compra, moneda, precio y período. Los repartos y consumos se configuran por costo y producto; los cambios de unidad, período o distribución que afectan el cálculo requieren confirmación. Los importes se autoguardan como **borrador privado en D1** y solo cambian los costos vigentes después de revisar el impacto, indicar fuente y fecha, y confirmar.
@@ -28,6 +37,8 @@ Cada turno empieza con la foto vigente de costos en las instrucciones (`lib/serv
 Las bajas pedidas por Cozte se guardan como propuestas en `assistant_proposals`, con su historial en `assistant_proposal_events`; la aprobación y la aplicación ocurren en una sola operación D1 con control de revisión.
 
 ## Estado de la infraestructura
+
+- **Orden de despliegue de la revisión contable.** Primero, desplegar el worker `cozte-d1-bridge` (`npm run deploy` en `apps/data-bridge`): ahora acepta montos con centavos. Luego, aplicar la migración `0033` (`npm run db:remote`), que deja en 0 el costo de entrega de las ventas con entrega cancelada o quitada y registra el monto anterior en la auditoría. Por último, desplegar la web.
 
 - Cloudflare **Lightning CloudWave** (`b16b057db473a7ca309e70724394acb6`): D1 `claro-costos-db` creado; migraciones `0001` a `0018` aplicadas remotamente; `0019` (lotes al mes y notas de Cozte) debe aplicarse antes de desplegar esta versión. Wrangler capturó un backup al aplicar `0013_assistant_proposals.sql`.
 - Worker `cozte-d1-bridge` desplegado con `DATA_BRIDGE_SECRET`; la conexión firmada desde Vercel fue verificada. Su URL se utiliza solo desde el servidor de Vercel.

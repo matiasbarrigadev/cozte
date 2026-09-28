@@ -1,3 +1,5 @@
+import { moneyDecimals } from "./money";
+
 /**
  * Deterministic checks on Cozte's final answer against what really happened in the turn.
  * The model is free to decide how to work; it is not free to report actions that no tool confirmed.
@@ -235,7 +237,7 @@ function storedSummary(records: TurnToolRecord[]): string {
   const read = [...records].reverse().find((item) => item.name === "readCosts" && item.ok && Array.isArray((item.output as Record<string, unknown> | null)?.products));
   if (!read) return "";
   const overview = read.output as { currency?: string; products: { name: string; cost?: { unitCost?: number | null; status?: string } | null }[]; materials?: unknown[]; monthlyExpenses?: { name: string; monthlyAmount: number }[]; gaps?: string[] };
-  const money = (value: number) => `${overview.currency ?? ""} ${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 0 }).format(value)}`.trim();
+  const money = (value: number) => `${overview.currency ?? ""} ${new Intl.NumberFormat("es-AR", { maximumFractionDigits: moneyDecimals(overview.currency) }).format(value)}`.trim();
   const status = { complete: "completo", estimated: "estimado", incomplete: "incompleto" } as Record<string, string>;
   const products = overview.products.map((item) => item.cost?.unitCost != null ? `${item.name} (${money(item.cost.unitCost)} por unidad, ${status[item.cost.status ?? ""] ?? "sin estado"})` : `${item.name} (costo incompleto)`);
   const expenses = (overview.monthlyExpenses ?? []).map((item) => `${item.name} (${money(item.monthlyAmount)} al mes)`);

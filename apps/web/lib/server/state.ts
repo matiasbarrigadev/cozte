@@ -1,5 +1,6 @@
 import "server-only";
-import { calculateCosts, COST_AREAS, type CostArea, type DomainState, type Investment } from "@/lib/domain";
+import { calculateCosts, convertUnitPrice, COST_AREAS, type CostArea, type DomainState, type Investment } from "@/lib/domain";
+import { roundMoney } from "@/lib/money";
 import { convertNativeMilli, isCurrency, type Currency, type FxQuote } from "@/lib/currency";
 import { calculateProductionCosts, evaluableProfileProducts, productionProfileSchema } from "@/lib/production-profile";
 import { dbBatch, dbQuery } from "./db";
@@ -82,7 +83,9 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
   const base: Currency = isCurrency(organization.currency) ? organization.currency : "CLP";
   let fxQuotes: Partial<Record<Currency, FxQuote>> = {};
   try { fxQuotes = quotesFor(base, await officialFxTable()); } catch (error) { console.error("FX lookup failed", error); }
-  const normalize = (amountMilli: number, currency: Currency) => currency === base ? Math.round(amountMilli / 1000) : fxQuotes[currency] ? convertNativeMilli(amountMilli, fxQuotes[currency]) : null;
+  // Monthly amounts at the currency's money precision; unit prices keep their thousandths until a lot multiplies them.
+  const normalize = (amountMilli: number, currency: Currency) => currency === base ? roundMoney(amountMilli / 1000, base) : fxQuotes[currency] ? convertNativeMilli(amountMilli, fxQuotes[currency]) : null;
+  const unitPrice = (amountMilli: number, currency: Currency) => convertUnitPrice({ organization: { id: org, name: "", currency: base }, fxQuotes }, amountMilli, currency);
   return {
     revision: organization.revision,
     activePeriod: (expenses as ExpenseRow[]).map((row) => row.period).sort().at(-1) ?? new Date().toISOString().slice(0, 7),
@@ -96,7 +99,7 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
     })),
     materials: (materials as MaterialRow[]).map((row) => ({
       id: row.id, name: row.name, supplier: row.supplier, purchaseUnit: row.purchase_unit, category: row.category,
-      version: row.version, priceMinor: row.price_minor === null ? null : normalize(row.native_amount_milli ?? row.price_minor * 1000, isCurrency(row.currency ?? "") ? row.currency as Currency : base), source: row.source, effectiveDate: row.effective_date,
+      version: row.version, priceMinor: row.price_minor === null ? null : unitPrice(row.native_amount_milli ?? row.price_minor * 1000, isCurrency(row.currency ?? "") ? row.currency as Currency : base), source: row.source, effectiveDate: row.effective_date,
       currency: isCurrency(row.currency ?? "") ? row.currency as Currency : base, nativeAmountMilli: row.price_minor === null ? null : row.native_amount_milli ?? row.price_minor * 1000,
     })),
     products: (products as ProductRow[]).map((row) => ({

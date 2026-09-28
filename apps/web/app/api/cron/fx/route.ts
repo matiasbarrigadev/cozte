@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { calculateCosts } from "@/lib/domain";
+import { snapshotContext } from "@/lib/cost-snapshots";
 import { dbBatch, dbQuery, type SqlStatement } from "@/lib/server/db";
 import { officialFxTable } from "@/lib/server/fx";
 import { loadStateForOrganization } from "@/lib/server/state";
@@ -29,7 +30,7 @@ export async function GET(request: Request) {
       if (existing[0]?.fingerprint === fingerprint) continue;
       const statements: SqlStatement[] = [{ sql: "INSERT INTO fx_revaluation_runs (organization_id, fingerprint, source, as_of) VALUES (?, ?, ?, ?)", params: [organization.id, fingerprint, publication.source, publication.asOf] }];
       for (const cost of calculateCosts(state)) {
-        const context = { product: state.products.find((item) => item.id === cost.productId), materials: state.materials.filter((item) => state.components.some((component) => component.productId === cost.productId && component.materialId === item.id)), expenses: state.expenses.filter((item) => item.period === state.activePeriod), activePeriod: state.activePeriod, baseCurrency: state.organization.currency, fxQuotes: Object.fromEntries(foreignCodes.map((code) => [code, state.fxQuotes?.[code!]])), cause: "exchange-rate-update" };
+        const context = { ...snapshotContext(state, cost.productId), baseCurrency: state.organization.currency, fxQuotes: Object.fromEntries(foreignCodes.map((code) => [code, state.fxQuotes?.[code!]])), cause: "exchange-rate-update" };
         statements.push({ sql: "INSERT INTO cost_snapshots (id, organization_id, product_id, change_set_id, total_lot_minor, unit_minor, margin_percent, lines_json, warnings_json, context_json) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)", params: [crypto.randomUUID(), organization.id, cost.productId, cost.totalLotMinor, cost.unitMinor, cost.estimatedMarginPercent, JSON.stringify(cost.lines), JSON.stringify(cost.warnings), JSON.stringify(context)] });
       }
       try { await dbBatch(statements); snapshotted += state.products.length; }

@@ -40,7 +40,27 @@ describe("planilla editable", () => {
     const result = previewMutation(demoState, confirmed);
     expect(result.next.activePeriod).toBe("2026-10");
     expect(result.next.expenses.find((item) => item.id === "electricidad")?.period).toBe("2026-10");
-    expect(result.after.find((item) => item.productId === "dura")?.totalLotMinor).not.toBe(result.before.find((item) => item.productId === "dura")?.totalLotMinor);
+    // The rest of September's expenses continue into October: moving one does not make the others vanish.
+    const september = demoState.expenses.filter((item) => item.period === "2026-09" && item.id !== "electricidad");
+    const october = result.next.expenses.filter((item) => item.period === "2026-10" && item.carriedFrom);
+    expect(october.map((item) => [item.name, item.amountMinor])).toEqual(september.map((item) => [item.name, item.amountMinor]));
+    expect(result.after.find((item) => item.productId === "dura")?.totalLotMinor).toBe(result.before.find((item) => item.productId === "dura")?.totalLotMinor);
+  });
+
+  it("no inicia un período nuevo con un gasto sin que la persona lo confirme", () => {
+    const base = { ...common, action: "create-expense", name: "Seguro", amount: 5000, currency: "CLP", allocationBasis: "hours", source: "Póliza" };
+    expect(() => previewMutation(demoState, mutationSchema.parse({ ...base, period: "2026-10" }))).toThrow("Confirma que empieza el período 2026-10");
+    // In the active period nothing else stops counting, so no confirmation is needed.
+    expect(previewMutation(demoState, mutationSchema.parse({ ...base, period: demoState.activePeriod })).next.activePeriod).toBe(demoState.activePeriod);
+    const confirmed = previewMutation(demoState, mutationSchema.parse({ ...base, period: "2026-10", acknowledgeImpact: true }));
+    expect(confirmed.next.activePeriod).toBe("2026-10");
+    // September's expenses continue in October with their amounts, next to the new one; September stays as it was.
+    const october = confirmed.next.expenses.filter((item) => item.period === "2026-10");
+    expect(october.map((item) => item.name).sort()).toEqual([...demoState.expenses.filter((item) => item.period === "2026-09").map((item) => item.name), "Seguro"].sort());
+    expect(confirmed.next.expenses.filter((item) => item.period === "2026-09")).toHaveLength(demoState.expenses.filter((item) => item.period === "2026-09").length);
+    // A new expense named like one in force replaces it in the new period instead of doubling it.
+    const renewed = previewMutation(demoState, mutationSchema.parse({ ...base, name: "Electricidad", period: "2026-10", acknowledgeImpact: true }));
+    expect(renewed.next.expenses.filter((item) => item.period === "2026-10" && item.name === "Electricidad")).toHaveLength(1);
   });
 
   it("rechaza un período de gasto inválido", () => {

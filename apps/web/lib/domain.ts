@@ -1,4 +1,5 @@
 import { convertNativeMilli, type Currency, type FxQuote } from "./currency";
+import { moneyScale, roundMoney } from "./money";
 
 export type Product = {
   id: string;
@@ -51,6 +52,8 @@ export type SharedExpense = {
   currency?: Currency;
   nativeAmountMilli?: number;
   fxMissing?: boolean;
+  /** Set on an expense that continues into a new period: the expense it was copied from. */
+  carriedFrom?: string;
 };
 
 /** Something bought to last (a tool, a machine, a computer), spread over the months it is used. */
@@ -125,10 +128,22 @@ function productBatchesMilli(product: Product): { batchesMilli: number; assumed:
   return value != null && value > 0 ? { batchesMilli: value, assumed: false } : { batchesMilli: ASSUMED_BATCHES_MILLI, assumed: true };
 }
 
+/** An amount in thousandths of a currency, in the organization's currency at its money precision (cents or whole units). */
 export function convertToOrganizationCurrency(state: DomainState, nativeAmountMilli: number, currency: Currency): number | null {
-  if (currency === state.organization.currency) return Math.round(nativeAmountMilli / 1000);
+  if (currency === state.organization.currency) return roundMoney(nativeAmountMilli / 1000, currency);
   const quote = state.fxQuotes?.[currency];
   return quote ? convertNativeMilli(nativeAmountMilli, quote) : null;
+}
+
+/**
+ * A price per purchase unit in the organization's currency, kept to thousandths: a screw at CLP 12.5 or a label at
+ * USD 0.045 must not be rounded before it is multiplied by what a lot uses. Only the lot's total is rounded to money.
+ */
+export function convertUnitPrice(state: Pick<DomainState, "organization" | "fxQuotes">, nativeAmountMilli: number, currency: Currency): number | null {
+  if (currency === state.organization.currency) return nativeAmountMilli / 1000;
+  const quote = state.fxQuotes?.[currency];
+  if (!quote) return null;
+  return Number((BigInt(nativeAmountMilli) * BigInt(quote.ratePpm) + 500_000n) / 1_000_000n) / 1000;
 }
 
 /** Monthly expenses of the workshop for the active period. */
@@ -136,21 +151,50 @@ export function productionExpenses(state: Pick<DomainState, "expenses" | "active
   return state.expenses.filter((item) => item.period === state.activePeriod && (item.area ?? "production") === "production");
 }
 
+/**
+ * The costing period in force in a month: the latest one that started on or before it (the active one for months
+ * after it). Before the first period the business had not recorded its monthly expenses yet: null.
+ */
+export function periodInForce(state: Pick<DomainState, "expenses" | "activePeriod">, month: string): string | null {
+  const started = [...new Set(state.expenses.map((item) => item.period))].filter((period) => period <= month).sort();
+  return started.at(-1) ?? null;
+}
+
+/**
+ * The monthly expenses in force in a month, for its result and structure. A month before the first period only
+ * carries the first period's expenses when it has activity of its own (sales or purchases), so a month recorded
+ * afterwards does not show a profit without fixed costs, and an empty month before the business started shows none.
+ */
+export function expensesInForce(state: Pick<DomainState, "expenses" | "activePeriod">, month: string, hasActivity = true): { period: string | null; expenses: SharedExpense[] } {
+  const first = state.expenses.map((item) => item.period).sort()[0] ?? null;
+  const period = periodInForce(state, month) ?? (hasActivity ? first : null);
+  return { period, expenses: period ? state.expenses.filter((item) => item.period === period) : [] };
+}
+
 const monthNumber = (month: string) => Number(month.slice(0, 4)) * 12 + Number(month.slice(5, 7)) - 1;
 
-/** An investment's share of a month (whole units): its price over its useful life, while it lasts. */
-export function investmentMonthlyShare(item: Pick<Investment, "amountMinor" | "purchasedOn" | "usefulLifeMonths">, month: string): number {
+/**
+ * An investment's share of a month, at its currency's money precision: straight-line over its useful life while it
+ * lasts. Each month takes the rounded cumulative amount minus the previous one, so the shares of its whole life add up
+ * to exactly its price.
+ */
+export function investmentMonthlyShare(item: Pick<Investment, "amountMinor" | "purchasedOn" | "usefulLifeMonths">, month: string, currency?: string | null): number {
+  const life = item.usefulLifeMonths;
   const elapsed = monthNumber(month) - monthNumber(item.purchasedOn.slice(0, 7));
-  return item.usefulLifeMonths > 0 && elapsed >= 0 && elapsed < item.usefulLifeMonths ? Math.round(item.amountMinor / item.usefulLifeMonths) : 0;
+  if (!(life > 0) || elapsed < 0 || elapsed >= life) return 0;
+  const scale = moneyScale(currency);
+  const units = Math.round(item.amountMinor * scale);
+  const through = (months: number) => Math.round(units * months / life);
+  return (through(elapsed + 1) - through(elapsed)) / scale;
 }
 
 /**
  * Everything spread into each unit's cost: the workshop's monthly expenses plus the workshop investments the person
  * chose to include, as their monthly share. Investment sources carry an "investment:" id.
  */
-export function productionCostSources(state: Pick<DomainState, "expenses" | "activePeriod" | "investments">): SharedExpense[] {
+export function productionCostSources(state: Pick<DomainState, "expenses" | "activePeriod" | "investments"> & { organization?: { currency: string } }): SharedExpense[] {
   const investments = (state.investments ?? []).filter((item) => item.area === "production" && item.includeInUnitCost).flatMap((item): SharedExpense[] => {
-    const amountMinor = investmentMonthlyShare(item, state.activePeriod);
+    const amountMinor = investmentMonthlyShare(item, state.activePeriod, state.organization?.currency);
     return amountMinor > 0 ? [{ id: `investment:${item.id}`, name: `${item.name} (inversión)`, period: state.activePeriod, area: "production", amountMinor, allocationBasis: item.allocationBasis, category: "Inversiones", version: 1 }] : [];
   });
   return [...productionExpenses(state), ...investments];
@@ -204,6 +248,10 @@ export function allocateMinor(
  * percentages) and then spread over that product's lots, so a lot only carries
  * its own share of the month. A product without monthly volume is costed as if
  * it made one lot per month and the estimate says so in `assumptions`.
+ *
+ * Money is computed as integers of the currency's smallest unit (cents, or whole
+ * units for currencies without them) so allocations add up exactly; material
+ * prices enter with their thousandths and only each lot line is rounded.
  */
 export function calculateCosts(
   state: DomainState,
@@ -211,6 +259,10 @@ export function calculateCosts(
   proposedExpenses: Record<string, number> = {},
 ): ProductCost[] {
   if (state.products.length === 0) return [];
+  const currency = state.organization.currency;
+  const scale = moneyScale(currency);
+  const units = (amount: number) => Math.round(amount * scale);
+  const money = (amountUnits: number) => amountUnits / scale;
   const materials = new Map(state.materials.map((item) => [item.id, item]));
   const components = new Map<string, Component[]>();
   for (const item of state.components) {
@@ -227,7 +279,7 @@ export function calculateCosts(
   const missingExpenseFx = periodExpenses.some((expense) => expense.fxMissing);
   let sharedExpensesActive = false;
   for (const expense of periodExpenses) {
-    const amount = proposedExpenses[expense.id] ?? expense.amountMinor;
+    const amount = units(proposedExpenses[expense.id] ?? expense.amountMinor);
     if (amount === 0) continue;
     sharedExpensesActive = true;
     const activities = state.products.map((product) => {
@@ -245,12 +297,12 @@ export function calculateCosts(
     const split = allocateMinor(amount, activities);
     for (const product of state.products) {
       monthlyShared[product.id] += split[product.id];
-      if (split[product.id]) sharedByExpense[product.id][expense.id] = split[product.id];
+      if (split[product.id]) sharedByExpense[product.id][expense.id] = money(split[product.id]);
     }
   }
 
   return state.products.map((product) => {
-    const lines: CostLine[] = [];
+    const lines: (CostLine & { units: number })[] = [];
     const warnings: string[] = unallocatedExpenses.map((name) => `Falta la base para repartir ${name}: horas por lote, unidades por lote o porcentajes que sumen 100 %`);
     const assumptions: string[] = [];
     if (missingExpenseFx) warnings.push("Falta cotización vigente para un gasto compartido");
@@ -265,60 +317,58 @@ export function calculateCosts(
         warnings.push("Falta el precio de " + material.name);
         continue;
       }
-      lines.push({
-        kind: "material",
-        label: material.name,
-        materialId: material.id,
-        quantityMilli: component.quantityMilli,
-        amountMinor: roundRatio(BigInt(price) * BigInt(component.quantityMilli), 1000n),
-      });
+      // Price per purchase unit in thousandths × quantity per lot in thousandths, rounded once to money.
+      const lineUnits = roundRatio(BigInt(Math.round(price * 1000)) * BigInt(component.quantityMilli) * BigInt(scale), 1_000_000n);
+      lines.push({ kind: "material", label: material.name, materialId: material.id, quantityMilli: component.quantityMilli, amountMinor: money(lineUnits), units: lineUnits });
     }
     const { batchesMilli, assumed } = volume.get(product.id)!;
     if (assumed && sharedExpensesActive) assumptions.push(`Supone 1 lote al mes de ${product.name}; con los lotes reales por mes el reparto de gastos compartidos será más preciso`);
     if (!(components.get(product.id)?.length)) assumptions.push(`${product.name} aún no tiene insumos registrados en su receta`);
-    const sharedLotMinor = roundRatio(BigInt(monthlyShared[product.id] ?? 0) * 1000n, BigInt(batchesMilli));
-    lines.push({ kind: "labor", label: "Trabajo directo", amountMinor: product.laborLotMinor });
-    lines.push({ kind: "shared_expense", label: "Gastos compartidos asignados", amountMinor: sharedLotMinor });
+    const sharedLotUnits = roundRatio(BigInt(monthlyShared[product.id] ?? 0) * 1000n, BigInt(batchesMilli));
+    const laborLotUnits = units(product.laborLotMinor);
+    lines.push({ kind: "labor", label: "Trabajo directo", amountMinor: money(laborLotUnits), units: laborLotUnits });
+    lines.push({ kind: "shared_expense", label: "Gastos compartidos asignados", amountMinor: money(sharedLotUnits), units: sharedLotUnits });
     if (product.lotUnits <= 0) warnings.push("El lote no tiene unidades vendibles");
     const lotUnits = Math.max(product.lotUnits, 1);
-    const materialLotMinor = lines.filter((line) => line.kind === "material").reduce((sum, line) => sum + line.amountMinor, 0);
-    const knownLotMinor = lines.reduce((sum, line) => sum + line.amountMinor, 0);
+    const materialLotUnits = lines.filter((line) => line.kind === "material").reduce((sum, line) => sum + line.units, 0);
+    const knownLotUnits = lines.reduce((sum, line) => sum + line.units, 0);
+    const costLines: CostLine[] = lines.map(({ units: _units, ...line }) => { void _units; return line; });
     // A zero production cost is never a real answer: it only means nothing is linked to the product yet.
-    if (knownLotMinor === 0 && !warnings.length) warnings.push(`Aún no hay insumos, trabajo ni gastos asociados a ${product.name}`);
+    if (knownLotUnits === 0 && !warnings.length) warnings.push(`Aún no hay insumos, trabajo ni gastos asociados a ${product.name}`);
     const monthly = {
       batchesMilli,
       units: roundRatio(BigInt(lotUnits) * BigInt(batchesMilli), 1000n),
-      sharedMinor: monthlyShared[product.id] ?? 0,
+      sharedMinor: money(monthlyShared[product.id] ?? 0),
       assumedBatches: assumed,
       sharedByExpense: sharedByExpense[product.id] ?? {},
     };
-    const partialUnitMinor = roundRatio(BigInt(knownLotMinor), BigInt(lotUnits));
+    const partialUnitMinor = money(roundRatio(BigInt(knownLotUnits), BigInt(lotUnits)));
     if (warnings.length) {
       return {
         productId: product.id, totalLotMinor: null, unitMinor: null, estimatedMarginPercent: null,
-        lines, warnings, assumptions, quality: "incomplete", partialUnitMinor, perUnit: null, monthly, economics: null,
+        lines: costLines, warnings, assumptions, quality: "incomplete", partialUnitMinor, perUnit: null, monthly, economics: null,
       };
     }
-    const totalLotMinor = knownLotMinor;
-    const unitMinor = roundRatio(BigInt(totalLotMinor), BigInt(lotUnits));
+    const totalLotMinor = money(knownLotUnits);
+    const unitMinor = money(roundRatio(BigInt(knownLotUnits), BigInt(lotUnits)));
     const perUnit = {
-      materialMinor: roundRatio(BigInt(materialLotMinor), BigInt(lotUnits)),
-      laborMinor: roundRatio(BigInt(product.laborLotMinor), BigInt(lotUnits)),
-      sharedMinor: roundRatio(BigInt(sharedLotMinor), BigInt(lotUnits)),
+      materialMinor: money(roundRatio(BigInt(materialLotUnits), BigInt(lotUnits))),
+      laborMinor: money(roundRatio(BigInt(laborLotUnits), BigInt(lotUnits))),
+      sharedMinor: money(roundRatio(BigInt(sharedLotUnits), BigInt(lotUnits))),
     };
     const estimatedMarginPercent = product.salePriceMinor > 0
       ? Math.round(((product.salePriceMinor - product.salesVariableMinor - unitMinor) / product.salePriceMinor) * 1000) / 10
       : null;
     // Contribution treats lot-driven costs as variable and the shared month as fixed.
-    const variableUnitMinor = perUnit.materialMinor + perUnit.laborMinor + product.salesVariableMinor;
-    const contributionUnitMinor = product.salePriceMinor - variableUnitMinor;
+    const variableUnitMinor = roundMoney(perUnit.materialMinor + perUnit.laborMinor + product.salesVariableMinor, currency);
+    const contributionUnitMinor = roundMoney(product.salePriceMinor - variableUnitMinor, currency);
     const economics = product.salePriceMinor > 0 ? {
       variableUnitMinor,
       contributionUnitMinor,
-      breakEvenUnitsPerMonth: contributionUnitMinor > 0 ? Math.ceil(monthly.sharedMinor / contributionUnitMinor) : null,
+      breakEvenUnitsPerMonth: contributionUnitMinor > 0 ? Math.ceil(monthly.sharedMinor / contributionUnitMinor - 1e-9) : null,
     } : null;
     return {
-      productId: product.id, totalLotMinor, unitMinor, estimatedMarginPercent, lines, warnings, assumptions,
+      productId: product.id, totalLotMinor, unitMinor, estimatedMarginPercent, lines: costLines, warnings, assumptions,
       quality: assumptions.length ? "estimated" : "complete", partialUnitMinor, perUnit, monthly, economics,
     };
   });

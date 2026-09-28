@@ -153,7 +153,7 @@ export function ZoneDialog({ zone, draft, zones, places, carriers, demo, onClose
       </Field>
       {mode !== "pickup" ? <div className="grid gap-3 sm:grid-cols-2">
         <Field><FieldLabel htmlFor="zone-carrier">{mode === "own" ? "Quién reparte" : "Empresa o repartidor"}</FieldLabel><SuggestInput id="zone-carrier" value={carrier} maxLength={120} placeholder={mode === "own" ? "Ej. Moto propia (Tomás)" : "Ej. Starken, Andreani"} suggestions={carriers.map((value) => ({ value }))} onValueChange={setCarrier} /></Field>
-        <Field><FieldLabel htmlFor="zone-cost">Costo por pedido</FieldLabel><Input id="zone-cost" name="cost" type="number" min="0" step="1" inputMode="numeric" defaultValue={start.costPerOrderMinor || ""} placeholder="0" /><FieldDescription>Lo que te cuesta cada entrega. En 0 se usa el del canal.</FieldDescription></Field>
+        <Field><FieldLabel htmlFor="zone-cost">Costo por pedido</FieldLabel><Input id="zone-cost" name="cost" type="number" min="0" step="any" inputMode="decimal" defaultValue={start.costPerOrderMinor || ""} placeholder="0" /><FieldDescription>Lo que te cuesta cada entrega. En 0 se usa el del canal.</FieldDescription></Field>
       </div> : null}
       <Field><FieldLabel htmlFor="zone-areas">Lugares que cubre</FieldLabel>
         <Textarea id="zone-areas" rows={2} value={areas} onChange={(event) => setAreas(event.target.value)} placeholder="Barrios, localidades o ciudades, separados por coma" />

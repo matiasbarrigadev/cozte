@@ -73,6 +73,19 @@ export async function officialFxTable(): Promise<FxTable> {
   }
 }
 
+/**
+ * The rates published closest to a day (within a week either side), for an amount dated then; null when none was kept
+ * that close (the day is before the app kept rates, or too far from any).
+ */
+export async function fxTableNear(date: string): Promise<FxTable | null> {
+  const rows = await dbQuery<{ as_of: string; rates_json: string; source: FxQuote["source"] }>(
+    "SELECT as_of, rates_json, source FROM fx_publications WHERE abs(julianday(substr(hour_slot, 1, 10)) - julianday(?)) <= 7 ORDER BY abs(julianday(substr(hour_slot, 1, 10)) - julianday(?)), hour_slot DESC LIMIT 1",
+    [date, date],
+  );
+  if (!rows.length) return null;
+  try { return { asOf: rows[0].as_of, rates: JSON.parse(rows[0].rates_json), source: rows[0].source }; } catch { return null; }
+}
+
 export function quotesFor(base: Currency, table: FxTable): Record<string, FxQuote> {
   return Object.fromEntries(supportedCurrencies.flatMap((currency) => {
     const quote = makeQuote(currency, base, table.rates, table.asOf, table.source);

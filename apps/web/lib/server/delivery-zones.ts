@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { customerKey } from "@/lib/customers";
+import { roundMoney } from "@/lib/money";
 import { ZONE_MODES, ZONE_MODE_LABELS, matchZone, parseAreas, parseWeekdays, weekdaysFromNames, zoneDeliveryFields, type DeliveryZone, type ZoneMode } from "@/lib/delivery-zones";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement } from "./db";
@@ -88,7 +89,7 @@ export async function saveZone(principal: Principal, input: ZoneInput, source: "
   const weekdays = weekdaysFromNames(value.weekdays);
   const zone: DeliveryZone = {
     id: value.id ?? crypto.randomUUID(), name: value.name, mode: value.mode, carrier: value.mode === "pickup" ? "" : value.carrier, areas,
-    costPerOrderMinor: value.mode === "pickup" ? 0 : Math.round(value.costPerOrder), weekdays, leadDays: value.leadDays, isFallback: value.mode !== "pickup" && value.isFallback, notes: value.notes,
+    costPerOrderMinor: value.mode === "pickup" ? 0 : roundMoney(value.costPerOrder, (await dbQuery<{ currency: string }>("SELECT currency FROM organizations WHERE id=?", [org]))[0]?.currency), weekdays, leadDays: value.leadDays, isFallback: value.mode !== "pickup" && value.isFallback, notes: value.notes,
   };
   // A carrier zone points to its logistics supplier, found or created by name.
   const supplierId = zone.mode === "carrier" ? await resolveSupplier(principal, zone.carrier, "logistics", source) : null;

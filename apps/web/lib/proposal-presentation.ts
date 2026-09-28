@@ -1,3 +1,4 @@
+import { formatMoney } from "./money";
 import type { Currency } from "./currency";
 import type { DomainState, ProductCost } from "./domain";
 import type { ProductionProfile, ProfileCost } from "./production-profile";
@@ -71,7 +72,7 @@ function mutationTitle(input: Record<string, unknown>, supplied?: string): strin
 }
 
 function money(value: number | null, currency: Currency): string {
-  return value === null ? "sin base suficiente" : new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: currency === "CLP" || currency === "ARS" ? 0 : 2 }).format(value);
+  return value === null ? "sin base suficiente" : formatMoney(value, currency);
 }
 
 function mutationLines(state: DomainState, input: Record<string, unknown>): string[] {

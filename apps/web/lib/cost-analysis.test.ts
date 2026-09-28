@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { analyzeCosts, groupComponents, periodKey, periodRange } from "./cost-analysis";
 import { calculateCosts, type DomainState } from "./domain";
-import { snapshotRowsFor } from "./cost-snapshots";
+import { costsAsOf, snapshotRowsFor } from "./cost-snapshots";
 
 const base: DomainState = {
   revision: 1, activePeriod: "2026-09", organization: { id: "o", name: "Tofu", currency: "ARS" },
@@ -74,8 +74,52 @@ describe("cost analysis", () => {
     expect(Object.keys(groupComponents(point, analysis.components, "category")).sort()).toEqual(["Empaque", "Materia prima", "Servicios", "Sueldos"]);
   });
 
+  it("splits the shared line per source, investments included, the same way in every snapshot", () => {
+    const withOven: DomainState = { ...structuredClone(base), expenses: [...base.expenses, { id: "contador", name: "Contador", period: "2026-09", area: "admin", amountMinor: 90_000, allocationBasis: "units", category: "Servicios", version: 1 }], investments: [{ id: "horno", name: "Horno", amountMinor: 2_400_000, purchasedOn: "2026-09-01", usefulLifeMonths: 48, area: "production", includeInUnitCost: true, allocationBasis: "hours" }] };
+    const context = JSON.parse(snapshotRowsFor(withOven, "2026-09-03 10:00:00")[0].context_json) as { expenses: { id: string }[]; allocationPeers: unknown[] };
+    // Only what goes into unit costs, with the peers needed to split it again.
+    expect(context.expenses.map((item) => item.id)).toEqual(["mo", "luz", "investment:horno"]);
+    expect(context.allocationPeers).toHaveLength(2);
+    const point = analyzeCosts(snapshotRowsFor(withOven, "2026-09-03 10:00:00"), { granularity: "month", currency: "ARS" }).products[0].points[0];
+    expect(Object.keys(point.components)).toEqual(expect.arrayContaining(["e:mo", "e:luz", "e:investment:horno"]));
+    expect(point.components["e:shared"]).toBeUndefined();
+  });
+
+  it("splits an older snapshot saved without allocation peers like its neighbours", () => {
+    const legacy = snapshots(soyUp, "2026-09-25 10:00:00").map((row) => {
+      const { allocationPeers: _peers, ...context } = JSON.parse(row.context_json) as Record<string, unknown>;
+      void _peers;
+      return { ...row, context_json: JSON.stringify(context) };
+    });
+    const analysis = analyzeCosts([...rows, ...legacy], { granularity: "week", currency: "ARS" });
+    const last = analysis.products[0].points.at(-1)!;
+    expect(last.components["e:shared"]).toBeUndefined();
+    expect(Object.keys(last.components)).toEqual(expect.arrayContaining(["e:mo", "e:luz"]));
+    // No made-up driver between the generic shared line and each expense.
+    expect(analysis.products[0].change?.drivers.some((driver) => driver.key === "e:shared")).toBe(false);
+  });
+
   it("explains an empty history instead of drawing nothing", () => {
     expect(analyzeCosts([], { granularity: "month", currency: "ARS" }).insights[0].title).toBe("Todavía no hay historial");
+  });
+});
+
+describe("the cost a sale of a past day carries", () => {
+  it("is each product's latest complete cost on that day, and today's when there was none", () => {
+    const today = calculateCosts(soyUp);
+    const before = calculateCosts(base);
+    const onTheTenth = costsAsOf(today, rows, "2026-09-10", "ARS");
+    for (const cost of onTheTenth) {
+      const then = before.find((item) => item.productId === cost.productId)!;
+      expect(cost.unitMinor).toBe(then.unitMinor);
+      expect(cost.perUnit!.materialMinor + cost.perUnit!.laborMinor).toBeCloseTo(then.perUnit!.materialMinor + then.perUnit!.laborMinor, 0);
+    }
+    expect(costsAsOf(today, rows, "2026-09-25", "ARS").map((cost) => cost.unitMinor)).toEqual(today.map((cost) => cost.unitMinor));
+    // Before the first snapshot there is nothing to go back to: today's cost is the estimate.
+    expect(costsAsOf(today, rows, "2026-08-01", "ARS").map((cost) => cost.unitMinor)).toEqual(today.map((cost) => cost.unitMinor));
+    // An incomplete snapshot is skipped in favour of the last complete one.
+    const broken = snapshots({ ...structuredClone(base), materials: base.materials.map((item) => ({ ...item, priceMinor: null })) }, "2026-09-05 10:00:00");
+    expect(costsAsOf(today, [...rows, ...broken], "2026-09-10", "ARS").map((cost) => cost.unitMinor)).toEqual(before.map((cost) => cost.unitMinor));
   });
 });
 

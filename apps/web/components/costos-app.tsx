@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { formatMoney as moneyText } from "@/lib/money";
 import Link from "next/link";
 import { OrganizationSwitcher, UserButton, useOrganization } from "@clerk/nextjs";
 import { toast } from "sonner";
@@ -63,9 +64,9 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   { label: "Evolución", items: [{ id: "analisis", label: "Análisis", icon: "chart" }, { id: "presentaciones", label: "Presentaciones", icon: "presentation" }, { id: "historial", label: "Historial", icon: "history" }] },
 ];
 
-const formatMoney = (value: number | null, currency: string) => value === null ? "Sin calcular" : new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: currency === "CLP" ? 0 : 3 }).format(value);
-/** Whole amounts for reading, not for editing: lessons, totals and tooltips. */
-const plainMoney = (value: number, currency: string) => new Intl.NumberFormat("es-CL", { style: "currency", currency, maximumFractionDigits: Math.abs(value) < 100 && currency !== "CLP" ? 2 : 0 }).format(value);
+const formatMoney = (value: number | null, currency: string) => value === null ? "Sin calcular" : moneyText(value, currency);
+/** Amounts for reading, not for editing (lessons, totals and tooltips), at the currency's precision. */
+const plainMoney = (value: number, currency: string) => moneyText(value, currency);
 const formatPercent = (value: number | null) => value === null ? "—" : `${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 1 }).format(value)}%`;
 const emptyDraft = (): Draft => ({ materials: {}, expenses: {}, materialCurrencies: {}, expenseCurrencies: {}, source: "", effectiveDate: new Date().toLocaleDateString("en-CA") });
 
@@ -179,6 +180,16 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
     } finally { setBusy(false); }
   }
 
+  /** A new expense in a later period starts a new month of costing: the person confirms it first. */
+  async function saveEntity(action: Record<string, unknown>) {
+    const period = typeof action.period === "string" ? action.period : "";
+    if (action.action === "create-expense" && period > state.activePeriod && state.expenses.some((item) => item.period === state.activePeriod)) {
+      setPendingMeta({ action, affected: state.products.map((item) => item.name), description: `El gasto empieza el período ${period}. Los gastos de ${state.activePeriod} siguen en ${period} con sus montos actuales (luego puedes ajustarlos) y ${state.activePeriod} queda en el historial tal como está. Si es un gasto de este mes, elige ${state.activePeriod}.` });
+      return true;
+    }
+    return save(action);
+  }
+
   async function reviewChanges() {
     if (!changeCount || !clientPreview) return;
     if (!demo) {
@@ -203,7 +214,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
 
   function editMetadata(action: { action: "update-material-meta" | "update-expense-meta"; id: string; field: string; value: string }) {
     if (action.field === "period") {
-      setPendingMeta({ action, affected: state.products.map((item) => item.name), description: `Cambiar el período a ${action.value} puede cambiar el mes activo y qué gastos entran en el costo de cada producto.` });
+      setPendingMeta({ action, affected: state.products.map((item) => item.name), description: action.value > state.activePeriod ? `Llevar este gasto a ${action.value} empieza ese período: los demás gastos de ${state.activePeriod} siguen en ${action.value} con sus montos actuales.` : `Cambiar el período a ${action.value} puede cambiar el mes activo y qué gastos entran en el costo de cada producto.` });
       return;
     }
     if (action.field === "purchaseUnit") {
@@ -378,7 +389,7 @@ export function CostosApp({ initial, demo = false, initialSection }: { initial: 
               <Card><CardHeader><CardTitle>Fuente y fecha</CardTitle><CardDescription>Estos datos quedarán en el historial de la actualización.</CardDescription></CardHeader><CardContent className="grid gap-3 md:grid-cols-2"><label className="flex flex-col gap-1 text-sm">Fuente<Input value={draft.source} onChange={(event) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, source: event.target.value })); }} placeholder="Factura, cotización o verificación manual" /></label><label className="flex flex-col gap-1 text-sm">Fecha efectiva<DatePicker value={draft.effectiveDate} aria-label="Fecha efectiva" onChange={(value) => { setDraftStatus("saving"); setDraft((current) => ({ ...current, effectiveDate: value })); }} /></label></CardContent><CardFooter className="flex gap-2"><Button variant="outline" onClick={() => setReviewOpen(false)}>Seguir editando</Button><Button disabled={busy || demo} onClick={confirmChanges}>Confirmar cambios</Button></CardFooter></Card>
         </div> : <p className="text-sm text-muted-foreground">No hay cambios en borrador.</p>}
       </DialogContent></Dialog>
-      <EntityDialog kind={dialog} product={dialog === "edit-product" ? product : undefined} products={state.products} categories={state.categories ?? [...new Set([...state.materials.map((item) => item.category), ...state.expenses.map((item) => item.category)])].map((name) => ({ id: name, name }))} onClose={() => setDialog(null)} onSave={save} currency={currency} busy={busy} demo={demo} />
+      <EntityDialog kind={dialog} product={dialog === "edit-product" ? product : undefined} products={state.products} categories={state.categories ?? [...new Set([...state.materials.map((item) => item.category), ...state.expenses.map((item) => item.category)])].map((name) => ({ id: name, name }))} activePeriod={state.activePeriod} onClose={() => setDialog(null)} onSave={saveEntity} currency={currency} busy={busy} demo={demo} />
       <Dialog open={pendingMeta !== null} onOpenChange={(open) => { if (!open) setPendingMeta(null); }}><DialogContent><DialogHeader><DialogTitle>Este cambio afecta otros productos</DialogTitle><DialogDescription>{pendingMeta?.description}</DialogDescription></DialogHeader><div className="flex flex-wrap gap-2">{pendingMeta?.affected.map((name) => <Badge key={name} variant="secondary">{name}</Badge>)}</div><DialogFooter><Button variant="outline" onClick={() => setPendingMeta(null)}>Cancelar</Button><Button disabled={busy} onClick={async () => { if (pendingMeta && await save({ ...pendingMeta.action, acknowledgeImpact: true }, true)) setPendingMeta(null); }}>Aplicar cambio</Button></DialogFooter></DialogContent></Dialog>
     </SidebarProvider>
   );

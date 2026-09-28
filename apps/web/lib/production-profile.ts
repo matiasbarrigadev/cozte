@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { convertNativeMilli, supportedCurrencies, toNativeMilli, type Currency, type FxQuote } from "./currency";
 import { isoDateToolInputSchema } from "./iso-date";
+import { roundMoney } from "./money";
 
 const name = z.string().trim().min(1).max(100);
 const categoryName = z.string().trim().min(2).max(40);
@@ -56,14 +57,14 @@ export const emptyProductionProfile: ProductionProfile = {
 };
 
 export function monthlyEquivalent(amountMinor: number, frequency: "monthly" | "quarterly" | "annual"): number {
-  if (!Number.isSafeInteger(amountMinor) || amountMinor < 0) throw new Error("Importe inválido");
+  if (!Number.isFinite(amountMinor) || amountMinor < 0) throw new Error("Importe inválido");
   return frequency === "annual" ? amountMinor / 12 : frequency === "quarterly" ? amountMinor / 3 : amountMinor;
 }
 
 function profileMoney(original: number | null, currency: Currency | undefined, base: Currency, quotes: Partial<Record<Currency, FxQuote>>): number | null {
   if (original === null) return null;
   const code = currency ?? base;
-  if (code === base) return Math.round(original);
+  if (code === base) return roundMoney(original, base);
   const quote = quotes[code];
   return quote?.to === base ? convertNativeMilli(toNativeMilli(original), quote) : null;
 }

@@ -1,3 +1,5 @@
+import { moneyScale } from "./money";
+
 export const supportedCurrencies = ["CLP", "ARS", "USD", "EUR", "BRL", "MXN", "COP", "PEN", "UYU", "PYG", "BOB", "CRC", "DOP", "GTQ", "HNL", "NIO", "PAB", "BZD"] as const;
 export type Currency = (typeof supportedCurrencies)[number];
 
@@ -19,12 +21,14 @@ export function toNativeMilli(amount: number): number {
   return Math.round(amount * 1000);
 }
 
+/** An amount in thousandths of another currency, in the quote's target currency at its money precision (cents or whole units). */
 export function convertNativeMilli(nativeMilli: number, quote: FxQuote): number {
   if (!Number.isSafeInteger(nativeMilli) || nativeMilli < 0 || !Number.isSafeInteger(quote.ratePpm) || quote.ratePpm <= 0) throw new Error("Conversión inválida");
-  const converted = (BigInt(nativeMilli) * BigInt(quote.ratePpm) + 500_000_000n) / 1_000_000_000n;
+  const scale = moneyScale(quote.to);
+  const converted = (BigInt(nativeMilli) * BigInt(quote.ratePpm) * BigInt(scale) + 500_000_000n) / 1_000_000_000n;
   const value = Number(converted);
   if (!Number.isSafeInteger(value)) throw new Error("Importe convertido fuera de rango");
-  return value;
+  return value / scale;
 }
 
 export function makeQuote(from: Currency, to: Currency, rates: Record<string, number>, asOf: string, source: FxQuote["source"] = "BCRA"): FxQuote | null {

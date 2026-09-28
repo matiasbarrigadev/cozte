@@ -73,7 +73,8 @@ function validStatements(input: unknown): input is { statements: Statement[] } {
     return Array.isArray(params) && params.length <= 100 && params.every((param) =>
       param === null ||
       (typeof param === "string" && param.length <= 100000) ||
-      (typeof param === "number" && Number.isSafeInteger(param)),
+      // Integers, or amounts with cents in currencies that use them; never NaN, Infinity or beyond exact integers.
+      (typeof param === "number" && Number.isFinite(param) && Math.abs(param) <= Number.MAX_SAFE_INTEGER),
     );
   });
 }
