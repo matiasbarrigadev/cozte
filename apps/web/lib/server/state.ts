@@ -54,13 +54,19 @@ async function clerkOrganizationName(organizationId: string): Promise<string | n
   }
 }
 
+/** The name just set from Cozte, so this instance does not bring back the older one it remembered. */
+export function rememberOrganizationName(organizationId: string, name: string): void {
+  clerkNames.set(organizationId, { name, at: Date.now() });
+}
+
 export async function ensureOrganization(principal: Principal): Promise<void> {
   // A superadmin opens an organization that already exists and never becomes one of its members.
   if (principal.adminView) return;
   const name = await clerkOrganizationName(principal.organizationId);
   await dbBatch([
     { sql: "INSERT OR IGNORE INTO organizations (id) VALUES (?)", params: [principal.organizationId] },
-    ...(name ? [{ sql: "UPDATE organizations SET name=? WHERE id=? AND name<>?", params: [name, principal.organizationId, name] }] : []),
+    // Another instance may still remember the account's older name for a few minutes after a rename in Cozte.
+    ...(name ? [{ sql: "UPDATE organizations SET name=? WHERE id=? AND name<>? AND (name_set_at IS NULL OR name_set_at < datetime('now', '-15 minutes'))", params: [name, principal.organizationId, name] }] : []),
     { sql: "INSERT INTO memberships (organization_id, user_id, role) VALUES (?, ?, ?) ON CONFLICT (organization_id, user_id) DO UPDATE SET role=excluded.role", params: [principal.organizationId, principal.userId, principal.role] },
     { sql: "INSERT OR IGNORE INTO cost_categories (id, organization_id, name) SELECT ?, ?, 'Materia prima' WHERE NOT EXISTS (SELECT 1 FROM cost_categories WHERE organization_id=?) UNION ALL SELECT ?, ?, 'Gastos generales' WHERE NOT EXISTS (SELECT 1 FROM cost_categories WHERE organization_id=?)", params: [crypto.randomUUID(), principal.organizationId, principal.organizationId, crypto.randomUUID(), principal.organizationId, principal.organizationId] },
   ], { retrySafe: true }); // Idempotent upserts.

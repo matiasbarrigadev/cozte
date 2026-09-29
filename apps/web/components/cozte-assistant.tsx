@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { firstName } from "@/lib/onboarding";
 import { ChatContainerContent, ChatContainerRoot, ChatContainerScrollAnchor } from "@/components/ui/chat-container";
 import { PromptInput, PromptInputActions, PromptInputTextarea } from "@/components/ui/prompt-input";
 import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
@@ -52,7 +53,7 @@ const suggestions = [
   "¿Cómo vengo este mes?",
 ];
 
-export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPromptSent, onOpenPresentation }: { demo: boolean; state: DomainState & { costs: ProductCost[] }; onDataChanged: () => Promise<void>; onOpenCosts?: () => void; pendingPrompt?: string | null; onPromptSent?: () => void; onOpenPresentation?: (id: string) => void }) {
+export function CozteAssistant({ demo, state, personName = "", onDataChanged, pendingPrompt, onPromptSent, onOpenPresentation }: { demo: boolean; state: DomainState & { costs: ProductCost[] }; personName?: string; onDataChanged: () => Promise<void>; onOpenCosts?: () => void; pendingPrompt?: string | null; onPromptSent?: () => void; onOpenPresentation?: (id: string) => void }) {
   const [input, setInput] = React.useState("");
   const [attachments, setAttachments] = React.useState<File[]>([]);
   const [preparing, setPreparing] = React.useState(false);
@@ -74,6 +75,8 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
   const [busyProposalId, setBusyProposalId] = React.useState<string | null>(null);
   const busyProposalIds = React.useRef(new Set<string>());
   const [loading, setLoading] = React.useState(!demo);
+  const greetingName = firstName(personName);
+  const companyName = state.organization.name && state.organization.name !== "Mi empresa" ? state.organization.name : "";
   // The chat loads its latest page; older ones come in as the person scrolls up.
   const [hasOlder, setHasOlder] = React.useState(false);
   const [loadingOlder, setLoadingOlder] = React.useState(false);
@@ -483,7 +486,7 @@ export function CozteAssistant({ demo, state, onDataChanged, pendingPrompt, onPr
         <section id="cozte-chat-panel" role="tabpanel" aria-labelledby="cozte-chat-tab" aria-label="Chat con Cozte" className={cn("min-w-0", mobilePanel === "chat" ? "flex" : "hidden lg:flex")}>
           <Card className="flex h-[calc(100dvh-13rem)] min-h-[30rem] w-full min-w-0 flex-col gap-0 overflow-hidden py-0 lg:h-[calc(100dvh-11rem)]">
             <CardContent className="flex min-h-0 flex-1 flex-col px-4 py-5 md:px-8"><ChatContainerRoot className="min-h-0 flex-1" aria-live="polite"><ChatContainerContent className="mx-auto min-h-full w-full max-w-4xl gap-4">
-              {!messages.length ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>{state.products.length ? "¿En qué te ayudo hoy?" : "Empecemos por tu producción"}</EmptyTitle><EmptyDescription>{state.products.length ? "Pregúntame por tus costos, mándame un ticket o una venta, o pídeme un gráfico." : "¿Qué productos terminados y empacados fabrican, dónde y cómo?"}</EmptyDescription></EmptyHeader>
+              {!messages.length ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>{state.products.length ? `¿En qué te ayudo hoy${greetingName ? `, ${greetingName}` : ""}?` : `${greetingName ? `Hola, ${greetingName}. ` : ""}Empecemos por tu producción`}</EmptyTitle><EmptyDescription>{state.products.length ? "Pregúntame por tus costos, mándame un ticket o una venta, o pídeme un gráfico." : `¿Qué productos terminados y empacados fabrican${companyName ? ` en ${companyName}` : ""}, dónde y cómo?`}</EmptyDescription></EmptyHeader>
                 {level === null && !demo ? <div className="flex w-full max-w-xl flex-col gap-2"><p className="text-sm font-medium">¿Cómo prefieres que te explique?</p><div className="grid gap-2 sm:grid-cols-3">{EXPLANATION_LEVELS.map((item) => <button key={item.id} type="button" onClick={() => void saveSettings({ level: item.id })} className="flex flex-col gap-1 rounded-lg border bg-background p-3 text-left text-sm transition-colors hover:bg-muted"><span className="font-medium">{item.label}</span><span className="text-xs text-muted-foreground">{item.hint}</span></button>)}</div><p className="text-xs text-muted-foreground">Puedes cambiarlo cuando quieras arriba.</p></div> : null}
               </Empty> : null}
               {messages.length ? <div ref={topSentinel} className="flex justify-center py-1 text-[11px] text-muted-foreground">

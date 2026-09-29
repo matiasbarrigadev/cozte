@@ -11,7 +11,10 @@ describe("workspace URLs", () => {
     expect(viewFromPathname("/app/productos/abc-1")).toEqual({ view: "producto", productId: "abc-1" });
     expect(appPath("presentacion", "d-1")).toBe("/app/presentaciones/d-1");
     expect(viewFromPathname("/app/presentaciones/d-1")).toEqual({ view: "presentacion", productId: "d-1" });
-    expect(viewFromPathname("/app/")).toEqual({ view: "dashboard" });
+    expect(viewFromPathname("/app/")).toEqual({ view: "asistente" });
+    expect(appPath("asistente")).toBe("/app");
+    expect(appPath("dashboard")).toBe("/app/resumen");
+    expect(viewFromPathname("/app/cozte")).toEqual({ view: "asistente" });
   });
 
   it("rejects unknown sections instead of guessing", () => {

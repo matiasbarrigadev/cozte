@@ -15,6 +15,7 @@ import { cozteAgentSettings, cozteAssistantWorkflow } from "@/lib/server/cozte-w
 import { storeChatAttachments, type ChatAttachment } from "@/lib/server/documents";
 import { loadChannels } from "@/lib/server/business";
 import { loadCozteSettings } from "@/lib/server/cozte-settings";
+import { loadMemberName } from "@/lib/server/onboarding";
 import { COZTE_CHAT_PAGE_SIZE, COZTE_MODEL_HISTORY_MESSAGES, messageCreatedAt, modelHistory, modelWindow, withCreatedAt, withMessageTimes } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, COZTE_SPREADSHEET_MEDIA_TYPE, prepareCozteModelMessages } from "@/lib/cozte-assistant-attachments";
@@ -119,7 +120,7 @@ export async function POST(request: Request) {
     if (Number(request.headers.get("content-length") ?? 0) > 17_000_000) throw new ApiError(413, "El mensaje o los archivos adjuntos superan el límite de tamaño");
     const { message } = incomingSchema.parse(await request.json());
     if (!message.parts.some((part) => part.type === "text") && !message.parts.some((part) => part.type === "file")) throw new ApiError(400, "Escribe un mensaje o adjunta una imagen");
-    const [state, profileState, stored, notes, channels, cozteSettings] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadRecentMessages(principal, COZTE_MODEL_HISTORY_MESSAGES), loadCozteNotes(principal), loadChannels(principal).catch(() => []), loadCozteSettings(principal).catch(() => ({ level: null, board: [] }))]);
+    const [state, profileState, stored, notes, channels, cozteSettings, personName] = await Promise.all([loadState(principal), loadProductionProfile(principal), loadRecentMessages(principal, COZTE_MODEL_HISTORY_MESSAGES), loadCozteNotes(principal), loadChannels(principal).catch(() => []), loadCozteSettings(principal).catch(() => ({ level: null, board: [] })), loadMemberName(principal).catch(() => "")]);
     // Cozte reads the latest messages (the rest stay searchable with searchConversation).
     const previous = replayableHistory(modelWindow(stored));
     if (previous.at(-1)?.id === message.id) throw new ApiError(409, "Ese mensaje ya fue recibido");
@@ -129,7 +130,7 @@ export async function POST(request: Request) {
     const receivedAt = new Date();
     const incoming: UIMessage = withCreatedAt({ id: message.id, role: "user", parts: message.parts }, receivedAt.toISOString());
     const validated = await validateUIMessages({ messages: [...previous, incoming], tools });
-    const instructions = buildCozteInstructions({ state, notes, channels, level: cozteSettings.level, board: cozteSettings.board, legacyProfile: profileState.draft ?? profileState.confirmed, now: receivedAt, lastMessageAt: messageCreatedAt(stored.findLast((item) => item.role === "user") ?? {}) });
+    const instructions = buildCozteInstructions({ state, notes, channels, level: cozteSettings.level, board: cozteSettings.board, legacyProfile: profileState.draft ?? profileState.confirmed, personName, now: receivedAt, lastMessageAt: messageCreatedAt(stored.findLast((item) => item.role === "user") ?? {}) });
     // Receipts and delivery notes sent in the chat are kept so Cozte can attach them to what they back.
     const files = message.parts.filter((part) => part.type === "file");
     const attachments = files.length ? await storeChatAttachments(principal, candidateRunId, files) : [];

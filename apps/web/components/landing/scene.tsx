@@ -75,8 +75,8 @@ export const typed = (text: string, time: number, from: number, perChar = 28) =>
 export const money = (value: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(Math.round(value));
 
 const NAV: { id: string; label: string; icon: AnimatedIconName }[] = [
-  { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "cozte", label: "Cozte AI", icon: "assistant" },
+  { id: "dashboard", label: "Resumen", icon: "dashboard" },
   { id: "costos", label: "Costos de producción", icon: "costs" },
   { id: "ventas", label: "Ventas", icon: "sales" },
   { id: "entregas", label: "Entregas", icon: "truck" },

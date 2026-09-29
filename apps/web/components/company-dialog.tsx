@@ -12,11 +12,13 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { Input } from "@/components/ui/input";
 
 /**
- * Where the business is. Its country sets the business's day and time, how Cozte talks (vos, tú or usted, and the
+ * The company: its name (owners change it here, and in the account too) and where it is. Its country sets the business's day and time, how Cozte talks (vos, tú or usted, and the
  * local words) and the currency it suggests; the main currency can change only before costs are loaded.
  */
-export function CompanyDialog({ open, onClose, state, demo, onSaved }: { open: boolean; onClose: () => void; state: DomainState; demo: boolean; onSaved: () => Promise<void> | void }) {
+export function CompanyDialog({ open, onClose, state, demo, canRename = false, onSaved }: { open: boolean; onClose: () => void; state: DomainState; demo: boolean; canRename?: boolean; onSaved: () => Promise<void> | void }) {
   const organization = state.organization;
+  const savedName = organization.name === "Mi empresa" ? "" : organization.name;
+  const [name, setName] = React.useState(savedName);
   const currencyLocked = state.products.length > 0 || state.materials.length > 0 || state.expenses.length > 0;
   const [country, setCountry] = React.useState(organization.country ?? "");
   const [city, setCity] = React.useState(organization.city ?? "");
@@ -41,6 +43,11 @@ export function CompanyDialog({ open, onClose, state, demo, onSaved }: { open: b
     if (!info) { toast.error("Elige el país de tu empresa"); return; }
     setBusy(true);
     try {
+      if (canRename && name.trim() && name.trim() !== savedName) {
+        const renamed = await fetch("/api/organization/name", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: name.trim() }) });
+        const data = await renamed.json();
+        if (!renamed.ok) throw new Error(data.error ?? "No se pudo cambiar el nombre");
+      }
       const response = await fetch("/api/organization/location", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ country, city, timeZone: zone }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "No se pudo guardar la ubicación");
@@ -50,7 +57,7 @@ export function CompanyDialog({ open, onClose, state, demo, onSaved }: { open: b
         if (!changed.ok) throw new Error(data.error ?? "La ubicación quedó guardada, pero no se pudo cambiar la moneda");
       }
       await onSaved();
-      toast.success(`Listo: ${city ? `${city}, ` : ""}${info.name}`);
+      toast.success(`Listo: ${name.trim() && canRename ? `${name.trim()} · ` : ""}${city ? `${city}, ` : ""}${info.name}`);
       onClose();
     } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo guardar"); }
     finally { setBusy(false); }
@@ -59,11 +66,12 @@ export function CompanyDialog({ open, onClose, state, demo, onSaved }: { open: b
   return <Dialog open={open} onOpenChange={(value) => { if (!value) onClose(); }}>
     <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>¿Dónde está tu empresa?</DialogTitle>
+        <DialogTitle>{canRename ? "Tu empresa" : "¿Dónde está tu empresa?"}</DialogTitle>
         <DialogDescription>Con el país, Cozte usa el día y la hora de allá, te habla como se habla ahí y te sugiere la moneda. No cambia ningún costo.</DialogDescription>
       </DialogHeader>
       <form className="flex flex-col gap-4" onSubmit={save}>
         <FieldGroup>
+          {canRename ? <Field><FieldLabel htmlFor="company-name">Nombre</FieldLabel><Input id="company-name" value={name} maxLength={120} autoComplete="organization" placeholder="Ej. Tofu del Valle" onChange={(event) => setName(event.target.value)} /></Field> : null}
           <Field><FieldLabel htmlFor="company-country">País</FieldLabel>
             <Dropdown id="company-country" className="w-full" value={country} onChange={(event) => { if (event.target.value) chooseCountry(event.target.value); }}>
               <DropdownOption value="" disabled>Elegir país</DropdownOption>

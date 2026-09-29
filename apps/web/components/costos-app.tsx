@@ -37,6 +37,8 @@ import { MonthCard } from "./business/month-card";
 import { TodayCard } from "./business/today-card";
 import { FirstSteps } from "./business/first-steps";
 import { CompanyDialog } from "./company-dialog";
+import { OnboardingDialog } from "./onboarding";
+import { firstName, type Onboarding } from "@/lib/onboarding";
 import { usePersistentState } from "./business/data-table";
 import { countryByCode } from "@/lib/locations";
 import { MapPin } from "lucide-react";
@@ -59,7 +61,7 @@ type Draft = { materials: Record<string, number>; expenses: Record<string, numbe
 type NavItem = { id: View; label: string; icon: AnimatedIconName };
 /** Grouped the way a business thinks about it: what it costs, what happens each day and how it went. */
 const navGroups: { label: string; items: NavItem[] }[] = [
-  { label: "Espacio de trabajo", items: [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "asistente", label: "Cozte AI", icon: "assistant" }] },
+  { label: "Espacio de trabajo", items: [{ id: "asistente", label: "Cozte AI", icon: "assistant" }, { id: "dashboard", label: "Resumen", icon: "dashboard" }] },
   { label: "Costos", items: [{ id: "equilibrio", label: "Punto de equilibrio", icon: "gauge" }, { id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
   { label: "Día a día", items: [{ id: "ventas", label: "Ventas", icon: "sales" }, { id: "entregas", label: "Entregas", icon: "truck" }, { id: "clientes", label: "Clientes", icon: "users" }, { id: "compras", label: "Compras", icon: "receipt" }, { id: "proveedores", label: "Proveedores", icon: "boxes" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
   { label: "Evolución", items: [{ id: "analisis", label: "Análisis", icon: "chart" }, { id: "presentaciones", label: "Presentaciones", icon: "presentation" }, { id: "historial", label: "Historial", icon: "history" }] },
@@ -72,9 +74,13 @@ const formatPercent = (value: number | null) => value === null ? "—" : `${new 
 const emptyDraft = (): Draft => ({ materials: {}, expenses: {}, materialCurrencies: {}, expenseCurrencies: {}, source: "", effectiveDate: new Date().toLocaleDateString("en-CA") });
 
 /** `adminView`: a Cozte superadmin viewing a company that is not theirs, read-only. `superadmin`: the user is one. */
-export function CostosApp({ initial, demo = false, initialSection, adminView = false, superadmin = false }: { initial: Dashboard; demo?: boolean; initialSection?: string[]; adminView?: boolean; superadmin?: boolean }) {
+/** `onboarding`: the first-time questions of a new company, when it still needs them. */
+export function CostosApp({ initial, demo = false, initialSection, adminView = false, superadmin = false, onboarding }: { initial: Dashboard; demo?: boolean; initialSection?: string[]; adminView?: boolean; superadmin?: boolean; onboarding?: Onboarding }) {
   const [state, setState] = React.useState<Dashboard>(initial);
-  const initialRoute = viewFromSegments(initialSection) ?? { view: "dashboard" as View };
+  // The workspace opens on Cozte AI; the demo opens on the summary, since its chat cannot answer.
+  const initialRoute = demo && !initialSection?.length ? { view: "dashboard" as View } : viewFromSegments(initialSection) ?? { view: "asistente" as View };
+  const [welcome, setWelcome] = React.useState<Onboarding | null>(onboarding?.needed ? onboarding : null);
+  const [personName, setPersonName] = React.useState(onboarding?.personName ?? "");
   const [view, setView] = React.useState<View>(initialRoute.view);
   const [selected, setSelected] = React.useState<string | null>((initialRoute.view === "producto" ? initialRoute.productId : null) ?? initial.products[0]?.id ?? null);
   const [selectedDeck, setSelectedDeck] = React.useState<string | null>(initialRoute.view === "presentacion" ? initialRoute.productId ?? null : null);
@@ -95,7 +101,7 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
   // Where the company is: asked once when it is not known yet, and editable from the header.
   const [companyOpen, setCompanyOpen] = React.useState(false);
   const [locationAsked, setLocationAsked] = usePersistentState<string>(`ubicacion-preguntada:${state.organization.id}`, "");
-  const askLocation = !demo && !adminView && !state.organization.country && locationAsked !== "yes";
+  const askLocation = !demo && !adminView && !welcome && !state.organization.country && locationAsked !== "yes";
   const [history, setHistory] = React.useState<HistoryEntry[]>([]);
   const [snapshots, setSnapshots] = React.useState<CostSnapshotRow[]>([]);
   const [profileSnapshots, setProfileSnapshots] = React.useState<ProfileSnapshotRow[]>([]);
@@ -288,8 +294,16 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
         <SidebarFooter><div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">{demo ? <Badge variant="outline" className="border-white/25 bg-white/5 text-white">Demostración</Badge> : <><div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">{adminView ? <Link href="/admin" className="block truncate text-sm font-medium text-white">Superadmin · otras empresas</Link> : <OrganizationSwitcher hidePersonal appearance={{ elements: { organizationSwitcherTrigger: "cozte-org-trigger", organizationPreviewAvatarBox: "cozte-org-avatar", organizationSwitcherPopoverCard: "cozte-clerk-popover" } }} />}</div><UserButton appearance={{ elements: { userButtonTrigger: "cozte-user-trigger", userButtonAvatarBox: "cozte-user-avatar", userButtonPopoverCard: "cozte-clerk-popover" } }} /></>}</div></SidebarFooter>
       </Sidebar>
       <SidebarInset>
-        <header className="flex h-16 items-center gap-3 border-b bg-card px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="data-vertical:h-6 data-vertical:self-center" /><span className="truncate text-sm font-semibold text-foreground">{demo || adminView ? state.organization.name : <ActiveOrganizationName fallback={state.organization.name} />}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}{superadmin && !adminView ? <Button variant="outline" size="sm" render={<Link href="/admin" />} nativeButton={false}>Superadmin</Button> : null}<Button type="button" variant="outline" size="sm" className="max-w-56" title="Dónde está tu empresa y su moneda principal" onClick={() => setCompanyOpen(true)}><MapPin data-icon="inline-start" /><span className="truncate">{state.organization.city || countryByCode(state.organization.country)?.name || "¿Dónde está?"}</span><span className="text-muted-foreground">· {currency}</span></Button></div></header>
-        <CompanyDialog key={`${state.organization.country}-${state.organization.timeZone}-${currency}-${companyOpen || askLocation}`} open={companyOpen || askLocation} state={state} demo={demo} onSaved={refresh} onClose={() => { setCompanyOpen(false); setLocationAsked("yes"); }} />
+        <header className="flex h-16 items-center gap-3 border-b bg-card px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="data-vertical:h-6 data-vertical:self-center" /><span className="truncate text-sm font-semibold text-foreground">{demo || adminView ? state.organization.name : <ActiveOrganizationName fallback={state.organization.name} />}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}{superadmin && !adminView ? <Button variant="outline" size="sm" render={<Link href="/admin" />} nativeButton={false}>Superadmin</Button> : null}<Button type="button" variant="outline" size="sm" className="max-w-56" title="Tu empresa: nombre, dónde está y su moneda principal" onClick={() => setCompanyOpen(true)}><MapPin data-icon="inline-start" /><span className="truncate">{state.organization.city || countryByCode(state.organization.country)?.name || "¿Dónde está?"}</span><span className="text-muted-foreground">· {currency}</span></Button></div></header>
+        <CompanyDialog key={`${state.organization.country}-${state.organization.timeZone}-${currency}-${companyOpen || askLocation}`} open={companyOpen || askLocation} state={state} demo={demo} canRename={Boolean(onboarding?.owner)} onSaved={refresh} onClose={() => { setCompanyOpen(false); setLocationAsked("yes"); }} />
+        {welcome && !demo && !adminView ? <OnboardingDialog start={welcome} currency={currency} onDone={async (result) => {
+          setPersonName(result.personName);
+          setWelcome(null);
+          setLocationAsked("yes");
+          await refresh().catch(() => undefined);
+          navigate("asistente");
+          toast.success(`Listo, ${firstName(result.personName)}. Cozte ya conoce ${result.companyName}.`);
+        }} /> : null}
         <main className={view === "asistente" ? "mx-auto flex w-full max-w-none flex-col gap-4 px-4 py-5 md:px-8" : "mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-7 md:px-8 md:py-10"}>
           {demo && view !== "asistente" ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
           {adminView ? <Alert><AlertTitle>Modo superadmin · {state.organization.name}</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-2"><span>Estás viendo esta empresa en solo lectura: no puedes cambiar sus datos ni hablar con su Cozte.</span><Button size="sm" variant="outline" render={<Link href="/admin" />} nativeButton={false}>Otras empresas</Button><form action="/api/admin/view" method="post"><input type="hidden" name="action" value="exit" /><Button type="submit" size="sm" variant="ghost">Salir del modo superadmin</Button></form></div></AlertDescription></Alert> : null}
@@ -381,7 +395,7 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
             onOpen={(id) => id ? navigate("presentacion", id) : navigate("presentaciones")}
             onAskCozte={(text) => { setPendingPrompt(text); navigate("asistente"); }} /> : null}
 
-          {view === "asistente" ? <CozteAssistant demo={demo} state={state} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")}
+          {view === "asistente" ? <CozteAssistant demo={demo} state={state} personName={personName} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")}
             pendingPrompt={pendingPrompt} onPromptSent={() => setPendingPrompt(null)} onOpenPresentation={(id) => navigate("presentacion", id)} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
@@ -406,6 +420,13 @@ function Metric({ label, value, note }: { label: string; value: string; note: st
 
 function ActiveOrganizationName({ fallback }: { fallback: string }) {
   const { organization } = useOrganization();
+  // A rename saved from Cozte reaches the account on the server: bring the session's copy up to date once.
+  const reloadedFor = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!organization || organization.name === fallback || reloadedFor.current === fallback) return;
+    reloadedFor.current = fallback;
+    void organization.reload().catch(() => undefined);
+  }, [organization, fallback]);
   return organization?.name ?? fallback;
 }
 

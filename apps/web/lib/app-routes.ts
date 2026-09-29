@@ -1,8 +1,8 @@
-/** Sections of the workspace and their URLs under /app. */
+/** Sections of the workspace and their URLs under /app. Cozte AI is the workspace's front door, at /app itself. */
 export type AppView = "dashboard" | "producto" | "planilla" | "ventas" | "entregas" | "clientes" | "proveedores" | "equilibrio" | "gastos" | "compras" | "resultado" | "analisis" | "asistente" | "historial" | "presentaciones" | "presentacion";
 
 const segments: Record<Exclude<AppView, "producto" | "presentacion">, string> = {
-  dashboard: "",
+  dashboard: "resumen",
   planilla: "costos",
   ventas: "ventas",
   entregas: "entregas",
@@ -13,7 +13,7 @@ const segments: Record<Exclude<AppView, "producto" | "presentacion">, string> = 
   compras: "compras",
   resultado: "resultado",
   analisis: "analisis",
-  asistente: "cozte",
+  asistente: "",
   historial: "historial",
   presentaciones: "presentaciones",
 };
@@ -26,7 +26,9 @@ export function appPath(view: AppView, productId?: string | null): string {
 
 /** Reads the section from the path segments after /app; null when the path is not a known section. */
 export function viewFromSegments(parts: string[] = []): { view: AppView; productId?: string } | null {
-  if (!parts.length) return { view: "dashboard" };
+  if (!parts.length) return { view: "asistente" };
+  // Links from before Cozte moved to /app.
+  if (parts.length === 1 && parts[0] === "cozte") return { view: "asistente" };
   if (parts[0] === "productos" && parts[1] && parts.length === 2) return { view: "producto", productId: decodeURIComponent(parts[1]) };
   if (parts[0] === "presentaciones" && parts[1] && parts.length === 2) return { view: "presentacion", productId: decodeURIComponent(parts[1]) };
   if (parts.length !== 1) return null;
