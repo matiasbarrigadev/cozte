@@ -98,6 +98,36 @@ function figureValue(token: string): number | null {
   return integer && Number.isFinite(value) ? value : null;
 }
 
+/** Percentages an answer shows ("3,3 %", "28%"). */
+const percentFigure = /(?<![\d.,])(\d{1,3}(?:[.,]\d{1,2})?)\s?%/gu;
+
+const percentValue = (token: string) => Number(token.replace(",", "."));
+
+/**
+ * Percentages a turn can back: the ones written in its sources, results of calculate, fields that are percentages or
+ * ratios in tool outputs, and percentages inside their texts. Only those, so an answer cannot pass a made-up share
+ * because some unrelated number happens to match.
+ */
+function knownPercents(sources: string[], tools: TurnToolRecord[]): number[] {
+  const values: number[] = [];
+  const fromText = (text: string) => { for (const match of text.matchAll(/(-?\d{1,3}(?:[.,]\d+)?)\s?%/g)) values.push(percentValue(match[1])); };
+  const walk = (value: unknown, key = ""): void => {
+    if (typeof value === "number") {
+      if (/percent|share|ratio|margin|rate/i.test(key)) { values.push(value); if (Math.abs(value) <= 1.5) values.push(value * 100); }
+      if (/bps$/i.test(key)) values.push(value / 100);
+    } else if (typeof value === "string") fromText(value);
+    else if (Array.isArray(value)) for (const item of value) walk(item, key);
+    else if (value && typeof value === "object") for (const [name, item] of Object.entries(value)) walk(item, name);
+  };
+  for (const source of sources) fromText(source);
+  for (const tool of tools) {
+    const result = (tool.output as { result?: unknown } | null)?.result;
+    if (tool.name === "calculate" && typeof result === "number") { values.push(result); if (Math.abs(result) <= 1.5) values.push(result * 100); }
+    walk(tool.output);
+  }
+  return values.flatMap((value) => [value, Math.abs(value)]);
+}
+
 /** Every integer a source text could be quoting, under both separator conventions and JSON decimals. */
 function sourceFigures(texts: string[]): Set<number> {
   const figures = new Set<number>();
@@ -161,20 +191,72 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
     issues.push({ code: "announced-not-executed", detail: "La respuesta anuncia que va a guardar o ejecutar algo, pero el turno terminó sin hacerlo." });
   }
   const evidence = JSON.stringify(tools.map((tool) => tool.output)) ?? "";
-  // A turn that used no tool can only quote money figures already in its snapshot or the person's message.
-  if (!tools.length && context.sources) {
+  // Every amount and percentage shown comes from a tool of this turn or from the conversation: none is worked out by heart.
+  if (context.sources) {
     const known = sourceFigures([...context.sources, evidence]);
-    const figures = [...answer.matchAll(moneyFigure)]
-      .filter((match) => !illustrative.test(sentenceAround(answer, match.index ?? 0)))
+    const quoted = (index: number) => !illustrative.test(sentenceAround(answer, index));
+    const figures = [...answer.matchAll(moneyFigure)].filter((match) => quoted(match.index ?? 0))
       .map((match) => figureValue(match[1] ?? match[2] ?? "")).filter((value): value is number => value !== null && value >= 100);
     const unverified = [...new Set(figures.filter((value) => !known.has(value) && !known.has(value - 1) && !known.has(value + 1)))];
-    if (unverified.length) issues.push({ code: "unverified-figures", detail: `La respuesta muestra montos que no salen del motor ni de lo que dijo la persona (${unverified.slice(0, 4).join(", ")}). Obtén esas cifras con simulate, calculate o readCosts antes de mostrarlas.` });
+    const percents = knownPercents(context.sources, tools);
+    const shares = [...answer.matchAll(percentFigure)].filter((match) => quoted(match.index ?? 0)).map((match) => match[1]).filter((token) => {
+      const value = percentValue(token);
+      const tolerance = /[.,]/.test(token) ? 0.15 : 1;
+      return value !== 0 && value !== 100 && !percents.some((known) => Math.abs(known - value) <= tolerance);
+    });
+    const unbackedShares = [...new Set(shares)];
+    if (unverified.length || unbackedShares.length) {
+      const parts = [unverified.length ? `montos ${unverified.slice(0, 4).join(", ")}` : "", unbackedShares.length ? `porcentajes ${unbackedShares.slice(0, 4).map((token) => `${token} %`).join(", ")}` : ""].filter(Boolean);
+      issues.push({ code: "unverified-figures", detail: `La respuesta muestra cifras que no salen de las herramientas ni de la conversación (${parts.join("; ")}). Toda cuenta (sumas, diferencias, totales del mes, porcentajes, qué parte del costo es cada cosa) se hace con calculate, o se toma tal cual de simulate, readCosts u otra herramienta; no hagas cuentas de cabeza.` });
+    }
   }
   const unknownIds = [...new Set(answer.match(identifierPattern) ?? [])].filter((id) => !evidence.includes(id));
   if (unknownIds.length) issues.push({ code: "unknown-identifier", detail: `La respuesta muestra identificadores que no provienen de ningún resultado: ${unknownIds.slice(0, 3).join(", ")}.` });
   const leaked = answer.match(internalNames);
   if (leaked) issues.push({ code: "internal-detail", detail: `La respuesta expone detalles internos ("${leaked[0]}").` });
   return { ok: issues.length === 0, issues, mustUseTools: issues.some((issue) => issue.code === "unbacked-write-claim" || issue.code === "announced-not-executed" || issue.code === "unverified-figures") };
+}
+
+/** An answer's lines split into sentences (a table row stays whole), so one bad sentence can go and the rest stay. */
+function answerUnits(line: string): string[] {
+  if (/^\s*\|/.test(line)) return [line];
+  return line.match(/.+?(?:[.!?](?=\s|$)|$)/g) ?? [line];
+}
+
+/** Drops tables left without rows and headings left without content. */
+function tidyAnswer(lines: string[]): string {
+  const withRows: string[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const separator = /^\s*\|?\s*:?-{3,}/;
+    if (/^\s*\|/.test(lines[index]) && separator.test(lines[index + 1] ?? "") && !/^\s*\|/.test(lines[index + 2] ?? "")) { index += 1; continue; }
+    withRows.push(lines[index]);
+  }
+  const heading = /^\s*#{1,6}\s/;
+  const kept = withRows.filter((line, index) => {
+    if (!heading.test(line)) return true;
+    const next = withRows.slice(index + 1).find((item) => item.trim());
+    return next !== undefined && !heading.test(next);
+  });
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/**
+ * The answer without the sentences (or table rows) that carry its problems: an announced action, a save it did not
+ * make, a figure no tool backs, an internal name. Returns it when it passes the verifier on its own and keeps most of
+ * the answer; otherwise null, and the fallback takes over.
+ */
+export function salvageAnswer(text: string, verification: Verification, tools: TurnToolRecord[], context: VerificationContext = {}): string | null {
+  const codes = new Set<VerificationIssue["code"]>(verification.issues.map((issue) => issue.code).filter((code) => code !== "empty-answer"));
+  if (!codes.size || !text.trim()) return null;
+  const offends = (unit: string) => unit.trim() !== "" && verifyCozteResponse(unit, tools, context).issues.some((issue) => codes.has(issue.code));
+  const lines = text.split("\n").flatMap((line) => {
+    if (!line.trim()) return [line];
+    const kept = answerUnits(line).filter((unit) => !offends(unit)).join("").trimEnd();
+    return kept.trim() ? [kept] : [];
+  });
+  const salvaged = tidyAnswer(lines);
+  if (salvaged.length < text.trim().length * 0.4) return null;
+  return verifyCozteResponse(salvaged, tools, context).ok ? salvaged : null;
 }
 
 /**
@@ -192,7 +274,7 @@ export function finalAnswerStep(steps: { toolCalls: { toolName: string }[] }[]):
 const DISCARD_REASONS: Record<VerificationIssue["code"], string> = {
   "unbacked-write-claim": "Decía que había guardado algo que no se guardó.",
   "announced-not-executed": "Anunciaba una acción que no llegó a hacer.",
-  "unverified-figures": "Mostraba montos que no salían del cálculo.",
+  "unverified-figures": "Mostraba cifras que no salían del cálculo.",
   "unknown-identifier": "Mostraba un código interno.",
   "internal-detail": "Usaba nombres internos del sistema.",
   "empty-answer": "Quedó sin mensaje final.",
@@ -235,13 +317,41 @@ export function receiptOnlyAnswer(records: TurnToolRecord[]): string {
     const output = item.output as Record<string, unknown> | null;
     return typeof output?.error === "string" ? output.error : "Un cambio no se pudo guardar.";
   });
+  const results = turnResults(records);
+  const attempted = records.some((item) => item.write);
   const lines = [
-    done.length ? `Esto quedó guardado: ${done.join("; ")}.` : "No llegué a guardar cambios.",
+    done.length ? `Esto quedó guardado: ${done.join("; ")}.` : attempted || !results.length ? "No llegué a guardar cambios." : "",
     failed.length ? `No se guardó: ${[...new Set(failed)].join(" ")}` : "",
-    storedSummary(records),
-    "Si quieres, dime qué dato registrar o revisar y sigo.",
+    results.length ? results.join(" ") : storedSummary(records),
+    results.length ? "Si quieres, seguimos desde acá." : "Si quieres, dime qué dato registrar o revisar y sigo.",
   ];
   return lines.filter(Boolean).join(" ");
+}
+
+/**
+ * What the turn's own work found (a simulation, calculations, what a chart shows), in plain words: a fallback that
+ * still answers what was asked, with figures taken as the tools gave them.
+ */
+export function turnResults(records: TurnToolRecord[]): string[] {
+  const format = (value: number) => new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(value);
+  const lines: string[] = [];
+  for (const item of records) {
+    if (!item.ok || item.write) continue;
+    const output = item.output as Record<string, unknown> | null;
+    if (!output) continue;
+    if (item.name === "simulate" && Array.isArray(output.products)) {
+      const currency = typeof output.currency === "string" ? `${output.currency} ` : "";
+      const changes = (output.products as { product?: string; unitCostBefore?: number | null; unitCostAfter?: number | null; changePercent?: number | null }[])
+        .filter((product) => typeof product.unitCostBefore === "number" && typeof product.unitCostAfter === "number")
+        .map((product) => `${product.product}: de ${currency}${format(product.unitCostBefore!)} a ${currency}${format(product.unitCostAfter!)} por unidad${typeof product.changePercent === "number" ? ` (${product.changePercent > 0 ? "+" : ""}${format(product.changePercent)} %)` : ""}`);
+      if (changes.length) lines.push(`Con el cambio simulado: ${changes.join("; ")}. La simulación no guarda nada.`);
+    }
+    if (item.name === "calculate" && typeof output.result === "number" && typeof output.label === "string" && output.label.trim()) {
+      lines.push(`${output.label.trim().replace(/^./, (first) => first.toUpperCase())}: ${format(output.result)}.`);
+    }
+    if (item.name === "showVisual" && typeof output.conclusion === "string" && output.conclusion.trim()) lines.push(output.conclusion.trim());
+  }
+  return lines;
 }
 
 /** What the latest read in the turn shows, so a fallback still answers "what is saved?". */

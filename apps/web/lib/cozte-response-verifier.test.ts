@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord } from "./cozte-response-verifier";
+import { correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, salvageAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord } from "./cozte-response-verifier";
 
 const read: TurnToolRecord = { name: "readCosts", ok: true, write: false, output: { products: [] } };
 const savedProduct: TurnToolRecord = { name: "saveProduct", ok: true, write: true, output: { ok: true, ids: { product: "5cd7cb0f-e5d3-4ed4-8d6b-a0a7a8c46a23" } } };
@@ -142,6 +142,51 @@ describe("announced actions", () => {
   });
   it("still catches an action announced outright and never done", () => {
     expect(verifyCozteResponse("El Tofu 300g pasaría a $921. Ahora guardo el precio nuevo de la soja.", [simulation]).issues.map((issue) => issue.code)).toContain("announced-not-executed");
+  });
+});
+
+describe("figures and fallbacks", () => {
+  const costs = { name: "readCosts", ok: true, write: false, output: { ok: true, currency: "ARS", products: [{ name: "Tofu 500g", cost: { unitCost: 824 }, recipe: [{ material: "Soja", costPerUnit: 138.54 }] }] } };
+  const simulation = { name: "simulate", ok: true, write: false, output: { ok: true, currency: "ARS", products: [{ product: "Tofu 500g", unitCostBefore: 824, unitCostAfter: 810, change: -14, changePercent: -1.7 }] } };
+  const share = { name: "calculate", ok: true, write: false, output: { ok: true, label: "parte de la soja en el costo del Tofu 500g (%)", expression: "138.54 / 824 * 100", result: 16.81 } };
+  const context = { sources: ["Simular qué pasa si bajamos 10% la soja"] };
+
+  it("wants every amount and percentage from a tool or the conversation, also in turns that used tools", () => {
+    const made = verifyCozteResponse("Con la soja 10 % más barata el Tofu 500g pasa de $824 a $810, y la soja pasa del 28 % al 25 % del costo. Por tanda son $1.552 menos.", [costs, simulation], context);
+    expect(made.issues[0].code).toBe("unverified-figures");
+    expect(made.issues[0].detail).toMatch(/montos 1552; porcentajes 28 %, 25 %/);
+    expect(verifyCozteResponse("Con la soja 10 % más barata el Tofu 500g pasa de $824 a $810 (1,7 % menos). La soja es el 16,8 % de su costo.", [costs, simulation, share], context).ok).toBe(true);
+  });
+
+  it("keeps the verified answer without the sentences that break it", () => {
+    const draft = [
+      "### Qué pasa si la soja baja 10 %",
+      "",
+      "| Producto | Hoy | Con la soja más barata |",
+      "|---|---|---|",
+      "| Tofu 500g | $824 | $810 |",
+      "",
+      "El Tofu 500g pasa de $824 a $810. La soja pasa del 28 % al 25 % del costo.",
+      "",
+      "### Próximo paso",
+      "",
+      "Ahora guardo el precio nuevo de la soja.",
+    ].join("\n");
+    const verification = verifyCozteResponse(draft, [costs, simulation], context);
+    expect(verification.issues.map((issue) => issue.code)).toEqual(expect.arrayContaining(["announced-not-executed", "unverified-figures"]));
+    const salvaged = salvageAnswer(draft, verification, [costs, simulation], context)!;
+    expect(salvaged).toContain("| Tofu 500g | $824 | $810 |");
+    expect(salvaged).toContain("El Tofu 500g pasa de $824 a $810.");
+    expect(salvaged).not.toMatch(/28 %|guardo|Próximo paso/);
+    expect(verifyCozteResponse(salvaged, [costs, simulation], context).ok).toBe(true);
+    expect(salvageAnswer("La soja es el 28 % del costo. Por tanda son $1.552 menos.", verifyCozteResponse("La soja es el 28 % del costo. Por tanda son $1.552 menos.", [costs], context), [costs], context)).toBeNull();
+  });
+
+  it("answers with what the turn found when the answer cannot be kept", () => {
+    const text = receiptOnlyAnswer([simulation, share]);
+    expect(text).not.toMatch(/No llegué a guardar/);
+    expect(text).toContain("Con el cambio simulado: Tofu 500g: de ARS 824 a ARS 810 por unidad (-1,7 %). La simulación no guarda nada.");
+    expect(text).toContain("Parte de la soja en el costo del Tofu 500g (%): 16,81.");
   });
 });
 

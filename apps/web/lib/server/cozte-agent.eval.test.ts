@@ -33,7 +33,7 @@ import { loadZones, saveZone } from "./delivery-zones";
 import { loadSuppliers } from "./suppliers";
 import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
-import { correctionMessage, finalAnswerStep, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
+import { correctionMessage, finalAnswerStep, hasHardIssue, salvageAnswer, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
 import { createCozteTools } from "./cozte-agent-tools";
 import { buildCozteInstructions } from "./cozte-instructions";
 import { cozteAgentSettings, cozteProviderOptions } from "./cozte-workflow";
@@ -88,13 +88,21 @@ async function productionTurn(input: { model: string; principal: Principal; hist
   const collect = (list: typeof result.steps) => list.map((step) => ({ text: step.text, toolCalls: step.toolCalls.map((call) => ({ toolName: call.toolName, input: call.input })), toolResults: step.toolResults.map((item) => ({ toolName: item.toolName, output: item.output })) }));
   let steps = collect(result.steps);
   const records = () => steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), write: cozteToolWrote(item.toolName, item.output), output: item.output, input: step.toolCalls.find((call) => call.toolName === item.toolName)?.input })));
-  const answerOf = () => { const at = finalAnswerStep(steps); return at >= 0 ? steps[at].text.trim() : ""; };
-  let verification = verifyCozteResponse(answerOf(), records(), { sources: [instructions, input.text] });
+  // As in production, figures may come from the tools or the conversation; a salvaged answer replaces the step's text.
+  const context = { sources: [instructions, ...input.history.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))] };
+  let salvaged: string | null = null;
+  const answerOf = () => { if (salvaged !== null) return salvaged; const at = finalAnswerStep(steps); return at >= 0 ? steps[at].text.trim() : ""; };
+  let verification = verifyCozteResponse(answerOf(), records(), context);
   const rejected = verification.ok ? null : { text: answerOf(), issues: verification.issues.map((issue) => issue.code) };
   if (!verification.ok) {
     result = await pass([...input.history, ...result.response.messages, { role: "user", content: correctionMessage(verification) }]);
     steps = [...steps, ...collect(result.steps)];
-    verification = verifyCozteResponse(answerOf(), records(), { sources: [instructions, input.text] });
+    verification = verifyCozteResponse(answerOf(), records(), context);
+    const blocking = hasHardIssue(verification) || verification.issues.some((issue) => issue.code === "unverified-figures");
+    if (blocking && answerOf()) {
+      salvaged = salvageAnswer(answerOf(), verification, records(), context);
+      if (salvaged !== null) verification = verifyCozteResponse(salvaged, records(), context);
+    }
   }
   // Jev review as in production: clear failures get one rewrite that must pass the verifier again.
   const level = input.level ?? "simple";
@@ -104,13 +112,13 @@ async function productionTurn(input: { model: string; principal: Principal; hist
   if (verification.ok && answerOf()) {
     const first = await review(answerOf());
     const asked = steps[finalAnswerStep(steps)]?.toolCalls.some((call) => call.toolName === "askQuestions") ?? false;
-    const flags = asked ? [] : actionableFlags(first, { wrote: records().some((item) => item.write && item.ok) });
+    const flags = asked || salvaged !== null ? [] : actionableFlags(first, { wrote: records().some((item) => item.write && item.ok) });
     quality = { first, flags, revised: null, kept: "original" };
     if (flags.length) {
       const revision = await pass([...input.history, ...result.response.messages, { role: "user", content: qualityFeedback(flags) }]);
       const before = steps;
       steps = [...steps, ...collect(revision.steps)];
-      if (answerOf() && verifyCozteResponse(answerOf(), records(), { sources: [instructions, input.text] }).ok) {
+      if (answerOf() && verifyCozteResponse(answerOf(), records(), context).ok) {
         turnMessages.push(...revision.response.messages);
         quality = { ...quality, revised: await review(answerOf()), kept: "revised" };
       } else {
@@ -119,7 +127,7 @@ async function productionTurn(input: { model: string; principal: Principal; hist
     }
   }
   input.history.push(...turnMessages);
-  return { answer: answerOf(), records: records(), rejected, verified: verification.ok, quality };
+  return { answer: answerOf(), records: records(), rejected, verified: verification.ok, salvaged: salvaged !== null, quality };
 }
 
 describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, () => {

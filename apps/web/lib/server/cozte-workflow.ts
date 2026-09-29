@@ -5,7 +5,7 @@ import { getWritable, getWorkflowMetadata, sleep } from "workflow";
 import { repairCozteToolInput } from "@/lib/cozte-tool-repair";
 import { COZTE_TOOL_NAMES, cozteToolSucceeded, cozteToolWrote, questionsShown } from "@/lib/cozte-tool-catalog";
 import { COZTE_ASSISTANT_ID_PREFIX, COZTE_FALLBACK_ID_PREFIX, compactToolOutputForHistory, withCreatedAt } from "@/lib/cozte-conversation-memory";
-import { cleanLegacyWording, correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, stripForeignScript, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
+import { cleanLegacyWording, correctionMessage, discardReason, finalAnswerStep, hasHardIssue, receiptOnlyAnswer, salvageAnswer, stripForeignScript, turnResults, verifyCozteResponse, type TurnToolRecord, type Verification } from "@/lib/cozte-response-verifier";
 import { QUALITY_QUESTIONS, actionableFlags, qualityFeedback, qualityLine, qualityMode, qualityState, summarizeQuality, type QualityAnswers, type QualityMode, type QualitySummary } from "@/lib/cozte-quality";
 import type { ExplanationLevel } from "@/lib/cozte-levels";
 import { discardedDraftMetadata, qualityNoteMetadata } from "@/lib/cozte-turn-activity";
@@ -278,7 +278,7 @@ function answerDraft(runId: string, steps: StepLike[], retracted: Map<number, st
  * The persisted assistant turn mirrors the screen: each step's reasoning, text and tool receipts in order, discarded
  * drafts with their reason, then any receipt-only answer.
  */
-function assistantTurn(runId: string, steps: StepLike[], retracted: Map<number, string>, receiptText: string | null, quality: { after: Map<number, QualityNote[]>; final: QualityNote | null } = { after: new Map(), final: null }): UIMessage {
+function assistantTurn(runId: string, steps: StepLike[], retracted: Map<number, string>, closing: { text: string; fallback: boolean } | null, quality: { after: Map<number, QualityNote[]>; final: QualityNote | null } = { after: new Map(), final: null }): UIMessage {
   const note = (item: QualityNote) => ({ type: "reasoning", text: qualityLine(item.summary), providerMetadata: qualityNoteMetadata(item.summary, item.revised) }) as UIMessage["parts"][number];
   const parts: UIMessage["parts"] = [];
   steps.forEach((step, index) => {
@@ -298,9 +298,10 @@ function assistantTurn(runId: string, steps: StepLike[], retracted: Map<number, 
     }
     for (const item of quality.after.get(index) ?? []) parts.push(note(item));
   });
-  if (receiptText) parts.push({ type: "text", text: receiptText });
+  if (closing) parts.push({ type: "text", text: closing.text });
   if (quality.final) parts.push(note(quality.final));
-  return { id: `${receiptText ? COZTE_FALLBACK_ID_PREFIX : COZTE_ASSISTANT_ID_PREFIX}${runId}`, role: "assistant", parts };
+  // A receipt is system text, kept out of the model's memory; a salvaged answer is the assistant's verified voice.
+  return { id: `${closing?.fallback ? COZTE_FALLBACK_ID_PREFIX : COZTE_ASSISTANT_ID_PREFIX}${runId}`, role: "assistant", parts };
 }
 
 export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise<void> {
@@ -339,7 +340,8 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
     // Answer steps taken off the screen, with the reason: they stay in the trace as discarded drafts.
     const retracted = new Map<number, string>();
     let text = answerText(steps, retracted);
-    const context = { sources: [input.instructions, lastUserText(input.messages)] };
+    // Figures may come from this turn's tools or from the conversation (the person's messages and earlier answers).
+    const context = { sources: [input.instructions, ...input.messages.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))] };
     let verification: Verification = verifyCozteResponse(text, toolRecords(steps), context);
     let modelError = "error" in first ? errorDetails(first.error) : undefined;
     let corrected = false;
@@ -372,12 +374,27 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
 
     const records = toolRecords(steps);
     let receiptText: string | null = null;
-    // After a correction only hard issues (unbacked saves, invented ids…) discard the answer; minor ones don't.
-    if (modelError || (corrected ? hasHardIssue(verification) : !verification.ok)) {
+    let salvagedText: string | null = null;
+    // After a correction only hard issues (unbacked saves, invented ids…) and figures no tool backs discard the answer.
+    const blocking = (result: Verification) => corrected ? hasHardIssue(result) || result.issues.some((issue) => issue.code === "unverified-figures") : !result.ok;
+    // Before discarding, keep the verified answer without the sentences that break it: the person still gets their answer.
+    if (!modelError && blocking(verification) && text.trim()) {
+      const salvaged = salvageAnswer(text, verification, records, context);
+      if (salvaged) {
+        await recordCozteEvent(input.runId, "answer_salvaged", { issues: verification.issues, response: text.slice(0, 4000), salvaged: salvaged.slice(0, 4000) });
+        const replaced = answerDraft(input.runId, steps, retracted, discardReason(verification));
+        if (replaced) retracted.set(replaced.index, replaced.draft.reason);
+        await writeReceiptAnswer(writable, salvaged, `salvaged-${input.runId}`, replaced?.draft ?? null);
+        text = salvaged;
+        salvagedText = salvaged;
+        verification = verifyCozteResponse(salvaged, records, context);
+      }
+    }
+    if (!salvagedText && (modelError || blocking(verification))) {
       await recordCozteEvent(input.runId, "answer_replaced", { issues: verification.issues, modelError, response: text.slice(0, 4000) });
-      // Without a read in the turn, the fallback reads the stored state itself so it can still say what is saved.
+      // The fallback answers with what the turn found; without results or a read it reads the stored state itself.
       const hasRead = records.some((item) => item.name === "readCosts" && item.ok);
-      const evidence = hasRead ? records : [...records, { name: "readCosts", ok: true, write: false, output: await readCostOverview(input.principal).catch(() => null) }];
+      const evidence = hasRead || turnResults(records).length ? records : [...records, { name: "readCosts", ok: true, write: false, output: await readCostOverview(input.principal).catch(() => null) }];
       receiptText = receiptOnlyAnswer(evidence);
       const replaced = answerDraft(input.runId, steps, retracted, modelError && verification.ok ? "Se interrumpió por un error del modelo." : discardReason(verification));
       if (replaced) retracted.set(replaced.index, replaced.draft.reason);
@@ -444,7 +461,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
       totalMs: closedAt - startedAt, answerMs: answeredAt - startedAt, qualityMs: closedAt - answeredAt,
       steps: steps.length, tools: records.length, qualityMode: turnMode, skippedRewrite: turnMode !== settings.qualityMode,
     }).catch(() => {});
-    const assistantMessage = assistantTurn(input.runId, steps, retracted, receiptText, { after: qualityAfter, final: finalQuality });
+    const assistantMessage = assistantTurn(input.runId, steps, retracted, receiptText ? { text: receiptText, fallback: true } : salvagedText ? { text: salvagedText, fallback: false } : null, { after: qualityAfter, final: finalQuality });
     await finalizeCozteRun({
       principal: input.principal, runId: input.runId,
       messages: [...input.persistedMessages, assistantMessage],
