@@ -530,6 +530,7 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     const second = await productionTurn({ model, principal, history, text: "El gas no es fijo: lo uso solo cuando cocino, y cada tanda gasta lo mismo." });
     // Then fixed 1.000.000, each unit 20 more of gas, and 3 of 300g for each 500g: 399 and 133.
     const third = await productionTurn({ model, principal, history, text: "En realidad vendo 3 de 300g por cada uno de 500g. Guardalo así y decime cuánto de cada uno." });
+    const fourth = await productionTurn({ model, principal, history, text: "¿Cuáles de mis costos de producción son fijos y cuáles variables?" });
     const state = await loadState(principal);
     const gas = state.expenses.find((item) => item.name === "Gas" && item.period === state.activePeriod);
     const mix = await loadSalesMix(principal);
@@ -541,11 +542,13 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       savedTheGas: gas?.behavior === "variable" && gas.variableDriver === "lot",
       savedTheMix: mix.source === "manual" && mix.shares[t300] === 7500,
       toldTheNewUnits: /399/.test(plain(third.answer)) && /133/.test(plain(third.answer)),
-      answeredEveryTurn: [first, second, third].every((turn) => turn.verified),
+      // Rent and salary fixed; soy and the gas (now per batch) variable.
+      splitFixedAndVariable: /alquiler/i.test(fourth.answer) && /sueldo/i.test(fourth.answer) && /soja/i.test(fourth.answer) && /gas/i.test(fourth.answer) && /fij/i.test(fourth.answer) && /variable/i.test(fourth.answer),
+      answeredEveryTurn: [first, second, third, fourth].every((turn) => turn.verified),
     };
     const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
-    console.log(`\n[${model}] break-even ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}\n---\n${third.answer}`);
-    results.push({ model, scenario: "break-even", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "equilibrio", answer: first.answer }, { user: "gas", answer: second.answer }, { user: "mezcla", answer: third.answer }] });
+    console.log(`\n[${model}] break-even ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}\n---\n${third.answer}\n---\n${fourth.answer}`);
+    results.push({ model, scenario: "break-even", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "equilibrio", answer: first.answer }, { user: "gas", answer: second.answer }, { user: "mezcla", answer: third.answer }, { user: "fijos y variables", answer: fourth.answer }] });
     expect(failures).toEqual([]);
   });
 

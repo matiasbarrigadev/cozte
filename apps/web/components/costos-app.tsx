@@ -356,6 +356,7 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
               onCategoryCreate={(name) => save({ action: "create-category", name }, true)}
               onCategoryRename={(id, name) => save({ action: "rename-category", id, name }, true)}
               onAllocationChange={(id, basis, shares) => setPendingMeta({ action: { action: "update-expense-allocation", id, basis, shares }, affected: state.products.map((item) => item.name), description: "Este reparto cambia la porción asignada a cada producto. Confirma para recalcular los costos." })}
+              onBehaviorChange={(change) => save({ action: "update-expense-behavior", ...change })}
               onUsageChange={(productId, materialId, quantityMilli) => save({ action: "set-component", productId, materialId, quantityMilli }, true)}
               onReview={reviewChanges} onDiscard={() => { if (!demo) setDraftStatus("saving"); setDraft(emptyDraft()); setReview(null); }} />
           </> : null}

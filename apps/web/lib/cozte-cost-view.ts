@@ -1,5 +1,6 @@
 import { roundMoney } from "./money";
 import { calculateCosts, investmentMonthlyShare, productionCostSources, productionExpenses, type DomainState, type ProductCost } from "./domain";
+import { behaviorLabel, productionCostSplit } from "./cost-behavior";
 
 /** Accent-, case- and punctuation-insensitive key used to match names people type. */
 export function normalizeName(value: string): string {
@@ -206,7 +207,12 @@ export function buildCostOverview(state: DomainState, costs: ProductCost[] = cal
       originalAmount: item.currency && item.currency !== state.organization.currency && item.nativeAmountMilli != null ? { amount: item.nativeAmountMilli / 1000, currency: item.currency } : undefined,
       splitBy: (item.area ?? "production") !== "production" ? "not split into products" : item.allocationBasis === "hours" ? "production hours" : item.allocationBasis === "units" ? "good units" : "agreed percentages",
       percentages: item.allocationBasis === "manual" ? Object.fromEntries(Object.entries(item.allocationShares ?? {}).map(([id, share]) => [productNames.get(id) ?? id, share / 100])) : undefined,
+      // Fixed, variable or mixed: the business's choice (setCostBehavior), with its reason when there is one.
+      costType: `${behaviorLabel(item).label}: ${behaviorLabel(item).detail.toLocaleLowerCase("es")}`,
+      costTypeReason: item.behaviorNote || undefined,
     })),
+    // A normal month of production split as it is shown in Costos de producción: supplies are always variable.
+    productionByCostType: (() => { const split = productionCostSplit(state, costs); return { variablePerMonth: split.variable, fixedPerMonth: split.fixed }; })(),
     categories: (state.categories ?? []).map((item) => item.name),
     // Workshop investments: the person decides whether their monthly share goes into each unit's cost.
     workshopInvestments: (state.investments ?? []).filter((item) => item.area === "production").map((item) => ({

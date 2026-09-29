@@ -4,7 +4,8 @@ import * as React from "react";
 import { toast } from "sonner";
 import { calculateCosts, productionExpenses, type DomainState, type Material, type SharedExpense } from "@/lib/domain";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
-import { behaviorTag } from "@/lib/break-even";
+import { DRIVER_LABELS } from "@/lib/break-even";
+import { BEHAVIOR_GROUPS, SUPPLY_BEHAVIOR_HINT, behaviorGroup, behaviorLabel, productionCostSplit, type BehaviorGroup } from "@/lib/cost-behavior";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -23,14 +24,17 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { CostGroupedView } from "@/components/cost-grouped-view";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ExportMenu, downloadCsv } from "@/components/business/data-table";
+import { useMoney } from "@/components/business/business-ui";
+import { CostBehaviorDialog, CostTypePill, type BehaviorChange } from "@/components/business/cost-behavior-dialog";
 
-type SheetKind = "all" | "materials" | "expenses";
+type SheetKind = "all" | "variable" | "fixed";
 type SheetView = "table" | "list" | "board";
 type Draft = { materials: Record<string, number>; expenses: Record<string, number>; materialCurrencies: Record<string, Currency>; expenseCurrencies: Record<string, Currency> };
 type MetaAction = { action: "update-material-meta" | "update-expense-meta"; id: string; field: string; value: string };
 
 const editableCellClass = "h-11 rounded-none border-0 bg-transparent px-3 shadow-none transition-colors hover:bg-accent/30 focus-visible:relative focus-visible:z-10 focus-visible:border-ring focus-visible:bg-background focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-default disabled:bg-transparent disabled:opacity-100";
 const sheetCellClass = "border-r border-b border-border p-0 last:border-r-0";
+const GROUP_COLORS: Record<BehaviorGroup, string> = { variable: "var(--data-4)", fixed: "color-mix(in oklab, var(--muted-foreground) 45%, transparent)", mixed: "var(--data-2)" };
 const sheetHeaderClass = "h-10 border-b border-r border-border bg-muted/60 px-3 text-xs font-medium text-muted-foreground last:border-r-0";
 
 function EditableText({ value, label, onCommit, disabled, className }: {
@@ -68,7 +72,7 @@ function EditableMoney({ value, label, onCommit, disabled }: {
     }} />;
 }
 
-export function CostSheet({ state, draft, draftReady, draftStatus, canReview, busy, demo, onOpenCozte, onRetryDraft, onMaterialPrice, onExpenseAmount, onMaterialCurrency, onExpenseCurrency, onMetaChange, onCategoryCreate, onCategoryRename, onAllocationChange, onUsageChange, onAddMaterial, onAddExpense, onReview, onDiscard }: {
+export function CostSheet({ state, draft, draftReady, draftStatus, canReview, busy, demo, onOpenCozte, onRetryDraft, onMaterialPrice, onExpenseAmount, onMaterialCurrency, onExpenseCurrency, onMetaChange, onCategoryCreate, onCategoryRename, onAllocationChange, onBehaviorChange, onUsageChange, onAddMaterial, onAddExpense, onReview, onDiscard }: {
   state: DomainState;
   draft: Draft;
   draftReady: boolean;
@@ -86,6 +90,8 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   onCategoryCreate: (name: string) => Promise<boolean>;
   onCategoryRename: (id: string, name: string) => Promise<boolean>;
   onAllocationChange: (id: string, basis: "hours" | "units" | "manual", shares: Record<string, number>) => void;
+  /** Saves how an expense behaves (fixed, variable or mixed); true when it was confirmed. */
+  onBehaviorChange: (change: BehaviorChange) => Promise<boolean>;
   onUsageChange: (productId: string, materialId: string, quantityMilli: number) => Promise<boolean>;
   onAddMaterial: () => void;
   onAddExpense: () => void;
@@ -103,6 +109,7 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   const [allocationId, setAllocationId] = React.useState<string | null>(null);
   const [allocationBasis, setAllocationBasis] = React.useState<"hours" | "units" | "manual">("hours");
   const [allocationShares, setAllocationShares] = React.useState<Record<string, string>>({});
+  const [behaviorId, setBehaviorId] = React.useState<string | null>(null);
   const [usageMaterialId, setUsageMaterialId] = React.useState<string | null>(null);
   const [usageValues, setUsageValues] = React.useState<Record<string, string>>({});
   const [query, setQuery] = React.useState("");
@@ -127,8 +134,31 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   const entityKey = (name: string) => name.trim().toLocaleLowerCase("es");
   const productionInput = (item: Material) => state.productionWork?.inputs.find((input) => entityKey(input.name) === entityKey(item.name));
   const productionExpense = (item: SharedExpense) => state.productionWork?.recurringCosts.find((cost) => entityKey(cost.name) === entityKey(item.name));
-  const materials = kind === "expenses" ? [] : state.materials.filter((item) => matches(`${item.name} ${item.supplier}`, item.category));
-  const visibleExpenses = kind === "materials" ? [] : expenses.filter((item) => matches(item.name, item.category));
+  const money = useMoney(state.organization.currency);
+  const costs = React.useMemo(() => calculateCosts(state), [state]);
+  // What a normal month costs, split by how each cost behaves: supplies are variable, each expense as the business decided.
+  const split = React.useMemo(() => productionCostSplit(state, costs), [state, costs]);
+  const inKind = (expense: SharedExpense) => kind === "all" || (kind === "variable" ? behaviorGroup(expense) !== "fixed" : behaviorGroup(expense) !== "variable");
+  const materials = kind === "fixed" ? [] : state.materials.filter((item) => matches(`${item.name} ${item.supplier}`, item.category));
+  const visibleExpenses = expenses.filter((item) => inKind(item) && matches(item.name, item.category));
+  const variableExpenses = visibleExpenses.filter((item) => behaviorGroup(item) === "variable");
+  const fixedExpenses = visibleExpenses.filter((item) => behaviorGroup(item) === "fixed");
+  const mixedExpenses = visibleExpenses.filter((item) => behaviorGroup(item) === "mixed");
+  const showLabor = kind !== "fixed" && split.labor > 0 && selectedCategory === "all" && !normalizedQuery;
+  const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
+  const groupTotal: Record<BehaviorGroup, string> = {
+    variable: `≈ ${money(sum(materials.map((item) => split.materials[item.id] ?? 0)) + sum(variableExpenses.map((item) => split.expenses[item.id]?.variable ?? 0)) + (showLabor ? split.labor : 0))} al mes`,
+    fixed: `${money(sum(fixedExpenses.map((item) => split.expenses[item.id]?.fixed ?? 0)))} al mes`,
+    mixed: `${money(sum(mixedExpenses.map((item) => split.expenses[item.id]?.fixed ?? 0)))} fijo + ${money(sum(mixedExpenses.map((item) => split.expenses[item.id]?.variable ?? 0)))} variable al mes`,
+  };
+  const groupHint: Record<BehaviorGroup, string> = {
+    variable: `${BEHAVIOR_GROUPS.variable.hint} Un mes normal, con los lotes de cada producto.`,
+    fixed: `${BEHAVIOR_GROUPS.fixed.hint} Los gastos de venta, reparto y administración están en Gastos de la empresa.`,
+    mixed: BEHAVIOR_GROUPS.mixed.hint,
+  };
+  const variableCount = state.materials.length + expenses.filter((item) => behaviorGroup(item) !== "fixed").length;
+  const fixedCount = expenses.filter((item) => behaviorGroup(item) !== "variable").length;
+  const behaviorExpense = expenses.find((item) => item.id === behaviorId);
   const changedMaterialIds = state.materials.filter((item) => draft.materialCurrencies[item.id] !== undefined || (draft.materials[item.id] !== undefined && draft.materials[item.id] !== (item.nativeAmountMilli == null ? item.priceMinor : item.nativeAmountMilli / 1000)));
   const changedExpenseIds = expenses.filter((item) => draft.expenseCurrencies[item.id] !== undefined || (draft.expenses[item.id] !== undefined && draft.expenses[item.id] !== (item.nativeAmountMilli == null ? item.amountMinor : item.nativeAmountMilli / 1000)));
   const changeCount = changedMaterialIds.length + changedExpenseIds.length;
@@ -145,23 +175,24 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
   const QUALITY_LABELS = { complete: "Completo", estimated: "Estimado", incomplete: "Incompleto" } as const;
   const today = new Date().toLocaleDateString("en-CA");
   function exportProducts() {
-    const costs = calculateCosts(state);
-    downloadCsv(`costo-por-producto-${today}`, ["Producto", "Unidades por lote", "Insumos por unidad", "Mano de obra por unidad", "Gastos compartidos por unidad", "Costo por unidad", "Precio de venta", "Margen estimado (%)", "Estado", "Qué falta", "Moneda"],
+    downloadCsv(`costo-por-producto-${today}`, ["Producto", "Unidades por lote", "Insumos por unidad", "Mano de obra por unidad", "Gastos compartidos por unidad", "Costo variable por unidad", "Costo fijo por unidad", "Costo por unidad", "Precio de venta", "Margen estimado (%)", "Estado", "Qué falta", "Moneda"],
       state.products.map((product) => {
         const cost = costs.find((item) => item.productId === product.id);
-        return [product.name, product.lotUnits, cost?.perUnit?.materialMinor, cost?.perUnit?.laborMinor, cost?.perUnit?.sharedMinor, cost?.unitMinor, product.salePriceMinor || null, cost?.estimatedMarginPercent,
+        const perUnit = cost?.perUnit;
+        const variableUnit = perUnit ? perUnit.materialMinor + perUnit.laborMinor + (perUnit.variableExpenseMinor ?? 0) : null;
+        return [product.name, product.lotUnits, perUnit?.materialMinor, perUnit?.laborMinor, perUnit?.sharedMinor, variableUnit, perUnit ? perUnit.sharedMinor - (perUnit.variableExpenseMinor ?? 0) : null, cost?.unitMinor, product.salePriceMinor || null, cost?.estimatedMarginPercent,
           cost ? QUALITY_LABELS[cost.quality] : "", cost?.warnings.join(" · ") ?? "", state.organization.currency];
       }));
   }
   function exportConcepts() {
-    downloadCsv(`conceptos-de-costo-${today}`, ["Tipo", "Concepto", "Categoría", "Proveedor", "Período", "Unidad de compra / reparto", "Moneda", "Precio o monto", `Precio o monto en ${state.organization.currency}`, "Productos que lo usan"], [
+    downloadCsv(`conceptos-de-costo-${today}`, ["Tipo", "Tipo de costo", "Concepto", "Categoría", "Proveedor", "Período", "Unidad de compra / reparto", "Moneda", "Precio o monto", `Precio o monto en ${state.organization.currency}`, "Productos que lo usan"], [
       ...materials.map((item) => [
-        "Directo", item.name, item.category, item.supplier, "", item.purchaseUnit, item.currency ?? state.organization.currency,
+        "Directo", "Variable", item.name, item.category, item.supplier, "", item.purchaseUnit, item.currency ?? state.organization.currency,
         item.nativeAmountMilli == null ? item.priceMinor : item.nativeAmountMilli / 1000, item.priceMinor,
         state.components.filter((part) => part.materialId === item.id).map((part) => state.products.find((product) => product.id === part.productId)?.name).filter(Boolean).join(", "),
       ]),
       ...visibleExpenses.map((item) => [
-        "Compartido", item.name, item.category, "", item.period, basisLabel(item.allocationBasis), item.currency ?? state.organization.currency,
+        "Compartido", `${behaviorLabel(item).label} (${behaviorLabel(item).detail.toLocaleLowerCase("es")})`, item.name, item.category, "", item.period, basisLabel(item.allocationBasis), item.currency ?? state.organization.currency,
         item.nativeAmountMilli == null ? item.amountMinor : item.nativeAmountMilli / 1000, item.amountMinor,
         state.products.filter((product) => expenseAppliesTo(item, product.id)).map((product) => product.name).join(", "),
       ]),
@@ -177,6 +208,7 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
     const displayAmount = draft.materials[item.id] ?? (draft.materialCurrencies[item.id] ? null : item.nativeAmountMilli == null ? item.priceMinor : item.nativeAmountMilli / 1000);
     return <TableRow key={`material-${item.id}`} className={cn("bg-card hover:bg-muted/40", pending && "bg-accent/35 hover:bg-accent/50")}>
       <TableCell className={cn(sheetCellClass, "min-w-48")}><div className="flex items-center gap-2 px-2"><Badge variant="outline">Directo</Badge><EditableText value={item.name} label={`Nombre de ${item.name}`} disabled={!canEdit} className="min-w-36 font-medium" onCommit={(value) => onMetaChange({ action: "update-material-meta", id: item.id, field: "name", value })} /></div></TableCell>
+      <TableCell className={cn(sheetCellClass, "min-w-36")}><div className="flex flex-col items-start gap-0.5 px-3 py-1.5" title={SUPPLY_BEHAVIOR_HINT}><CostTypePill group="variable" label="Variable" /><span className="text-[11px] text-muted-foreground">Según la receta</span></div></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-40")}><Dropdown aria-label={`Categoría de ${item.name}`} value={item.category} disabled={!canEdit} variant="cell" onChange={(event) => onMetaChange({ action: "update-material-meta", id: item.id, field: "category", value: event.target.value })}>{categories.map((name) => <DropdownOption key={name} value={name}>{name}</DropdownOption>)}</Dropdown></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-44")}><EditableText value={item.supplier} label={`Proveedor de ${item.name}`} disabled={!canEdit} onCommit={(value) => onMetaChange({ action: "update-material-meta", id: item.id, field: "supplier", value })} /></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-32")}><EditableText value={item.purchaseUnit} label={`Unidad de ${item.name}`} disabled={!canEdit} onCommit={(value) => onMetaChange({ action: "update-material-meta", id: item.id, field: "purchaseUnit", value })} /></TableCell>
@@ -198,15 +230,43 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
     const pending = changedExpenseIds.some((entry) => entry.id === item.id);
     const selectedCurrency = draft.expenseCurrencies[item.id] ?? item.currency ?? state.organization.currency;
     const displayAmount = draft.expenses[item.id] ?? (draft.expenseCurrencies[item.id] ? null : item.nativeAmountMilli == null ? item.amountMinor : item.nativeAmountMilli / 1000);
+    const group = behaviorGroup(item);
+    const type = behaviorLabel(item);
     return <TableRow key={`expense-${item.id}`} className={cn("bg-card hover:bg-muted/40", pending && "bg-accent/35 hover:bg-accent/50")}>
-      <TableCell className={cn(sheetCellClass, "min-w-48")}><div className="flex items-center gap-2 px-2"><Badge variant="outline">Compartido</Badge><EditableText value={item.name} label={`Nombre de ${item.name}`} disabled={!canEdit} className="min-w-36 font-medium" onCommit={(value) => onMetaChange({ action: "update-expense-meta", id: item.id, field: "name", value })} />{item.behavior && item.behavior !== "fixed" ? <Badge variant="secondary" className="shrink-0" title={item.behaviorNote || undefined}>{behaviorTag(item)}</Badge> : null}</div></TableCell>
+      <TableCell className={cn(sheetCellClass, "min-w-48")}><div className="flex items-center gap-2 px-2"><Badge variant="outline">Compartido</Badge><EditableText value={item.name} label={`Nombre de ${item.name}`} disabled={!canEdit} className="min-w-36 font-medium" onCommit={(value) => onMetaChange({ action: "update-expense-meta", id: item.id, field: "name", value })} /></div></TableCell>
+      <TableCell className={cn(sheetCellClass, "min-w-36")}><button type="button" disabled={!canEdit} onClick={() => setBehaviorId(item.id)} aria-label={`Tipo de costo de ${item.name}: ${type.label}. Cambiar`} title={item.behaviorNote || "Cambiar si es fijo, variable o mixto"}
+        className="flex min-h-11 w-full flex-col items-start justify-center gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-accent/30 disabled:cursor-default disabled:hover:bg-transparent"><CostTypePill group={group} label={type.label} /><span className="text-[11px] text-muted-foreground">{type.detail}</span></button></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-40")}><Dropdown aria-label={`Categoría de ${item.name}`} value={item.category} disabled={!canEdit} variant="cell" onChange={(event) => onMetaChange({ action: "update-expense-meta", id: item.id, field: "category", value: event.target.value })}>{categories.map((name) => <DropdownOption key={name} value={name}>{name}</DropdownOption>)}</Dropdown></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-44")}><MonthSelect variant="cell" aria-label={`Período de ${item.name}`} value={item.period} disabled={!canEdit} onChange={(value) => { if (value) onMetaChange({ action: "update-expense-meta", id: item.id, field: "period", value }); }} /></TableCell>
-      <TableCell className={cn(sheetCellClass, "min-w-32")}><Button size="sm" variant="ghost" className="h-11 w-full justify-start rounded-none px-3" disabled={!canEdit} onClick={() => openAllocation(item)}><Settings2 data-icon="inline-start" />{item.allocationBasis === "hours" ? "Por horas" : item.allocationBasis === "units" ? "Por unidades" : "Porcentajes"}</Button></TableCell>
+      <TableCell className={cn(sheetCellClass, "min-w-32")}>{group === "variable"
+        ? <span className="block px-3 text-sm text-muted-foreground" title="Un costo variable se reparte según lo que lo hace crecer">Con {DRIVER_LABELS[item.variableDriver ?? "unit"]}</span>
+        : <Button size="sm" variant="ghost" className="h-11 w-full justify-start rounded-none px-3" disabled={!canEdit} onClick={() => openAllocation(item)} title={group === "mixed" ? "Cómo se reparte la parte fija" : undefined}><Settings2 data-icon="inline-start" />{group === "mixed" ? "Fija: " : ""}{item.allocationBasis === "hours" ? "Por horas" : item.allocationBasis === "units" ? "Por unidades" : "Porcentajes"}</Button>}</TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-28")}><Dropdown aria-label={`Moneda de ${item.name}`} value={selectedCurrency} disabled={!canEdit} variant="cell" onChange={(event) => onExpenseCurrency(item.id, event.target.value as Currency)}>{supportedCurrencies.map((code) => <DropdownOption key={code} value={code}>{code}</DropdownOption>)}</Dropdown></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-36")}><EditableMoney value={displayAmount} label={`Monto de ${item.name}`} disabled={!canEdit} onCommit={(value) => onExpenseAmount(item.id, value)} />{selectedCurrency !== state.organization.currency ? <span className="block px-3 pb-1 text-right text-[11px] text-muted-foreground">{state.fxQuotes?.[selectedCurrency]?.asOf ? `${state.fxQuotes[selectedCurrency]?.source} ${state.fxQuotes[selectedCurrency]?.asOf}` : "Cotización pendiente"}</span> : null}</TableCell>
        <TableCell className={cn(sheetCellClass, "min-w-52 px-3 py-2")}><div className="space-y-1"><Badge variant="secondary">Planilla · {affected} producto{affected === 1 ? "" : "s"}</Badge>{mapCost ? <div className="rounded-md bg-muted/50 px-2 py-1.5"><p className="text-xs font-medium">Mapa Cozte · {mapCost.allocation === "manual_percentage" ? "porcentajes" : mapCost.allocation === "production_hours" ? "por horas" : "por unidades"}</p><p className="text-xs text-muted-foreground">{mapProducts.length ? mapProducts.map((product) => product.name).join(", ") : "Reparto pendiente de definir"}</p><Button size="sm" variant="link" className="h-7 px-0 text-xs" onClick={onOpenCozte}>Revisar reparto con Cozte</Button></div> : null}</div></TableCell>
       <TableCell className={cn(sheetCellClass, "px-3")}>{pending ? <Badge variant="secondary">Borrador</Badge> : <span className="text-muted-foreground">Vigente</span>}</TableCell>
+    </TableRow>;
+  }
+
+  /** The heading of a group of costs: what it is, why, and what it adds up to in a normal month. */
+  function groupRow(group: BehaviorGroup) {
+    return <TableRow key={`group-${group}`} className="hover:bg-transparent">
+      <TableCell colSpan={9} className="border-b border-border bg-muted/35 p-0">
+        <div className="sticky left-0 flex w-fit max-w-[min(34rem,calc(100vw-3rem))] flex-wrap items-baseline gap-x-4 gap-y-0.5 border-l-4 px-4 py-2.5" style={{ borderLeftColor: GROUP_COLORS[group] }}>
+          <span className="text-sm font-semibold">{BEHAVIOR_GROUPS[group].title}</span>
+          <span className="text-sm tabular-nums">{groupTotal[group]}</span>
+          <span className="basis-full text-xs whitespace-normal text-muted-foreground">{groupHint[group]}</span>
+        </div>
+      </TableCell>
+    </TableRow>;
+  }
+
+  /** Labor paid per lot is set on each product; it shows here because it grows with every lot made. */
+  function laborRow() {
+    return <TableRow key="labor" className="bg-card hover:bg-muted/40">
+      <TableCell className={cn(sheetCellClass, "min-w-48")}><div className="flex items-center gap-2 px-2 py-2"><Badge variant="outline">Directo</Badge><span className="px-3 font-medium">Mano de obra por lote</span></div></TableCell>
+      <TableCell className={cn(sheetCellClass, "min-w-36")}><div className="flex flex-col items-start gap-0.5 px-3 py-1.5"><CostTypePill group="variable" label="Variable" /><span className="text-[11px] text-muted-foreground">Se paga por tanda</span></div></TableCell>
+      <TableCell colSpan={7} className={cn(sheetCellClass, "px-3 text-sm text-muted-foreground")}>Se define en cada producto · ≈ {money(split.labor)} al mes</TableCell>
     </TableRow>;
   }
 
@@ -221,13 +281,21 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
     <Card className="overflow-hidden py-0">
       <CardContent className="p-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 md:px-6">
-          <Tabs value={kind} onValueChange={(value) => setKind(value as SheetKind)}><TabsList variant="line" aria-label="Forma de asignación"><TabsTrigger value="all">Todos <Badge variant="secondary">{state.materials.length + expenses.length}</Badge></TabsTrigger><TabsTrigger value="materials">Directos <Badge variant="secondary">{state.materials.length}</Badge></TabsTrigger><TabsTrigger value="expenses">Compartidos <Badge variant="secondary">{expenses.length}</Badge></TabsTrigger></TabsList></Tabs>
+          <Tabs value={kind} onValueChange={(value) => setKind(value as SheetKind)}><TabsList variant="line" aria-label="Tipo de costo"><TabsTrigger value="all">Todos <Badge variant="secondary">{state.materials.length + expenses.length}</Badge></TabsTrigger><TabsTrigger value="variable">Variables <Badge variant="secondary">{variableCount}</Badge></TabsTrigger><TabsTrigger value="fixed">Fijos <Badge variant="secondary">{fixedCount}</Badge></TabsTrigger></TabsList></Tabs>
           <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status" aria-live="polite">
             {draftStatus === "saving" ? <AnimatedIcon name="cloud" /> : draftStatus === "saved" ? <AnimatedIcon name="check" /> : null}
             {demo ? "Demo · no se guarda" : draftStatus === "loading" ? "Cargando borrador" : draftStatus === "saving" ? "Guardando borrador" : draftStatus === "error" ? draftReady ? "No se guardó el borrador" : "No se pudo cargar el borrador" : "Borrador guardado"}
             {draftStatus === "error" ? <Button size="sm" variant="outline" onClick={onRetryDraft}>Reintentar</Button> : null}
           </div>
         </div>
+        {split.variable + split.fixed > 0 ? <div className="flex flex-col gap-2 border-b px-4 py-3 md:px-6" role="group" aria-label="Costos variables y fijos de un mes normal">
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm">
+            <span className="flex flex-wrap items-baseline gap-x-1.5"><span className="size-2.5 self-center rounded-[3px] bg-[var(--data-4)]" aria-hidden="true" /><span className="font-medium">Variables</span><span className="tabular-nums">≈ {money(split.variable)} al mes</span><span className="text-muted-foreground">· crecen con lo que producís</span></span>
+            <span className="flex flex-wrap items-baseline gap-x-1.5"><span className="size-2.5 self-center rounded-[3px] bg-muted-foreground/45" aria-hidden="true" /><span className="font-medium">Fijos</span><span className="tabular-nums">{money(split.fixed)} al mes</span><span className="text-muted-foreground">· se pagan igual aunque produzcas menos</span></span>
+          </div>
+          <div className="flex h-2 gap-0.5" aria-hidden="true"><span className="rounded-l-full bg-[var(--data-4)]" style={{ width: `${split.variable / (split.variable + split.fixed) * 100}%` }} /><span className="flex-1 rounded-r-full bg-muted-foreground/45" /></div>
+          <p className="text-xs text-muted-foreground">Un mes normal, con los lotes de cada producto. Tocá el tipo de un gasto para cambiar si es fijo, variable o mixto.</p>
+        </div> : null}
         <div className="flex flex-col gap-3 border-b px-4 py-3 md:px-6">
           <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex gap-1" role="group" aria-label="Vista de costos"><Button size="sm" variant={view === "table" ? "secondary" : "ghost"} onClick={() => setView("table")}><Table2 data-icon="inline-start" />Tabla</Button><Button size="sm" variant={view === "list" ? "secondary" : "ghost"} onClick={() => setView("list")}><LayoutList data-icon="inline-start" />Lista</Button><Button size="sm" variant={view === "board" ? "secondary" : "ghost"} onClick={() => setView("board")}><Columns3 data-icon="inline-start" />Tablero</Button></div><span className="text-xs text-muted-foreground">{materials.length + visibleExpenses.length} conceptos</span></div>
           <div className="relative"><AnimatedIcon name="search" size={16} className="pointer-events-none absolute top-2.5 left-3 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Buscar costos" placeholder="Buscar costo o proveedor" className="pl-9" /></div>
@@ -236,10 +304,11 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
         {materials.length + visibleExpenses.length ? view === "table" ? <>
           <p className="px-4 py-1 text-xs text-muted-foreground">Desliza para ver más columnas →</p>
           <div className="mx-3 mb-3 overflow-hidden rounded-xl border border-border bg-card shadow-sm md:mx-4 md:mb-4">
-            <Table aria-label="Costos de producción" className="min-w-[1120px] border-separate border-spacing-0" containerProps={{ role: "region", "aria-label": "Planilla de costos desplazable", tabIndex: 0 }}>
+            <Table aria-label="Costos de producción" className="min-w-[1260px] border-separate border-spacing-0" containerProps={{ role: "region", "aria-label": "Planilla de costos desplazable", tabIndex: 0 }}>
               <TableHeader>
                 <TableRow className="bg-muted/60 hover:bg-muted/60">
                   <TableHead className={sheetHeaderClass}>Concepto</TableHead>
+                  <TableHead className={sheetHeaderClass}>Tipo de costo</TableHead>
                   <TableHead className={sheetHeaderClass}>Categoría</TableHead>
                   <TableHead className={sheetHeaderClass}>Proveedor / período</TableHead>
                   <TableHead className={sheetHeaderClass}>Unidad / reparto</TableHead>
@@ -249,10 +318,14 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
                   <TableHead className={sheetHeaderClass}>Estado</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody className="[&_tr:last-child>td]:border-b-0">{materials.map(materialRow)}{visibleExpenses.map(expenseRow)}</TableBody>
+              <TableBody className="[&_tr:last-child>td]:border-b-0">
+                {materials.length || variableExpenses.length || showLabor ? [groupRow("variable"), ...materials.map(materialRow), ...(showLabor ? [laborRow()] : []), ...variableExpenses.map(expenseRow)] : null}
+                {fixedExpenses.length ? [groupRow("fixed"), ...fixedExpenses.map(expenseRow)] : null}
+                {mixedExpenses.length ? [groupRow("mixed"), ...mixedExpenses.map(expenseRow)] : null}
+              </TableBody>
             </Table>
           </div>
-        </> : <CostGroupedView view={view} categories={selectedCategory === "all" ? categories : [selectedCategory]} materials={materials} expenses={visibleExpenses} currency={state.organization.currency} draft={draft} onAllocation={openAllocation} /> : <Empty className="py-10"><EmptyHeader><EmptyTitle>No hay costos en esta vista</EmptyTitle><EmptyDescription>{query || selectedCategory !== "all" ? "Prueba otra búsqueda o categoría." : "Agrega un costo para comenzar."}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="outline" onClick={() => { setQuery(""); setCategory("all"); setKind("all"); }}>Ver todos</Button></EmptyContent></Empty>}
+        </> : <CostGroupedView view={view} categories={selectedCategory === "all" ? categories : [selectedCategory]} materials={materials} expenses={visibleExpenses} currency={state.organization.currency} draft={draft} totals={groupTotal} hints={groupHint} labor={showLabor ? money(split.labor) : null} canEdit={canEdit} onAllocation={openAllocation} onBehavior={(item) => setBehaviorId(item.id)} /> : <Empty className="py-10"><EmptyHeader><EmptyTitle>No hay costos en esta vista</EmptyTitle><EmptyDescription>{query || selectedCategory !== "all" ? "Prueba otra búsqueda o categoría." : "Agrega un costo para comenzar."}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="outline" onClick={() => { setQuery(""); setCategory("all"); setKind("all"); }}>Ver todos</Button></EmptyContent></Empty>}
       </CardContent>
     </Card>
     {changeCount ? <Alert><AnimatedIcon name="alert" /><AlertTitle>{changeCount} cambio{changeCount === 1 ? "" : "s"} en borrador</AlertTitle><AlertDescription>{affectedProducts.size ? `Puede cambiar el costeo de ${affectedProducts.size} producto${affectedProducts.size === 1 ? "" : "s"}. ` : ""}Los importes vigentes no cambian hasta tu aprobación.</AlertDescription></Alert> : null}
@@ -260,6 +333,8 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
     <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-sm text-muted-foreground">{changeCount ? `${changeCount} importe${changeCount === 1 ? "" : "s"} por confirmar` : "Todos los importes al día"}</span><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={!changeCount || busy} onClick={onDiscard}>Descartar borrador</Button><Button disabled={!changeCount || !canReview || busy || !draftReady} onClick={onReview}>Revisar impacto</Button></div></div>
     <Dialog open={categoryDialog} onOpenChange={setCategoryDialog}><DialogContent><DialogHeader><DialogTitle>Categorías de la empresa</DialogTitle><DialogDescription>Usa los nombres acordados para organizar tus costos. La regla de reparto se define por concepto.</DialogDescription></DialogHeader><div className="max-h-72 space-y-2 overflow-y-auto">{(state.categories ?? []).map((item) => <div key={item.id} className="flex gap-2"><Input aria-label={`Nombre de ${item.name}`} value={renaming === item.id ? categoryName : item.name} onFocus={() => { setRenaming(item.id); setCategoryName(item.name); }} onChange={(event) => setCategoryName(event.target.value)} /><Button variant="outline" disabled={busy || renaming !== item.id || categoryName.trim() === item.name} onClick={async () => { if (await onCategoryRename(item.id, categoryName.trim())) { setRenaming(null); setCategoryName(""); } }}>Guardar</Button></div>)}</div><div className="flex gap-2"><Input aria-label="Nueva categoría" placeholder="Ej. Materias primas" value={renaming === null ? categoryName : ""} onFocus={() => { setRenaming(null); setCategoryName(""); }} onChange={(event) => setCategoryName(event.target.value)} /><Button disabled={busy || renaming !== null || categoryName.trim().length < 2} onClick={async () => { if (await onCategoryCreate(categoryName.trim())) setCategoryName(""); }}>Agregar</Button></div></DialogContent></Dialog>
     <Dialog open={activeAllocation !== undefined} onOpenChange={(open) => { if (!open) setAllocationId(null); }}><DialogContent><DialogHeader><DialogTitle>Distribución de {activeAllocation?.name}</DialogTitle><DialogDescription>Elige cómo repartir este costo entre los productos. El cambio recalcula sus costos.</DialogDescription></DialogHeader><Dropdown aria-label="Método de reparto" value={allocationBasis} onChange={(event) => setAllocationBasis(event.target.value as "hours" | "units" | "manual")}><DropdownOption value="hours">Horas de producción</DropdownOption><DropdownOption value="units">Unidades del lote</DropdownOption><DropdownOption value="manual">Porcentajes acordados</DropdownOption></Dropdown>{allocationBasis === "manual" ? <div className="space-y-2">{state.products.map((product) => <label key={product.id} className="flex items-center justify-between gap-3 text-sm"><span>{product.name}</span><div className="flex items-center gap-1"><Input className="w-24 text-right" type="number" min="0" max="100" step="0.01" value={allocationShares[product.id] ?? ""} onChange={(event) => setAllocationShares((current) => ({ ...current, [product.id]: event.target.value }))} /><span>%</span></div></label>)}<p className="text-xs text-muted-foreground">Total: {state.products.reduce((sum, product) => sum + Number(allocationShares[product.id] || 0), 0).toFixed(2)} %</p></div> : null}<DialogFooter><Button variant="outline" onClick={() => setAllocationId(null)}>Cancelar</Button><Button disabled={busy || (allocationBasis === "manual" && Math.round(state.products.reduce((sum, product) => sum + Number(allocationShares[product.id] || 0), 0) * 100) !== 10000)} onClick={() => { if (activeAllocation) onAllocationChange(activeAllocation.id, allocationBasis, Object.fromEntries(state.products.map((product) => [product.id, Math.round(Number(allocationShares[product.id] || 0) * 100)]))); setAllocationId(null); }}>Aplicar reparto</Button></DialogFooter></DialogContent></Dialog>
+    {behaviorExpense ? <CostBehaviorDialog item={{ id: behaviorExpense.id, name: behaviorExpense.name, amount: behaviorExpense.amountMinor, behavior: behaviorExpense.behavior ?? "fixed", driver: behaviorExpense.variableDriver ?? null, variablePercent: (behaviorExpense.variableShareBps ?? 5000) / 100, note: behaviorExpense.behaviorNote ?? "" }} money={money}
+      onClose={() => setBehaviorId(null)} onSave={async (change) => { if (await onBehaviorChange(change)) setBehaviorId(null); }} /> : null}
     <Dialog open={usageMaterial !== undefined} onOpenChange={(open) => { if (!open) setUsageMaterialId(null); }}><DialogContent><DialogHeader><DialogTitle>Consumo de {usageMaterial?.name}</DialogTitle><DialogDescription>Indica cuánto se usa por lote, expresado en {usageMaterial?.purchaseUnit || "la unidad de compra"}. Cero quita la asignación.</DialogDescription></DialogHeader><div className="max-h-80 space-y-2 overflow-y-auto">{state.products.map((product) => <div key={product.id} className="flex items-center gap-2"><label className="min-w-0 flex-1 text-sm" htmlFor={`usage-${product.id}`}>{product.name}</label><Input id={`usage-${product.id}`} className="w-28 text-right" type="number" min="0" step="0.001" value={usageValues[product.id] ?? "0"} onChange={(event) => setUsageValues((current) => ({ ...current, [product.id]: event.target.value }))} /><span className="w-16 truncate text-xs text-muted-foreground">{usageMaterial?.purchaseUnit}</span><Button size="sm" variant="outline" disabled={busy || !usageMaterial || !Number.isFinite(Number(usageValues[product.id])) || Number(usageValues[product.id]) < 0 || Math.round(Number(usageValues[product.id]) * 1000) === (state.components.find((part) => part.productId === product.id && part.materialId === usageMaterialId)?.quantityMilli ?? 0)} onClick={async () => { if (usageMaterial && await onUsageChange(product.id, usageMaterial.id, Math.round(Number(usageValues[product.id]) * 1000))) toast.success("Consumo actualizado"); }}>Guardar</Button></div>)}</div></DialogContent></Dialog>
   </div>;
 }
