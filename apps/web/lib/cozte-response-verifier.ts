@@ -69,6 +69,15 @@ const illustrative = /(?<![\p{L}])(?:por ejemplo|ejemplo|supongamos|imagin[aá]|
 
 /** Announcing an imminent action ("voy a guardar", "ahora ejecuto") and then ending the turn without doing it. */
 const announcedAction = /(?<![\p{L}\p{N}])(?:(?:voy a|vamos a|procedo a|paso a|ahora mismo|ahora)\s+(?:\p{L}+\s+){0,2}?(?:guardar|registrar|crear|cargar|actualizar|ejecutar|agregar|aplicar|llamar|invocar)|(?:pruebo|ejecuto|guardo|actualizo|aplico|agrego|invoco))(?![\p{L}\p{N}])/iu;
+/** A sentence that makes the action depend on the person ("si te dice un precio, me lo pasás y lo guardo") or asks. */
+const conditionalSentence = /[¿?]|(?<![\p{L}\p{N}])(?:si|cuando|apenas|en cuanto|una vez que|me (?:lo |la |los |las )?(?:pas[aá]s|pasas|dec[ií]s|dices|mand[aá]s|mandas|confirm[aá]s|confirmas|avis[aá]s|avisas)|av[ií]same|dime|decime)(?![\p{L}\p{N}])/iu;
+
+/** Whether the answer announces an action outright, outside a condition or a question. */
+function announcesOutright(answer: string): boolean {
+  for (const match of answer.matchAll(new RegExp(announcedAction.source, "giu"))) if (!conditionalSentence.test(sentenceAround(answer, match.index ?? 0))) return true;
+  return false;
+}
+
 const waitsForPerson = /\?\s*$|(?<![\p{L}\p{N}])(?:cuando|apenas|en cuanto|si me|si confirmas|si quieres|si quer[eé]s|cuando me|m[aá]s adelante|antes de (?:guardar|seguir|cargar)|falta(?:n)? (?:definir|saber|confirmar))(?![\p{L}\p{N}])/iu;
 
 const negatedContext = /(?:(?<![\p{L}\p{N}])(?:no|nada|ni|aún no|todavía no|nunca|sin|antes de|para|puedo|podemos|podría|voy a|vamos a|quieres que|quer[eé]s que|si|cuando)\s+|¿\s*)(?:\S+\s+){0,2}$/iu;
@@ -148,7 +157,7 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
         : `La respuesta afirma cambios guardados ("${unbacked.slice(0, 2).join('", "')}"), pero en este turno no se ejecutó ninguna escritura.`,
     });
   }
-  if (!unbacked.length && !successfulWrites.length && !askedPerson && announcedAction.test(answer) && !waitsForPerson.test(answer)) {
+  if (!unbacked.length && !successfulWrites.length && !askedPerson && announcesOutright(answer) && !waitsForPerson.test(answer)) {
     issues.push({ code: "announced-not-executed", detail: "La respuesta anuncia que va a guardar o ejecutar algo, pero el turno terminó sin hacerlo." });
   }
   const evidence = JSON.stringify(tools.map((tool) => tool.output)) ?? "";
@@ -174,7 +183,10 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
  */
 export function finalAnswerStep(steps: { toolCalls: { toolName: string }[] }[]): number {
   const last = steps.length - 1;
-  return last >= 0 && steps[last].toolCalls.every((call) => call.toolName === "askQuestions") ? last : -1;
+  if (last < 0) return -1;
+  const calls = steps[last].toolCalls;
+  // Showing questions ends the turn: that step's text is what the person reads, even with other tools called beside them.
+  return calls.length === 0 || calls.some((call) => call.toolName === "askQuestions") ? last : -1;
 }
 
 const DISCARD_REASONS: Record<VerificationIssue["code"], string> = {

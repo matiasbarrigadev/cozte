@@ -134,11 +134,24 @@ describe("verifyCozteResponse", () => {
   });
 });
 
+describe("announced actions", () => {
+  const simulation = { name: "simulate", ok: true, write: false, output: { ok: true, products: [{ product: "Tofu 300g", unitCostBefore: 938, unitCostAfter: 921 }] } };
+  it("does not take an offer that depends on the person for an unfinished promise", () => {
+    expect(verifyCozteResponse("Con la soja 10 % más barata, el Tofu 300g pasa de $938 a $921. ¿Te animás a llamar al proveedor esta semana? Si te dice un nuevo precio, me lo pasás y lo guardo.", [simulation]).ok).toBe(true);
+    expect(verifyCozteResponse("El Tofu 300g pasaría a $921. Cuando tengas el precio nuevo, lo guardo.", [simulation]).ok).toBe(true);
+  });
+  it("still catches an action announced outright and never done", () => {
+    expect(verifyCozteResponse("El Tofu 300g pasaría a $921. Ahora guardo el precio nuevo de la soja.", [simulation]).issues.map((issue) => issue.code)).toContain("announced-not-executed");
+  });
+});
+
 describe("final answer", () => {
   it("is the closing step, unless the turn stopped while still running tools", () => {
     const step = (...toolNames: string[]) => ({ toolCalls: toolNames.map((toolName) => ({ toolName })) });
     expect(finalAnswerStep([step("saveExpense"), step()])).toBe(1);
     expect(finalAnswerStep([step("saveExpense"), step("askQuestions")])).toBe(1);
+    // The text written in the step that shows questions is what the person reads, even with tools called beside them.
+    expect(finalAnswerStep([step("readCosts"), step("showVisual", "calculate", "askQuestions")])).toBe(1);
     expect(finalAnswerStep([step(), step("saveRecipe")])).toBe(-1);
     expect(finalAnswerStep([])).toBe(-1);
   });
