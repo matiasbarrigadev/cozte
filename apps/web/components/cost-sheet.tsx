@@ -4,6 +4,7 @@ import * as React from "react";
 import { toast } from "sonner";
 import { calculateCosts, productionExpenses, type DomainState, type Material, type SharedExpense } from "@/lib/domain";
 import { supportedCurrencies, toNativeMilli, type Currency } from "@/lib/currency";
+import { behaviorTag } from "@/lib/break-even";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -198,7 +199,7 @@ export function CostSheet({ state, draft, draftReady, draftStatus, canReview, bu
     const selectedCurrency = draft.expenseCurrencies[item.id] ?? item.currency ?? state.organization.currency;
     const displayAmount = draft.expenses[item.id] ?? (draft.expenseCurrencies[item.id] ? null : item.nativeAmountMilli == null ? item.amountMinor : item.nativeAmountMilli / 1000);
     return <TableRow key={`expense-${item.id}`} className={cn("bg-card hover:bg-muted/40", pending && "bg-accent/35 hover:bg-accent/50")}>
-      <TableCell className={cn(sheetCellClass, "min-w-48")}><div className="flex items-center gap-2 px-2"><Badge variant="outline">Compartido</Badge><EditableText value={item.name} label={`Nombre de ${item.name}`} disabled={!canEdit} className="min-w-36 font-medium" onCommit={(value) => onMetaChange({ action: "update-expense-meta", id: item.id, field: "name", value })} /></div></TableCell>
+      <TableCell className={cn(sheetCellClass, "min-w-48")}><div className="flex items-center gap-2 px-2"><Badge variant="outline">Compartido</Badge><EditableText value={item.name} label={`Nombre de ${item.name}`} disabled={!canEdit} className="min-w-36 font-medium" onCommit={(value) => onMetaChange({ action: "update-expense-meta", id: item.id, field: "name", value })} />{item.behavior && item.behavior !== "fixed" ? <Badge variant="secondary" className="shrink-0" title={item.behaviorNote || undefined}>{behaviorTag(item)}</Badge> : null}</div></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-40")}><Dropdown aria-label={`Categoría de ${item.name}`} value={item.category} disabled={!canEdit} variant="cell" onChange={(event) => onMetaChange({ action: "update-expense-meta", id: item.id, field: "category", value: event.target.value })}>{categories.map((name) => <DropdownOption key={name} value={name}>{name}</DropdownOption>)}</Dropdown></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-44")}><MonthSelect variant="cell" aria-label={`Período de ${item.name}`} value={item.period} disabled={!canEdit} onChange={(value) => { if (value) onMetaChange({ action: "update-expense-meta", id: item.id, field: "period", value }); }} /></TableCell>
       <TableCell className={cn(sheetCellClass, "min-w-32")}><Button size="sm" variant="ghost" className="h-11 w-full justify-start rounded-none px-3" disabled={!canEdit} onClick={() => openAllocation(item)}><Settings2 data-icon="inline-start" />{item.allocationBasis === "hours" ? "Por horas" : item.allocationBasis === "units" ? "Por unidades" : "Porcentajes"}</Button></TableCell>

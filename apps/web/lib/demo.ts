@@ -36,7 +36,7 @@ export const demoState: DomainState = {
     { id: "electricidad", name: "Electricidad", period: "2026-09", amountMinor: 45000, allocationBasis: "hours", category: "Servicios", version: 1 },
     { id: "gas", name: "Gas", period: "2026-09", amountMinor: 24000, allocationBasis: "hours", category: "Servicios", version: 1 },
     { id: "espacio", name: "Espacio", period: "2026-09", amountMinor: 25000, allocationBasis: "hours", category: "Instalaciones", version: 1 },
-    { id: "moto", name: "Envíos en moto", period: "2026-09", area: "delivery", amountMinor: 60000, allocationBasis: "units", category: "Envíos", version: 1 },
+    { id: "moto", name: "Envíos en moto", period: "2026-09", area: "delivery", amountMinor: 60000, allocationBasis: "units", category: "Envíos", behavior: "variable", variableDriver: "unit", variableShareBps: 10000, behaviorNote: "Se le paga por viaje", version: 1 },
     { id: "publicidad", name: "Publicidad en Instagram", period: "2026-09", area: "sales", amountMinor: 35000, allocationBasis: "units", category: "Publicidad", version: 1 },
     { id: "contador", name: "Contador", period: "2026-09", area: "admin", amountMinor: 55000, allocationBasis: "units", category: "Servicios profesionales", version: 1 },
     { id: "software", name: "Software de facturación", period: "2026-09", area: "admin", amountMinor: 12000, allocationBasis: "units", category: "Servicios", version: 1 },

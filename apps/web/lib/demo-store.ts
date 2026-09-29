@@ -1,4 +1,5 @@
-import { calculateCosts, type CostArea } from "./domain";
+import { calculateCosts, type CostArea, type SharedExpense } from "./domain";
+import { DEFAULT_MIX_PLAN, buildBreakEvenPlan, type ProductSales, type SalesMixPlan } from "./break-even";
 import { roundMoney } from "./money";
 import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, buildCustomerDirectory, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type BusinessRecords, type CustomerDirectory, type Delivery, type Purchase, type PurchaseKind, type Sale, type SalePatch, type SalesChannel } from "./business";
 import { DEMO_TODAY, DEMO_ZONES, demoBusinessRecords, demoDeliveries, demoHistorySales, demoState, demoSupplierHistory } from "./demo";
@@ -13,7 +14,9 @@ import { monthsBack } from "./business-analytics";
  * the same engine as a real workspace. Nothing leaves the browser; a reload starts over.
  */
 
-type Store = { records: BusinessRecords; deliveries: Delivery[]; customers: Customer[]; history: Sale[]; zones: DeliveryZone[]; routeOrigin: string; suppliers: Supplier[]; supplierHistory: (SupplierPurchase & { supplier: string })[] };
+type Store = { records: BusinessRecords; deliveries: Delivery[]; customers: Customer[]; history: Sale[]; zones: DeliveryZone[]; routeOrigin: string; suppliers: Supplier[]; supplierHistory: (SupplierPurchase & { supplier: string })[]; mixPlan: SalesMixPlan; behaviors: Record<string, ExpenseBehavior> };
+
+type ExpenseBehavior = Pick<SharedExpense, "behavior" | "variableDriver" | "variableShareBps" | "behaviorNote">;
 
 let store: Store | null = null;
 let version = 0;
@@ -46,6 +49,8 @@ function data(): Store {
     store = {
       records: { ...records, sales: records.sales.map((sale) => ({ ...sale, delivery: undefined, customerId: idOf(sale.customer) })), purchases: records.purchases.map(linked), investments: records.investments.map(linked) },
       deliveries, customers, history: history.map((sale) => ({ ...sale, customerId: idOf(sale.customer) })), zones: DEMO_ZONES, routeOrigin: "Av. Matta 1200, Santiago", suppliers, supplierHistory: earlier.map(linked),
+      // The motorbike comes paid per trip (in the demo's data); gas is left fixed so its review shows up.
+      mixPlan: DEFAULT_MIX_PLAN, behaviors: {},
     };
   }
   return store;
@@ -137,6 +142,33 @@ export function demoSupplierDetail(id: string) {
   if (!supplier) throw new DemoError("Proveedor no encontrado");
   const purchases = demoSupplierPurchases(current).filter((purchase) => purchase.supplierId === id);
   return { supplier, months: supplierMonths(purchases, monthsBack(DEMO_TODAY.slice(0, 7), 12)), purchases: purchases.slice(0, 60), today: DEMO_TODAY };
+}
+
+/** The demo's cost state with each expense's behavior as the visitor set it. */
+function demoCostState(current: Store) {
+  return { ...demoState, expenses: demoState.expenses.map((expense) => ({ ...expense, ...current.behaviors[expense.id] })) };
+}
+
+function soldByProduct(sales: Sale[], month: string): ProductSales {
+  const totals: ProductSales = {};
+  for (const sale of sales.filter((item) => item.soldOn.startsWith(month))) for (const item of sale.items) {
+    const entry = totals[item.productId] ?? { units: 0, revenue: 0 };
+    entry.units += item.quantityMilli / 1000;
+    entry.revenue += item.quantityMilli / 1000 * item.unitPriceMinor;
+    totals[item.productId] = entry;
+  }
+  return totals;
+}
+
+/** The demo's break-even of a normal month, like /api/break-even. */
+export function demoBreakEven() {
+  const current = data();
+  const state = demoCostState(current);
+  const month = DEMO_TODAY.slice(0, 7);
+  return {
+    plan: buildBreakEvenPlan({ state, costs: calculateCosts(state), plan: current.mixPlan, lastMonth: soldByProduct(current.history, "2026-08"), thisMonth: soldByProduct(current.records.sales, month), lastMonthLabel: "agosto" }),
+    mix: current.mixPlan, month, lastMonth: "2026-08",
+  };
 }
 
 /** One demo customer, like /api/customers/[id]. */
@@ -405,6 +437,27 @@ export function demoBusinessAction<T>(body: Body): T {
       const done = [existing ? `Zona actualizada: ${zone.name}` : `Zona creada: ${zone.name} (${ZONE_MODE_LABELS[zone.mode].toLowerCase()})`];
       if (assigned) done.push(`${assigned} entrega${assigned === 1 ? " abierta quedó" : "s abiertas quedaron"} en ${zone.name}`);
       return { id: zone.id, created: !existing, assigned, done } as T;
+    }
+    case "save-sales-mix": {
+      const input = body.mix as { basis?: SalesMixPlan["basis"]; source?: SalesMixPlan["source"]; shares?: Record<string, number>; targetProfit?: number; note?: string };
+      let shares = current.mixPlan.shares;
+      if (input.shares) {
+        const total = Object.values(input.shares).reduce((sum, value) => sum + value, 0);
+        if (total <= 0) throw new DemoError("Indica qué parte de las ventas es cada producto");
+        shares = Object.fromEntries(Object.entries(input.shares).map(([id, value]) => [id, Math.round(value / total * 10000)]));
+      }
+      const mixPlan: SalesMixPlan = { basis: input.basis ?? current.mixPlan.basis, source: input.source ?? (input.shares ? "manual" : current.mixPlan.source), shares, targetProfitMinor: input.targetProfit ?? current.mixPlan.targetProfitMinor, note: input.note ?? current.mixPlan.note };
+      commit({ ...current, mixPlan });
+      return { plan: mixPlan, done: ["Mezcla de ventas guardada"] } as T;
+    }
+    case "save-expense-behavior": {
+      const input = body.change as { id: string; behavior: ExpenseBehavior["behavior"]; driver?: ExpenseBehavior["variableDriver"]; variablePercent?: number; note?: string };
+      const expense = demoState.expenses.find((item) => item.id === input.id);
+      if (!expense) throw new DemoError("Gasto no encontrado");
+      if (input.behavior !== "fixed" && !input.driver) throw new DemoError("Indica con qué crece: cada unidad, cada tanda o cada hora de producción");
+      const behavior: ExpenseBehavior = { behavior: input.behavior, variableDriver: input.behavior === "fixed" ? null : input.driver ?? null, variableShareBps: input.behavior === "mixed" ? Math.round((input.variablePercent ?? 50) * 100) : 10000, behaviorNote: input.note ?? "" };
+      commit({ ...current, behaviors: { ...current.behaviors, [input.id]: behavior } });
+      return { done: [`${expense.name}: ${input.behavior === "fixed" ? "fijo" : "crece con la producción"}`] } as T;
     }
     case "save-route-order": {
       const ids = body.ids as string[];

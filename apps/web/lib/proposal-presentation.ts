@@ -135,6 +135,7 @@ function mutationLines(state: DomainState, input: Record<string, unknown>): stri
     case "update-material-meta": return [`Insumo: ${material?.name ?? String(input.id)}`, `${String(input.field)}: ${String(input.value)}`];
     case "update-expense-meta": return [`Gasto: ${expense?.name ?? String(input.id)}`, input.field === "period" ? `Período: ${String(input.value)}` : `${String(input.field)}: ${String(input.value)}`];
     case "update-expense-allocation": return [`Gasto: ${expense?.name ?? String(input.id)}`, `Nuevo reparto: ${input.basis === "hours" ? "horas" : input.basis === "units" ? "unidades" : "porcentajes manuales"}`];
+    case "update-expense-behavior": return [`Gasto: ${expense?.name ?? String(input.id)}`, input.behavior === "fixed" ? "Pasa a ser fijo" : `Crece con ${input.driver === "unit" ? "cada unidad" : input.driver === "lot" ? "cada tanda" : "cada hora de producción"}${input.behavior === "mixed" ? ` (el ${String(input.variablePercent)} % del gasto)` : ""}`];
     case "create-category": return [`Nueva categoría: ${String(input.name)}`];
     case "rename-category": return [`Categoría: ${state.categories?.find((item) => item.id === input.id)?.name ?? String(input.id)} → ${String(input.name)}`];
     case "bulk-prices": {

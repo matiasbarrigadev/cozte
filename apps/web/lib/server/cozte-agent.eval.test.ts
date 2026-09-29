@@ -31,6 +31,7 @@ import { loadCustomers, saveCustomer, saveCustomerAddress } from "./customers";
 import { loadDeliveries, organizationToday, recordPurchase, recordSale } from "./business";
 import { loadZones, saveZone } from "./delivery-zones";
 import { loadSuppliers } from "./suppliers";
+import { loadSalesMix } from "./break-even";
 import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
 import { correctionMessage, finalAnswerStep, hasHardIssue, salvageAnswer, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
@@ -167,7 +168,8 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       const view = (list: typeof result.steps): StepView[] => list.map((step) => ({ text: step.text, toolCalls: step.toolCalls.map((call) => ({ toolName: call.toolName })), toolResults: step.toolResults.map((item) => ({ toolName: item.toolName, output: item.output })) }));
       let steps = view(result.steps);
       const records = () => steps.flatMap((step) => step.toolResults.map((item) => ({ name: item.toolName, ok: cozteToolSucceeded(item.output), write: cozteToolWrote(item.toolName, item.output), output: item.output })));
-      const context = { sources: [instructions, turn.user] };
+      // As in production, figures may come from the tools or the conversation.
+      const context = { sources: [instructions, ...history.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))] };
       // Like the workflow: the answer is the closing step's text; notes written before tools stay in the trace.
       const visible = (list: StepView[]) => { const at = finalAnswerStep(list); return at >= 0 ? list[at].text.trim() : ""; };
       let answer = visible(steps);
@@ -179,7 +181,10 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
         steps = [...steps, ...view(result.steps)];
         answer = visible(steps);
         verification = verifyCozteResponse(answer, records(), context);
-        if (!verification.ok) failures.push(`turno ${index + 1}: respuesta sin respaldo tras corrección (${verification.issues.map((item) => item.code).join(", ")})`);
+        // As in production: a draft that still fails loses only the sentences or rows that fail.
+        const salvaged = !verification.ok && answer ? salvageAnswer(answer, verification, records(), context) : null;
+        if (salvaged !== null) { answer = salvaged; verification = verifyCozteResponse(answer, records(), context); }
+        if (!verification.ok) failures.push(`turno ${index + 1}: respuesta sin respaldo tras corrección (${verification.issues.map((item) => item.detail).join(" | ")})`);
       }
       history.push(...result.response.messages);
       const turnRecords = records();
@@ -503,6 +508,44 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
     console.log(`\n[${model}] suppliers ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}`);
     results.push({ model, scenario: "suppliers", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "soja", answer: first.answer }, { user: "molino", answer: second.answer }] });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("says how many of each product to sell, and records how an expense behaves and the sales mix when the person says it, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    const tools = createCozteTools(principal, crypto.randomUUID());
+    const run = async (name: keyof typeof tools, input: Record<string, unknown>) => await (tools[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<Record<string, unknown>>)(input, { toolCallId: crypto.randomUUID() });
+    await run("readCosts", {});
+    await run("saveProduct", { name: "Tofu 300g", goodUnitsPerLot: 100, lotsPerMonth: 20, hoursPerLot: 5, salePrice: 2000 });
+    await run("saveProduct", { name: "Tofu 500g", goodUnitsPerLot: 100, lotsPerMonth: 10, hoursPerLot: 5, salePrice: 3000 });
+    await run("saveMaterial", { name: "Soja", purchaseUnit: "kg", price: 1000 });
+    await run("saveRecipe", { product: "Tofu 300g", items: [{ material: "Soja", perUnit: 0.3 }] });
+    await run("saveRecipe", { product: "Tofu 500g", items: [{ material: "Soja", perUnit: 0.5 }] });
+    for (const [name, amount] of [["Alquiler", 200000], ["Sueldo", 800000], ["Gas", 60000]] as const) await run("saveExpense", { name, amount, splitBy: "hours" });
+    const history: ModelMessage[] = [];
+    // Fixed 1.060.000 with the production plan's mix (2 of 300g for each 500g): 360 and 180.
+    const first = await productionTurn({ model, principal, history, text: "¿Cuánto tengo que vender de cada tofu para cubrir los gastos del mes?" });
+    const second = await productionTurn({ model, principal, history, text: "El gas no es fijo: lo uso solo cuando cocino, y cada tanda gasta lo mismo." });
+    // Then fixed 1.000.000, each unit 20 more of gas, and 3 of 300g for each 500g: 399 and 133.
+    const third = await productionTurn({ model, principal, history, text: "En realidad vendo 3 de 300g por cada uno de 500g. Guardalo así y decime cuánto de cada uno." });
+    const state = await loadState(principal);
+    const gas = state.expenses.find((item) => item.name === "Gas" && item.period === state.activePeriod);
+    const mix = await loadSalesMix(principal);
+    const t300 = state.products.find((item) => item.name === "Tofu 300g")!.id;
+    const plain = (text: string) => text.replace(/[\s.]/g, "");
+    const checks = {
+      readTheBreakEven: first.records.some((item) => item.name === "readBreakEven" && item.ok),
+      toldEachProduct: /360/.test(plain(first.answer)) && /180/.test(plain(first.answer)),
+      savedTheGas: gas?.behavior === "variable" && gas.variableDriver === "lot",
+      savedTheMix: mix.source === "manual" && mix.shares[t300] === 7500,
+      toldTheNewUnits: /399/.test(plain(third.answer)) && /133/.test(plain(third.answer)),
+      answeredEveryTurn: [first, second, third].every((turn) => turn.verified),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] break-even ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}\n---\n${third.answer}`);
+    results.push({ model, scenario: "break-even", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "equilibrio", answer: first.answer }, { user: "gas", answer: second.answer }, { user: "mezcla", answer: third.answer }] });
     expect(failures).toEqual([]);
   });
 

@@ -46,6 +46,9 @@ const running: Record<string, string> = {
   readSuppliers: "Revisando tus proveedores",
   saveSupplier: "Guardando el proveedor",
   planRoute: "Armando la ruta",
+  readBreakEven: "Calculando el punto de equilibrio",
+  setCostBehavior: "Definiendo cómo se comporta el gasto",
+  setSalesMix: "Guardando la mezcla de ventas",
   askQuestions: "Preparando unas preguntas",
 };
 
@@ -85,6 +88,9 @@ const summaryVerb: Record<string, [string, string]> = {
   readSuppliers: ["revisó tus proveedores", "revisó tus proveedores"],
   saveSupplier: ["guardó 1 proveedor", "guardó {n} proveedores"],
   planRoute: ["armó la ruta", "armó {n} rutas"],
+  readBreakEven: ["calculó el punto de equilibrio", "calculó el punto de equilibrio"],
+  setCostBehavior: ["definió cómo se comporta 1 gasto", "definió cómo se comportan {n} gastos"],
+  setSalesMix: ["guardó la mezcla de ventas", "guardó la mezcla de ventas"],
 };
 
 function record(value: unknown): Record<string, unknown> {

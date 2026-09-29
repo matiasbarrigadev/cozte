@@ -1,5 +1,5 @@
 /** Sections of the workspace and their URLs under /app. */
-export type AppView = "dashboard" | "producto" | "planilla" | "ventas" | "entregas" | "clientes" | "proveedores" | "gastos" | "compras" | "resultado" | "analisis" | "asistente" | "historial" | "presentaciones" | "presentacion";
+export type AppView = "dashboard" | "producto" | "planilla" | "ventas" | "entregas" | "clientes" | "proveedores" | "equilibrio" | "gastos" | "compras" | "resultado" | "analisis" | "asistente" | "historial" | "presentaciones" | "presentacion";
 
 const segments: Record<Exclude<AppView, "producto" | "presentacion">, string> = {
   dashboard: "",
@@ -8,6 +8,7 @@ const segments: Record<Exclude<AppView, "producto" | "presentacion">, string> = 
   entregas: "entregas",
   clientes: "clientes",
   proveedores: "proveedores",
+  equilibrio: "punto-de-equilibrio",
   gastos: "gastos",
   compras: "compras",
   resultado: "resultado",

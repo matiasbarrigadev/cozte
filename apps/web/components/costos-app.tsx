@@ -29,6 +29,7 @@ import { SalesSection } from "./business/sales-section";
 import { DeliveriesSection } from "./business/deliveries-section";
 import { CustomersSection } from "./business/customers-section";
 import { SuppliersSection } from "./business/suppliers-section";
+import { BreakEvenSection } from "./business/break-even-section";
 import { ExpensesSection } from "./business/expenses-section";
 import { PurchasesSection } from "./business/purchases-section";
 import { ResultSection } from "./business/result-section";
@@ -59,7 +60,7 @@ type NavItem = { id: View; label: string; icon: AnimatedIconName };
 /** Grouped the way a business thinks about it: what it costs, what happens each day and how it went. */
 const navGroups: { label: string; items: NavItem[] }[] = [
   { label: "Espacio de trabajo", items: [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "asistente", label: "Cozte AI", icon: "assistant" }] },
-  { label: "Costos", items: [{ id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
+  { label: "Costos", items: [{ id: "equilibrio", label: "Punto de equilibrio", icon: "gauge" }, { id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
   { label: "Día a día", items: [{ id: "ventas", label: "Ventas", icon: "sales" }, { id: "entregas", label: "Entregas", icon: "truck" }, { id: "clientes", label: "Clientes", icon: "users" }, { id: "compras", label: "Compras", icon: "receipt" }, { id: "proveedores", label: "Proveedores", icon: "boxes" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
   { label: "Evolución", items: [{ id: "analisis", label: "Análisis", icon: "chart" }, { id: "presentaciones", label: "Presentaciones", icon: "presentation" }, { id: "historial", label: "Historial", icon: "history" }] },
 ];
@@ -366,6 +367,7 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
 
           {view === "entregas" ? <DeliveriesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenSales={() => navigate("ventas")} onDataChanged={refresh} /> : null}
 
+          {view === "equilibrio" ? <BreakEvenSection state={state} demo={demo} onSaveChange={(action) => save(action)} onOpenExpenses={() => navigate("gastos")} onOpenCozte={() => navigate("asistente")} /> : null}
           {view === "gastos" ? <ExpensesSection state={state} demo={demo} month={businessMonth} onSave={save} onOpenProduction={() => navigate("planilla")} onOpenPurchases={() => navigate("compras")} /> : null}
 
           {view === "compras" ? <PurchasesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenCozte={() => navigate("asistente")} onDataChanged={refresh} /> : null}

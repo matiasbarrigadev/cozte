@@ -25,6 +25,8 @@ import { findCustomer, loadCustomer, loadCustomers, saveCustomer, saveCustomerAd
 import { loadZonePlaces, loadZones, saveZone } from "./delivery-zones";
 import { findSupplier, loadSupplier, loadSuppliers, saveSupplier } from "./suppliers";
 import { loadRouteOrigin, saveRouteOrder, saveRouteOrigin } from "./delivery-routes";
+import { loadBreakEven, saveSalesMix } from "./break-even";
+import { BEHAVIOR_LABELS, DRIVER_LABELS, MIX_SOURCES, MIX_SOURCE_LABELS, type BreakEvenPlan, type MixSource } from "@/lib/break-even";
 import { mapsRouteLinks, routeDayLabel, routeSheet, suggestRouteOrder, type RouteStop } from "@/lib/delivery-routes";
 import { countryByCode } from "@/lib/locations";
 import { SUPPLIER_KINDS, SUPPLIER_KIND_LABELS, supplierKey, type SupplierKind, type SupplierRow } from "@/lib/suppliers";
@@ -218,6 +220,21 @@ export const cozteToolInputSchemas = {
     cost: amount.optional().describe("Lo que cuesta esta entrega; se guarda en la venta y cambia el resultado del mes"),
     zone: z.string().trim().min(1).max(120).optional().describe("Zona de entrega (nombre o ID de readDeliveries), o 'ninguna' para dejarla sin zona. Toma la forma, quién la lleva y el costo de la zona, salvo lo que indiques"),
   }),
+  readBreakEven: z.object({}),
+  setCostBehavior: z.object({
+    expense: reference.describe("Nombre o ID del gasto del mes"),
+    behavior: z.enum(["fixed", "variable", "mixed"]).describe("fixed: se paga igual aunque se produzca más o menos; variable: crece con la producción; mixed: una parte fija y otra que crece"),
+    grows: z.enum(["unit", "lot", "hour"]).optional().describe("Con qué crece (obligatorio si no es fixed): unit cada unidad, lot cada tanda, hour cada hora de producción"),
+    variablePercent: z.number().min(1).max(99).optional().describe("Solo mixed: qué parte del gasto (en %) crece con la producción"),
+    reason: z.string().trim().min(3).max(300).describe("Por qué: lo que dijo la persona o el motivo de tu recomendación; queda como supuesto visible"),
+  }),
+  setSalesMix: z.object({
+    basis: z.enum(["units", "revenue"]).optional().describe("units: la parte de cada producto en unidades vendidas; revenue: en lo facturado"),
+    source: z.enum(MIX_SOURCES as [MixSource, ...MixSource[]]).optional().describe("auto: lo vendido el mes pasado o el plan; last_month: lo vendido el mes pasado; plan: el plan de producción; equal: partes iguales; manual: la que dice la persona (con shares)"),
+    shares: z.array(z.object({ product: reference, percent: z.number().min(0).max(100) })).max(30).optional().describe("Parte de cada producto; se ajusta para sumar 100 %. Con shares la mezcla pasa a manual"),
+    targetProfit: amount.optional().describe("Ganancia por mes que la persona quiere además de cubrir los fijos; 0 la quita"),
+    reason: z.string().trim().max(300).optional().describe("Por qué esta mezcla; queda como supuesto visible"),
+  }),
   planRoute: z.object({
     date: isoDateToolInputSchema.optional().describe("Día de la ruta (AAAA-MM-DD); por defecto hoy. Para hoy incluye las atrasadas que siguen abiertas"),
     zone: z.string().trim().min(1).max(120).optional().describe("Zona a ordenar (nombre o ID); por defecto el reparto propio y las entregas sin zona"),
@@ -353,6 +370,9 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   updateSale: "Corrige una venta ya registrada: fecha, canal, cliente, nota, productos (cantidades o precios) o costo de entrega. Conserva el precio cobrado y el costo de cada producto del día de la venta salvo que los cambies; recalcula lo que dejó y el resultado del mes.",
   updateDelivery: "Cambia una entrega (fecha, franja, estado, quién recibe, dirección, zona, contacto, quién la lleva, seguimiento, nota o costo) o crea la entrega de una venta que no la tiene. Marcar 'delivered' registra la fecha de hoy. Cambiar la zona (o una dirección que cae en otra zona) aplica el costo de esa zona.",
   readDeliveries: "Lista las entregas del mes y todas las abiertas, la más cercana a hoy primero, con su estado, fecha, quién recibe, dirección, zona, quién la lleva, costo y la venta; y las zonas de entrega con su forma, costo, días, lo que cubren, cómo les fue en el mes y los lugares de clientes que no tienen zona.",
+  readBreakEven: "Calcula el punto de equilibrio de un mes normal en tres pasos: los costos fijos (lista, total y cómo se comporta cada gasto), lo que cuesta hacer y vender una unidad de cada producto y lo que deja, y la mezcla de ventas; devuelve cuántas unidades y cuánto vender de cada producto para cubrir los fijos (y para la meta de ganancia), lo vendido este mes, los supuestos, sugerencias y alertas.",
+  setCostBehavior: "Define cómo se comporta un gasto del mes cuando se produce más: fijo, variable (con qué crece: cada unidad, tanda u hora) o mixto (qué parte crece), con el motivo. La parte variable pasa al costo de cada unidad y deja de contar como fijo.",
+  setSalesMix: "Guarda la mezcla de ventas del punto de equilibrio: por unidades o por facturación, de dónde sale (lo vendido el mes pasado, el plan, partes iguales o la que dice la persona) y una meta de ganancia por mes.",
   planRoute: "Arma la ruta de un día: ordena las entregas de reparto propio (y las sin zona) por franja horaria y barrio, pone primero o al final a quien se pida, guarda el orden (se ve en Entregas → Hoja de ruta) y devuelve las paradas numeradas con los links de Google Maps de la ruta, lo que va con cada transportista y lo que hay que reprogramar.",
   readSuppliers: "Lista los proveedores con lo que les compraste en el año, qué te venden, su última compra y el cambio de precio más grande, o muestra la ficha de uno: cada insumo con su precio por unidad en cada compra (primero, último y cambio), compras por mes, últimas compras y, si lleva pedidos, sus zonas y entregas.",
   saveSupplier: "Crea un proveedor o corrige sus datos (nombre, tipo, contacto, teléfono, email, notas). No hace falta crearlo antes de registrar una compra: se crea solo con el nombre.",
@@ -387,6 +407,29 @@ function expectedFxRates(state: DomainState): Record<string, number> {
   return Object.fromEntries([...new Set([...state.materials, ...state.expenses].map((item) => item.currency ?? state.organization.currency))]
     .filter((code) => code !== state.organization.currency)
     .flatMap((code) => state.fxQuotes?.[code] ? [[code, state.fxQuotes[code]!.ratePpm]] : []));
+}
+
+/** The break-even as Cozte reads it: the fixed list, each product's sheet, the mix and how many of each to sell. */
+function breakEvenOutput(plan: BreakEvenPlan) {
+  return {
+    currency: plan.currency,
+    fixed: { total: plan.fixed.total, byCategory: plan.fixed.byCategory, items: plan.fixed.items.map((item) => ({ name: item.name, fixedPerMonth: item.fixedPart, behavior: BEHAVIOR_LABELS[item.behavior] })) },
+    variableCosts: plan.variableItems.map((item) => ({ name: item.name, variablePerMonth: item.variablePart, grows: item.driver ? DRIVER_LABELS[item.driver] : undefined })),
+    products: plan.products.map((product) => ({
+      product: product.name, price: product.price, variableCostPerUnit: product.variable.total,
+      parts: { materials: product.variable.materials, labor: product.variable.labor, variableExpenses: product.variable.expenses, selling: product.variable.selling },
+      leavesPerUnit: product.contributionUnit, leavesPercent: product.contributionRatio === null ? null : Math.round(product.contributionRatio * 1000) / 10,
+      unitSharePercent: Math.round(product.unitShare * 1000) / 10, revenueSharePercent: Math.round(product.revenueShare * 1000) / 10,
+      unitsToBreakEven: product.unitsNeeded, revenueToBreakEven: product.revenueNeeded, unitsForTarget: product.targetUnits ?? undefined,
+      soldThisMonth: product.soldUnits, missing: product.missing ?? undefined,
+    })),
+    mix: { basis: plan.mix.basis === "units" ? "por unidades" : "por facturación", chosen: MIX_SOURCE_LABELS[plan.mix.source], used: MIX_SOURCE_LABELS[plan.mix.used] },
+    breakEven: plan.breakEven ? { totalUnits: plan.breakEven.units, totalRevenue: plan.breakEven.revenue } : null,
+    target: plan.target ? { profit: plan.target.profit, totalUnits: plan.target.units, totalRevenue: plan.target.revenue } : null,
+    assumptions: plan.assumptions.map((item) => `${item.text}${item.reviewed ? "" : " (sin revisar)"}`),
+    suggestions: plan.suggestions.map((item) => item.text),
+    alerts: plan.alerts, warnings: plan.warnings,
+  };
 }
 
 /** A zone as Cozte reads it: how it goes, who takes it, its cost, days and what it covers. */
@@ -874,6 +917,41 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         note: "Ordenadas por cercanía a hoy (daysFromToday negativo = ya pasó).",
       };
     }
+    case "readBreakEven": {
+      const { plan } = await loadBreakEven(principal);
+      return { ok: true, ...breakEvenOutput(plan), note: "Cifras del motor: muéstralas tal cual (unidades por producto y total en pesos). Los supuestos sin revisar conviene confirmarlos con la persona." };
+    }
+    case "setCostBehavior": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.setCostBehavior>;
+      const state = await loadState(principal);
+      const active = state.expenses.filter((item) => item.period === state.activePeriod);
+      const found = resolveEntity(active, value.expense);
+      if (!found.item) return notFound("el gasto", value.expense, found.candidates);
+      if (value.behavior !== "fixed" && !value.grows) return { ok: false, error: "Falta con qué crece: cada unidad (unit), cada tanda (lot) o cada hora de producción (hour)." };
+      if (value.behavior === "mixed" && value.variablePercent === undefined) return { ok: false, error: "Falta qué parte del gasto crece con la producción (variablePercent)." };
+      const expense = found.item;
+      const description = value.behavior === "fixed" ? `${expense.name}: fijo` : `${expense.name}: ${value.behavior === "mixed" ? `el ${value.variablePercent} % ` : ""}crece con ${DRIVER_LABELS[value.grows!]}`;
+      const { done } = await commitPlans(input, [{ description, build: () => ({ action: "update-expense-behavior", id: expense.id, behavior: value.behavior, driver: value.grows, variablePercent: value.variablePercent, note: value.reason }) }]);
+      const { plan } = await loadBreakEven(principal);
+      return { ok: true, done, breakEven: breakEvenOutput(plan).breakEven, products: breakEvenOutput(plan).products };
+    }
+    case "setSalesMix": {
+      const value = args as z.infer<typeof cozteToolInputSchemas.setSalesMix>;
+      let shares: Record<string, number> | undefined;
+      if (value.shares?.length) {
+        const state = await loadState(principal);
+        shares = {};
+        for (const item of value.shares) {
+          const found = resolveEntity(state.products, item.product);
+          if (!found.item) return notFound("el producto", item.product, found.candidates);
+          shares[found.item.id] = item.percent;
+        }
+      }
+      const saved = await saveSalesMix(principal, { basis: value.basis, source: value.source, shares, targetProfit: value.targetProfit, note: value.reason }, "cozte");
+      const { plan } = await loadBreakEven(principal);
+      const output = breakEvenOutput(plan);
+      return { ok: true, done: [`Mezcla de ventas: ${MIX_SOURCE_LABELS[saved.plan.source].toLowerCase()}, ${saved.plan.basis === "units" ? "por unidades" : "por facturación"}${saved.plan.targetProfitMinor ? `; meta de ganancia ${saved.plan.targetProfitMinor}` : ""}`], mix: output.mix, breakEven: output.breakEven, target: output.target, products: output.products };
+    }
     case "planRoute": {
       const value = args as z.infer<typeof cozteToolInputSchemas.planRoute>;
       const now = today();
@@ -1260,6 +1338,9 @@ export function createCozteTools(principal: Principal, runId: string) {
     saveDeliveryZone: tool({ description: describe.saveDeliveryZone, inputSchema: schemas.saveDeliveryZone, execute: execute("saveDeliveryZone") }),
     readSuppliers: tool({ description: describe.readSuppliers, inputSchema: schemas.readSuppliers, execute: execute("readSuppliers") }),
     planRoute: tool({ description: describe.planRoute, inputSchema: schemas.planRoute, execute: execute("planRoute") }),
+    readBreakEven: tool({ description: describe.readBreakEven, inputSchema: schemas.readBreakEven, execute: execute("readBreakEven") }),
+    setCostBehavior: tool({ description: describe.setCostBehavior, inputSchema: schemas.setCostBehavior, execute: execute("setCostBehavior") }),
+    setSalesMix: tool({ description: describe.setSalesMix, inputSchema: schemas.setSalesMix, execute: execute("setSalesMix") }),
     saveSupplier: tool({ description: describe.saveSupplier, inputSchema: schemas.saveSupplier, execute: execute("saveSupplier") }),
     sharePresentation: tool({ description: describe.sharePresentation, inputSchema: schemas.sharePresentation, execute: execute("sharePresentation") }),
     askQuestions: tool({ description: describe.askQuestions, inputSchema: schemas.askQuestions, execute: execute("askQuestions") }),

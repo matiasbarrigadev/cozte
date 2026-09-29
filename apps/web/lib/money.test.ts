@@ -35,7 +35,7 @@ describe("money precision by currency", () => {
     expect(soap.totalLotMinor).toBe(44.5);
     // 44.50 ÷ 40 soaps = 1.1125 → 1.11 each: a whole-dollar engine would have said 1.
     expect(soap.unitMinor).toBe(1.11);
-    expect(soap.perUnit).toEqual({ materialMinor: 0.73, laborMinor: 0.31, sharedMinor: 0.08 });
+    expect(soap.perUnit).toEqual({ materialMinor: 0.73, laborMinor: 0.31, sharedMinor: 0.08, variableExpenseMinor: 0 });
     expect(soap.estimatedMarginPercent).toBe(74.7);
     expect(soap.economics?.contributionUnitMinor).toBe(3.8);
   });

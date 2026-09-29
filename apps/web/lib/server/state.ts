@@ -22,6 +22,7 @@ type ExpenseRow = {
   id: string; name: string; period: string; amount_minor: number;
   allocation_basis: "hours" | "units"; allocation_mode: "automatic" | "manual"; allocation_shares_json: string; category: string; version: number;
   currency: string | null; native_amount_milli: number | null; area: string | null;
+  behavior: string | null; variable_driver: string | null; variable_share_bps: number | null; behavior_note: string | null;
 };
 type CategoryRow = { id: string; name: string };
 type InvestmentRow = { id: string; description: string; amount_minor: number; purchased_on: string; useful_life_months: number | null; area: string; include_in_unit_cost: number; allocation_basis: string };
@@ -76,7 +77,7 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
     { sql: "SELECT m.id, m.name, m.supplier, m.purchase_unit, m.category, m.version, p.amount_minor AS price_minor, p.source, p.effective_date, p.currency, p.native_amount_milli FROM materials m LEFT JOIN material_prices p ON p.material_id=m.id AND p.version=m.version WHERE m.organization_id=? AND m.archived_at IS NULL ORDER BY m.name", params: [org] },
     { sql: "SELECT id, name, lot_units, sale_price_minor, sales_variable_minor, labor_lot_minor, production_hours_milli, batches_per_month_milli, version FROM products WHERE organization_id=? AND archived_at IS NULL ORDER BY name", params: [org] },
     { sql: "SELECT pm.product_id, pm.material_id, pm.quantity_milli FROM product_materials pm JOIN products p ON p.id=pm.product_id JOIN materials m ON m.id=pm.material_id WHERE p.organization_id=? AND p.archived_at IS NULL AND m.archived_at IS NULL", params: [org] },
-    { sql: "SELECT id, name, period, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, version, currency, native_amount_milli, area FROM shared_expenses WHERE organization_id=? ORDER BY name", params: [org] },
+    { sql: "SELECT id, name, period, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, version, currency, native_amount_milli, area, behavior, variable_driver, variable_share_bps, behavior_note FROM shared_expenses WHERE organization_id=? ORDER BY name", params: [org] },
     { sql: "SELECT id, name FROM cost_categories WHERE organization_id=? ORDER BY name", params: [org] },
     { sql: "SELECT id, description, amount_minor, purchased_on, useful_life_months, area, include_in_unit_cost, allocation_basis FROM purchases WHERE organization_id=? AND kind='investment' AND archived_at IS NULL ORDER BY purchased_on", params: [org] },
   ]);
@@ -117,6 +118,9 @@ export async function loadStateForOrganization(org: string): Promise<DomainState
       allocationBasis: row.allocation_mode === "manual" ? "manual" : row.allocation_basis, allocationShares: JSON.parse(row.allocation_shares_json), category: row.category, version: row.version,
       currency: isCurrency(row.currency ?? "") ? row.currency as Currency : base, nativeAmountMilli: row.native_amount_milli ?? row.amount_minor * 1000,
       fxMissing: isCurrency(row.currency ?? "") && row.currency !== base && !fxQuotes[row.currency as Currency],
+      behavior: row.behavior === "variable" || row.behavior === "mixed" ? row.behavior : "fixed",
+      variableDriver: row.variable_driver === "unit" || row.variable_driver === "lot" || row.variable_driver === "hour" ? row.variable_driver : null,
+      variableShareBps: row.variable_share_bps ?? 10000, behaviorNote: row.behavior_note ?? "",
     })),
   };
 }

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { toast } from "sonner";
 import { AREA_HINTS, AREA_LABELS } from "@/lib/business";
+import { behaviorTag } from "@/lib/break-even";
 import type { CostArea, DomainState, SharedExpense } from "@/lib/domain";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Button } from "@/components/ui/button";
@@ -49,8 +50,8 @@ export function ExpensesSection({ state, demo, month, onSave, onOpenProduction, 
             <TableHeader><TableRow><TableHead>Concepto</TableHead><TableHead className="hidden sm:table-cell">Tipo</TableHead><TableHead className="text-right">Por mes</TableHead><TableHead className="w-12" /></TableRow></TableHeader>
             <TableBody>
               {area.expenses.map((expense) => <TableRow key={expense.id}>
-                <TableCell className="font-medium whitespace-normal">{expense.name}<div className="text-xs font-normal text-muted-foreground"><span className="sm:hidden">Gasto fijo · </span>{expense.category}</div></TableCell>
-                <TableCell className="hidden text-muted-foreground sm:table-cell">Gasto fijo</TableCell>
+                <TableCell className="font-medium whitespace-normal">{expense.name}<div className="text-xs font-normal text-muted-foreground"><span className="sm:hidden">{behaviorTag(expenseById.get(expense.id))} · </span>{expense.category}</div></TableCell>
+                <TableCell className="hidden text-muted-foreground sm:table-cell" title={expenseById.get(expense.id)?.behaviorNote || undefined}>{behaviorTag(expenseById.get(expense.id))}</TableCell>
                 <TableCell className="text-right tabular-nums">{money(expense.monthlyAmount)}</TableCell>
                 <TableCell>{expenseById.get(expense.id)?.period === state.activePeriod ? <Button size="icon-sm" variant="ghost" aria-label={`Editar ${expense.name}`} onClick={() => setDialog({ area: areaKey, expense: expenseById.get(expense.id) })}><AnimatedIcon name="edit" /></Button> : null}</TableCell>
               </TableRow>)}

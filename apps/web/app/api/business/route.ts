@@ -5,6 +5,7 @@ import { addressInputSchema, archiveCustomer, archiveCustomerAddress, customerIn
 import { archiveZone, saveZone, zoneInputSchema } from "@/lib/server/delivery-zones";
 import { archiveSupplier, mergeSuppliers, saveSupplier, supplierInputSchema } from "@/lib/server/suppliers";
 import { routeOrderSchema, saveRouteOrder, saveRouteOrigin } from "@/lib/server/delivery-routes";
+import { salesMixInputSchema, saveSalesMix } from "@/lib/server/break-even";
 import { archiveRecord, channelInputSchema, deliveryInputSchema, loadBusinessView, purchaseInputSchema, purchasePatchSchema, updatePurchase, recordPurchase, recordSale, saleInputSchema, salePatchSchema, saveChannel, saveDelivery, updateSale } from "@/lib/server/business";
 
 export const runtime = "nodejs";
@@ -41,6 +42,7 @@ const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("archive-supplier"), id: z.string().min(1).max(120) }),
   z.object({ action: z.literal("save-route-order"), ids: routeOrderSchema }),
   z.object({ action: z.literal("save-route-origin"), origin: z.string().max(200) }),
+  z.object({ action: z.literal("save-sales-mix"), mix: salesMixInputSchema }),
 ]);
 
 export async function POST(request: Request) {
@@ -67,6 +69,7 @@ export async function POST(request: Request) {
       case "archive-supplier": await archiveSupplier(principal, input.id); return Response.json({ ok: true });
       case "save-route-order": return Response.json(await saveRouteOrder(principal, input.ids, "user"));
       case "save-route-origin": return Response.json(await saveRouteOrigin(principal, input.origin));
+      case "save-sales-mix": return Response.json(await saveSalesMix(principal, input.mix, "user"));
     }
   } catch (error) {
     if (error instanceof z.ZodError) return Response.json({ error: error.issues[0]?.message ?? "Datos inválidos" }, { status: 400 });

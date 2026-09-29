@@ -91,6 +91,15 @@ export const mutationSchema = z.discriminatedUnion("action", [
     value: z.string().trim().max(120),
     acknowledgeImpact: z.boolean().optional(),
   }),
+  common.extend({
+    action: z.literal("update-expense-behavior"), id,
+    behavior: z.enum(["fixed", "variable", "mixed"]),
+    /** What makes it grow: each unit, lot or production hour. Required unless fixed. */
+    driver: z.enum(["unit", "lot", "hour"]).optional(),
+    /** Mixed only: the part (0–100 %) that grows with production. */
+    variablePercent: z.number().min(1).max(99).optional(),
+    note: z.string().trim().max(300).optional(),
+  }),
   common.extend({ action: z.literal("create-category"), name: category }),
   common.extend({ action: z.literal("rename-category"), id, name: category }),
   common.extend({ action: z.literal("update-expense-allocation"), id, basis: z.enum(["hours", "units", "manual"]), shares: z.record(z.string(), z.number().int().min(0).max(10000)).default({}), acknowledgeImpact: z.boolean().optional() }),
@@ -294,6 +303,18 @@ function projection(state: DomainState, input: Mutation): DomainState {
       } else expense[input.field] = input.value;
       break;
     }
+    case "update-expense-behavior": {
+      const expense = next.expenses.find((item) => item.id === input.id);
+      if (!expense) throw new ApiError(404, "Gasto no encontrado");
+      if (expense.period !== next.activePeriod) throw new ApiError(400, "Solo puedes editar los gastos del período activo");
+      if (input.behavior !== "fixed" && !input.driver) throw new ApiError(400, "Indica con qué crece: cada unidad, cada tanda o cada hora de producción");
+      if (input.behavior === "mixed" && input.variablePercent === undefined) throw new ApiError(400, "Indica qué parte del gasto crece con la producción");
+      expense.behavior = input.behavior;
+      expense.variableDriver = input.behavior === "fixed" ? null : input.driver ?? null;
+      expense.variableShareBps = input.behavior === "mixed" ? Math.round(input.variablePercent! * 100) : 10000;
+      expense.behaviorNote = input.note ?? "";
+      break;
+    }
     case "create-category":
       if (next.categories?.some((item) => item.name.toLocaleLowerCase() === input.name.toLocaleLowerCase())) throw new ApiError(400, "La categoría ya existe");
       next.categories = [...next.categories ?? [], { id: "new", name: input.name }];
@@ -464,6 +485,11 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
       statements.push({ sql: `UPDATE shared_expenses SET ${column}=? WHERE id=? AND organization_id=?`, params: [input.value, input.id, organizationId] });
       break;
     }
+    case "update-expense-behavior": {
+      const expense = next.expenses.find((item) => item.id === input.id)!;
+      statements.push({ sql: "UPDATE shared_expenses SET behavior=?, variable_driver=?, variable_share_bps=?, behavior_note=? WHERE id=? AND organization_id=?", params: [expense.behavior ?? "fixed", expense.variableDriver ?? null, expense.variableShareBps ?? 10000, expense.behaviorNote ?? "", input.id, organizationId] });
+      break;
+    }
     case "create-category":
       statements.push({ sql: "INSERT INTO cost_categories (id, organization_id, name) VALUES (?, ?, ?)", params: [entityId, organizationId, input.name] });
       next.categories!.find((item) => item.id === "new")!.id = entityId;
@@ -514,7 +540,7 @@ export async function commitMutation(principal: Principal, input: Mutation, opti
   for (let index = 0; index < carried.length; index += 40) {
     const group = carried.slice(index, index + 40);
     statements.push({
-      sql: `INSERT INTO shared_expenses (id, organization_id, name, period, area, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source) SELECT m.new_id, e.organization_id, e.name, ?, e.area, e.amount_minor, e.allocation_basis, e.allocation_mode, e.allocation_shares_json, e.category, e.currency, e.native_amount_milli, e.fx_rate_ppm, e.fx_as_of, e.fx_source FROM (${group.map((_, position) => position === 0 ? "SELECT ? AS new_id, ? AS old_id" : "SELECT ?, ?").join(" UNION ALL ")}) m JOIN shared_expenses e ON e.id=m.old_id AND e.organization_id=?`,
+      sql: `INSERT INTO shared_expenses (id, organization_id, name, period, area, amount_minor, allocation_basis, allocation_mode, allocation_shares_json, category, currency, native_amount_milli, fx_rate_ppm, fx_as_of, fx_source, behavior, variable_driver, variable_share_bps, behavior_note) SELECT m.new_id, e.organization_id, e.name, ?, e.area, e.amount_minor, e.allocation_basis, e.allocation_mode, e.allocation_shares_json, e.category, e.currency, e.native_amount_milli, e.fx_rate_ppm, e.fx_as_of, e.fx_source, e.behavior, e.variable_driver, e.variable_share_bps, e.behavior_note FROM (${group.map((_, position) => position === 0 ? "SELECT ? AS new_id, ? AS old_id" : "SELECT ?, ?").join(" UNION ALL ")}) m JOIN shared_expenses e ON e.id=m.old_id AND e.organization_id=?`,
       params: [group[0].period, ...group.flatMap((item) => [item.id, item.carriedFrom!]), organizationId],
     });
     statements.push({

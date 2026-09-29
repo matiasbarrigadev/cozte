@@ -836,7 +836,7 @@ function translateToolValue(key: string, value: unknown): string | null {
   if (value === null) return "Sin dato";
   if (typeof value === "object") return null;
   if (key === "action" && typeof value === "string") {
-    const actions: Record<string, string> = { "create-category": "Crear categoría", "rename-category": "Renombrar categoría", "create-material": "Crear insumo", "delete-material": "Eliminar insumo", "update-material-meta": "Editar datos del insumo", "create-expense": "Crear gasto", "update-expense-meta": "Editar datos del gasto", "update-expense-allocation": "Cambiar reparto del gasto", "set-component": "Actualizar consumo del producto", "create-product": "Crear producto", "create-products": "Crear productos", "update-product": "Editar producto", "delete-product": "Eliminar producto" };
+    const actions: Record<string, string> = { "create-category": "Crear categoría", "rename-category": "Renombrar categoría", "create-material": "Crear insumo", "delete-material": "Eliminar insumo", "update-material-meta": "Editar datos del insumo", "create-expense": "Crear gasto", "update-expense-meta": "Editar datos del gasto", "update-expense-allocation": "Cambiar reparto del gasto", "update-expense-behavior": "Cambiar cómo se comporta el gasto", "set-component": "Actualizar consumo del producto", "create-product": "Crear producto", "create-products": "Crear productos", "update-product": "Editar producto", "delete-product": "Eliminar producto" };
     return actions[value] ?? value;
   }
   if (["allocationBasis", "basis"].includes(key) && typeof value === "string") return ({ hours: "Por horas de producción", units: "Por unidades del lote", manual: "Por porcentajes acordados" } as Record<string, string>)[value] ?? value;

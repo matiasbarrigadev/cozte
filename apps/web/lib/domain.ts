@@ -38,6 +38,16 @@ export type Component = {
 export type CostArea = "production" | "delivery" | "sales" | "admin";
 export const COST_AREAS: CostArea[] = ["production", "delivery", "sales", "admin"];
 
+/**
+ * How an expense moves with production: fixed (the same every month), variable (grows with each unit, lot or hour
+ * produced) or mixed (a fixed base plus a part that grows). Each business decides it, usually with Cozte.
+ */
+export type CostBehavior = "fixed" | "variable" | "mixed";
+export const COST_BEHAVIORS: CostBehavior[] = ["fixed", "variable", "mixed"];
+/** What makes a variable expense grow: each unit made, each lot, or each hour of production. */
+export type VariableDriver = "unit" | "lot" | "hour";
+export const VARIABLE_DRIVERS: VariableDriver[] = ["unit", "lot", "hour"];
+
 export type SharedExpense = {
   id: string;
   name: string;
@@ -54,7 +64,24 @@ export type SharedExpense = {
   fxMissing?: boolean;
   /** Set on an expense that continues into a new period: the expense it was copied from. */
   carriedFrom?: string;
+  /** Missing on older data, which was always fixed. */
+  behavior?: CostBehavior;
+  variableDriver?: VariableDriver | null;
+  /** The part that grows with production, in hundredths of a percent (mixed expenses; variable ones are 10000). */
+  variableShareBps?: number;
+  /** Why it behaves so: Cozte's recommendation or the person's choice, shown as a visible assumption. */
+  behaviorNote?: string;
 };
+
+/** The part of an expense (in hundredths of a percent) that grows with production. */
+export const variableShareBps = (expense: Pick<SharedExpense, "behavior" | "variableShareBps">): number =>
+  expense.behavior === "variable" ? 10000 : expense.behavior === "mixed" ? Math.min(10000, Math.max(0, Math.round(expense.variableShareBps ?? 5000))) : 0;
+
+/** Each product's weight in a month for a driver: units made, lots made or production hours. */
+export function driverWeight(product: Pick<Product, "lotUnits" | "productionHoursMilli" | "batchesPerMonthMilli">, driver: VariableDriver): number {
+  const batches = product.batchesPerMonthMilli != null && product.batchesPerMonthMilli > 0 ? product.batchesPerMonthMilli : 1000;
+  return driver === "unit" ? product.lotUnits * batches : driver === "lot" ? batches : product.productionHoursMilli * batches;
+}
 
 /** Something bought to last (a tool, a machine, a computer), spread over the months it is used. */
 export type Investment = {
@@ -116,8 +143,9 @@ export type ProductCost = {
   quality: CostQuality;
   /** Per-unit cost of the parts that are known, useful while the full cost is incomplete. */
   partialUnitMinor: number;
-  perUnit: { materialMinor: number; laborMinor: number; sharedMinor: number } | null;
-  monthly: { batchesMilli: number; units: number; sharedMinor: number; assumedBatches: boolean; sharedByExpense: Record<string, number> };
+  /** sharedMinor holds every expense spread into the unit; variableExpenseMinor is the part of it that grows with production. */
+  perUnit: { materialMinor: number; laborMinor: number; sharedMinor: number; variableExpenseMinor?: number } | null;
+  monthly: { batchesMilli: number; units: number; sharedMinor: number; variableMinor?: number; assumedBatches: boolean; sharedByExpense: Record<string, number> };
   economics: { variableUnitMinor: number; contributionUnitMinor: number; breakEvenUnitsPerMonth: number | null } | null;
 };
 
@@ -273,15 +301,32 @@ export function calculateCosts(
   const volume = new Map(state.products.map((product) => [product.id, productBatchesMilli(product)]));
 
   const monthlyShared: Record<string, number> = Object.fromEntries(state.products.map((product) => [product.id, 0]));
+  const monthlyVariable: Record<string, number> = Object.fromEntries(state.products.map((product) => [product.id, 0]));
   const sharedByExpense: Record<string, Record<string, number>> = Object.fromEntries(state.products.map((product) => [product.id, {}]));
   const unallocatedExpenses: string[] = [];
   const periodExpenses = productionCostSources(state);
   const missingExpenseFx = periodExpenses.some((expense) => expense.fxMissing);
   let sharedExpensesActive = false;
   for (const expense of periodExpenses) {
-    const amount = units(proposedExpenses[expense.id] ?? expense.amountMinor);
-    if (amount === 0) continue;
+    const total = units(proposedExpenses[expense.id] ?? expense.amountMinor);
+    if (total === 0) continue;
     sharedExpensesActive = true;
+    // The part that grows with production goes by its driver; the rest is the month's fixed structure, split as agreed.
+    const share = variableShareBps(expense);
+    const driver = expense.variableDriver ?? (expense.allocationBasis === "units" ? "unit" : "hour");
+    const variableAmount = share ? roundRatio(BigInt(total) * BigInt(share), 10000n) : 0;
+    if (variableAmount > 0) {
+      const weights = state.products.map((product) => ({ id: product.id, weight: driverWeight(product, driver) }));
+      if (weights.reduce((sum, item) => sum + item.weight, 0) <= 0) { unallocatedExpenses.push(expense.name); continue; }
+      const split = allocateMinor(variableAmount, weights);
+      for (const product of state.products) {
+        monthlyShared[product.id] += split[product.id];
+        monthlyVariable[product.id] += split[product.id];
+        if (split[product.id]) sharedByExpense[product.id][expense.id] = money(split[product.id]);
+      }
+    }
+    const amount = total - variableAmount;
+    if (amount === 0) continue;
     const activities = state.products.map((product) => {
       const { batchesMilli } = volume.get(product.id)!;
       const weight = expense.allocationBasis === "hours" ? product.productionHoursMilli * batchesMilli
@@ -297,7 +342,7 @@ export function calculateCosts(
     const split = allocateMinor(amount, activities);
     for (const product of state.products) {
       monthlyShared[product.id] += split[product.id];
-      if (split[product.id]) sharedByExpense[product.id][expense.id] = money(split[product.id]);
+      if (split[product.id]) sharedByExpense[product.id][expense.id] = (sharedByExpense[product.id][expense.id] ?? 0) + money(split[product.id]);
     }
   }
 
@@ -339,6 +384,7 @@ export function calculateCosts(
       batchesMilli,
       units: roundRatio(BigInt(lotUnits) * BigInt(batchesMilli), 1000n),
       sharedMinor: money(monthlyShared[product.id] ?? 0),
+      variableMinor: money(monthlyVariable[product.id] ?? 0),
       assumedBatches: assumed,
       sharedByExpense: sharedByExpense[product.id] ?? {},
     };
@@ -351,21 +397,24 @@ export function calculateCosts(
     }
     const totalLotMinor = money(knownLotUnits);
     const unitMinor = money(roundRatio(BigInt(knownLotUnits), BigInt(lotUnits)));
+    const variableLotUnits = roundRatio(BigInt(monthlyVariable[product.id] ?? 0) * 1000n, BigInt(batchesMilli));
     const perUnit = {
       materialMinor: money(roundRatio(BigInt(materialLotUnits), BigInt(lotUnits))),
       laborMinor: money(roundRatio(BigInt(laborLotUnits), BigInt(lotUnits))),
       sharedMinor: money(roundRatio(BigInt(sharedLotUnits), BigInt(lotUnits))),
+      variableExpenseMinor: money(roundRatio(BigInt(variableLotUnits), BigInt(lotUnits))),
     };
     const estimatedMarginPercent = product.salePriceMinor > 0
       ? Math.round(((product.salePriceMinor - product.salesVariableMinor - unitMinor) / product.salePriceMinor) * 1000) / 10
       : null;
-    // Contribution treats lot-driven costs as variable and the shared month as fixed.
-    const variableUnitMinor = roundMoney(perUnit.materialMinor + perUnit.laborMinor + product.salesVariableMinor, currency);
+    // Contribution treats lot-driven costs and the expenses that grow with production as variable; the rest of the month is fixed.
+    const variableUnitMinor = roundMoney(perUnit.materialMinor + perUnit.laborMinor + perUnit.variableExpenseMinor + product.salesVariableMinor, currency);
     const contributionUnitMinor = roundMoney(product.salePriceMinor - variableUnitMinor, currency);
+    const fixedMonthly = monthly.sharedMinor - (monthly.variableMinor ?? 0);
     const economics = product.salePriceMinor > 0 ? {
       variableUnitMinor,
       contributionUnitMinor,
-      breakEvenUnitsPerMonth: contributionUnitMinor > 0 ? Math.ceil(monthly.sharedMinor / contributionUnitMinor - 1e-9) : null,
+      breakEvenUnitsPerMonth: contributionUnitMinor > 0 ? Math.ceil(fixedMonthly / contributionUnitMinor - 1e-9) : null,
     } : null;
     return {
       productId: product.id, totalLotMinor, unitMinor, estimatedMarginPercent, lines: costLines, warnings, assumptions,
