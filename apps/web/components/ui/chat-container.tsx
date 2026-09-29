@@ -25,7 +25,9 @@ function ChatContainerRoot({
 }: ChatContainerRootProps) {
   return (
     <StickToBottom
-      className={cn("flex overflow-y-auto", className)}
+      // relative: positioned children (screen-reader text, indicators) stay inside the scroller instead of
+      // stretching the page from their place in the full conversation.
+      className={cn("relative flex overflow-y-auto", className)}
       resize="smooth"
       initial="instant"
       role="log"

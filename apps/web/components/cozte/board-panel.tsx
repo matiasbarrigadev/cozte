@@ -46,7 +46,7 @@ export function BoardPanel({ board, onChange, onAsk }: { board: BoardWidget[]; o
       </div>
       <CardDescription>Lo que quieres tener a la vista, siempre al día. Agrégalo tú o pídeselo a Cozte: «fija las ventas por canal».</CardDescription>
     </CardHeader>
-    <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-4">
+    <CardContent className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-4">
       {board.length ? board.map((widget, index) => <CozteVisual key={widget.id} widget={widget} compact onAsk={onAsk}
         onMoveUp={index > 0 ? () => onChange(moveWidget(board, widget.id, index - 1)) : undefined}
         onMoveDown={index < board.length - 1 ? () => onChange(moveWidget(board, widget.id, index + 1)) : undefined}
