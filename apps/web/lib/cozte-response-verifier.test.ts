@@ -208,3 +208,23 @@ describe("final answer", () => {
     expect(discardReason(verifyCozteResponse("Ya quedó creado el producto.", []))).toBe("Decía que había guardado algo que no se guardó.");
   });
 });
+
+describe("an answer that promises more at the end", () => {
+  const saved: TurnToolRecord[] = [{ name: "saveRecipe", ok: true, write: true, output: { ok: true, done: ["Receta guardada"] } }];
+
+  it("is unfinished when it ends announcing questions that never come, unless they were shown", () => {
+    const text = "Listo, guardé la receta del cartel.\n\nPara seguir, contame dos cosas:";
+    expect(verifyCozteResponse(text, saved).issues.map((issue) => issue.code)).toEqual(["unfinished-answer"]);
+    expect(hasHardIssue(verifyCozteResponse(text, saved))).toBe(true);
+    expect(verifyCozteResponse("Para seguir, **contame dos cosas:**", saved).ok).toBe(false);
+    const asked: TurnToolRecord[] = [...saved, { name: "askQuestions", ok: true, write: false, output: { ok: true } }];
+    expect(verifyCozteResponse(text, asked).ok).toBe(true);
+    // A colon followed by its list is complete.
+    expect(verifyCozteResponse("Guardé la receta. Falta:\n- la mano de obra\n- los gastos del taller", saved).ok).toBe(true);
+  });
+
+  it("loses only the promise left hanging at the end when it is kept as it is", () => {
+    const text = "Listo, guardé la receta del cartel. Falta:\n- la mano de obra\n- los gastos del taller\n\nPara seguir, contame dos cosas:";
+    expect(salvageAnswer(text, verifyCozteResponse(text, saved), saved)).toBe("Listo, guardé la receta del cartel. Falta:\n- la mano de obra\n- los gastos del taller");
+  });
+});

@@ -14,7 +14,7 @@ export type TurnToolRecord = {
   output: unknown;
 };
 
-export type VerificationIssue = { code: "unbacked-write-claim" | "announced-not-executed" | "unverified-figures" | "unknown-identifier" | "internal-detail" | "empty-answer"; detail: string };
+export type VerificationIssue = { code: "unbacked-write-claim" | "announced-not-executed" | "unverified-figures" | "unknown-identifier" | "internal-detail" | "empty-answer" | "unfinished-answer"; detail: string };
 
 /** Text the answer may legitimately quote numbers from besides tool results: the turn's cost snapshot and the person's message. */
 export type VerificationContext = { sources?: string[] };
@@ -22,7 +22,7 @@ export type VerificationContext = { sources?: string[] };
 export type Verification = { ok: boolean; issues: VerificationIssue[]; mustUseTools: boolean };
 
 /** Issues that make an answer untrustworthy even after a correction; the rest are worth one retry but not a discard. */
-export const HARD_ISSUES: ReadonlySet<VerificationIssue["code"]> = new Set(["unbacked-write-claim", "announced-not-executed", "unknown-identifier", "empty-answer"]);
+export const HARD_ISSUES: ReadonlySet<VerificationIssue["code"]> = new Set(["unbacked-write-claim", "announced-not-executed", "unknown-identifier", "empty-answer", "unfinished-answer"]);
 
 export const hasHardIssue = (verification: Verification) => verification.issues.some((issue) => HARD_ISSUES.has(issue.code));
 
@@ -190,6 +190,12 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
   if (!unbacked.length && !successfulWrites.length && !askedPerson && announcesOutright(answer) && !waitsForPerson.test(answer)) {
     issues.push({ code: "announced-not-executed", detail: "La respuesta anuncia que va a guardar o ejecutar algo, pero el turno terminó sin hacerlo." });
   }
+  // An answer that ends announcing a list or questions ("contame dos cosas:") that never come leaves the person waiting.
+  // What follows the colon can be on screen instead of in the text: questions, a visual, a deck, a simulation.
+  const showsSomething = tools.some((tool) => tool.ok && ["askQuestions", "showVisual", "createPresentation", "editPresentation", "simulate"].includes(tool.name));
+  if (!showsSomething && !issues.some((issue) => issue.code === "announced-not-executed") && endsAnnouncing(answer)) {
+    issues.push({ code: "unfinished-answer", detail: "La respuesta termina anunciando algo (una frase que termina en dos puntos) que no aparece. Escribe esa lista completa o muestra esas preguntas con askQuestions." });
+  }
   const evidence = JSON.stringify(tools.map((tool) => tool.output)) ?? "";
   // Every amount and percentage shown comes from a tool of this turn or from the conversation: none is worked out by heart.
   if (context.sources) {
@@ -215,6 +221,11 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
   const leaked = answer.match(internalNames);
   if (leaked) issues.push({ code: "internal-detail", detail: `La respuesta expone detalles internos ("${leaked[0]}").` });
   return { ok: issues.length === 0, issues, mustUseTools: issues.some((issue) => issue.code === "unbacked-write-claim" || issue.code === "announced-not-executed" || issue.code === "unverified-figures") };
+}
+
+/** The last thing written promises more ("Para seguir, contame dos cosas:"), with nothing after it. */
+function endsAnnouncing(answer: string): boolean {
+  return /[:：]\s*$/.test(answer.replace(/[*_`>\s]+$/g, ""));
 }
 
 /** An answer's lines split into sentences (a table row stays whole), so one bad sentence can go and the rest stay. */
@@ -248,8 +259,19 @@ function tidyAnswer(lines: string[]): string {
 export function salvageAnswer(text: string, verification: Verification, tools: TurnToolRecord[], context: VerificationContext = {}): string | null {
   const codes = new Set<VerificationIssue["code"]>(verification.issues.map((issue) => issue.code).filter((code) => code !== "empty-answer"));
   if (!codes.size || !text.trim()) return null;
+  // A promise left hanging at the end goes away whole; a line ending in a colon in the middle is followed by its list.
+  let source = text;
+  if (codes.delete("unfinished-answer")) {
+    const kept = text.trimEnd().split("\n");
+    while (kept.length && (kept.at(-1)!.trim() === "" || endsAnnouncing(kept.at(-1)!))) kept.pop();
+    source = kept.join("\n");
+    if (!codes.size) {
+      const trimmed = tidyAnswer(source.split("\n"));
+      return trimmed.length >= text.trim().length * 0.4 && verifyCozteResponse(trimmed, tools, context).ok ? trimmed : null;
+    }
+  }
   const offends = (unit: string) => unit.trim() !== "" && verifyCozteResponse(unit, tools, context).issues.some((issue) => codes.has(issue.code));
-  const lines = text.split("\n").flatMap((line) => {
+  const lines = source.split("\n").flatMap((line) => {
     if (!line.trim()) return [line];
     const kept = answerUnits(line).filter((unit) => !offends(unit)).join("").trimEnd();
     return kept.trim() ? [kept] : [];
@@ -278,6 +300,7 @@ const DISCARD_REASONS: Record<VerificationIssue["code"], string> = {
   "unknown-identifier": "Mostraba un código interno.",
   "internal-detail": "Usaba nombres internos del sistema.",
   "empty-answer": "Quedó sin mensaje final.",
+  "unfinished-answer": "Terminaba anunciando algo que no llegó.",
 };
 
 /** Plain-language reason shown next to a discarded draft in the collapsed work trace. */
