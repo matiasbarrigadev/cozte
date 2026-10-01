@@ -2,7 +2,7 @@ import { CreateOrganization, OrganizationSwitcher } from "@clerk/nextjs";
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { CostosApp } from "@/components/costos-app";
-import { loadDashboard } from "@/lib/server/state";
+import { loadWorkspace } from "@/lib/server/workspace";
 import { sessionPrincipal } from "@/lib/server/auth";
 import { loadOnboarding } from "@/lib/server/onboarding";
 import { superadminEmail } from "@/lib/server/platform-admin";
@@ -44,7 +44,7 @@ export default async function AppPage({ params }: { params: Promise<{ section?: 
   let initial;
   let onboarding;
   try {
-    [initial, onboarding] = await Promise.all([loadDashboard(principal), loadOnboarding(principal).catch((error) => { console.error("Onboarding lookup failed", error); return undefined; })]);
+    [initial, onboarding] = await Promise.all([loadWorkspace(principal), loadOnboarding(principal).catch((error) => { console.error("Onboarding lookup failed", error); return undefined; })]);
   } catch {
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-xl items-center p-6">

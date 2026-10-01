@@ -22,6 +22,8 @@ import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { firstName } from "@/lib/onboarding";
+import type { JourneyView, StageView } from "@/lib/journey";
+import { JourneyCard } from "./journey-card";
 import { ChatContainerContent, ChatContainerRoot, ChatContainerScrollAnchor } from "@/components/ui/chat-container";
 import { PromptInput, PromptInputActions, PromptInputTextarea } from "@/components/ui/prompt-input";
 import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
@@ -53,7 +55,7 @@ const suggestions = [
   "¿Cómo vengo este mes?",
 ];
 
-export function CozteAssistant({ demo, state, personName = "", onDataChanged, pendingPrompt, onPromptSent, onOpenPresentation }: { demo: boolean; state: DomainState & { costs: ProductCost[] }; personName?: string; onDataChanged: () => Promise<void>; onOpenCosts?: () => void; pendingPrompt?: string | null; onPromptSent?: () => void; onOpenPresentation?: (id: string) => void }) {
+export function CozteAssistant({ demo, state, personName = "", journey, onStartStage, onDataChanged, pendingPrompt, onPromptSent, onOpenPresentation }: { demo: boolean; state: DomainState & { costs: ProductCost[] }; personName?: string; journey?: JourneyView; onStartStage?: (stage: StageView) => void; onDataChanged: () => Promise<void>; onOpenCosts?: () => void; pendingPrompt?: string | null; onPromptSent?: () => void; onOpenPresentation?: (id: string) => void }) {
   const [input, setInput] = React.useState("");
   const [attachments, setAttachments] = React.useState<File[]>([]);
   const [preparing, setPreparing] = React.useState(false);
@@ -474,6 +476,7 @@ export function CozteAssistant({ demo, state, personName = "", onDataChanged, pe
               {EXPLANATION_LEVELS.map((item) => <DropdownOption key={item.id} value={item.id}>{item.label}</DropdownOption>)}
             </Dropdown>
           </label>
+          {journey?.current && messages.length ? <Button type="button" size="sm" variant="outline" disabled={status !== "ready" || loading} title={journey.current.why} onClick={() => { onStartStage?.(journey.current!); void send(journey.current!.prompt); }}><AnimatedIcon name="sparkles" data-icon="inline-start" />Etapa {journey.stages.findIndex((stage) => stage.id === journey.current!.id) + 1} de {journey.total}: {journey.current.title}</Button> : null}
           <Button type="button" size="sm" variant="outline" disabled={status !== "ready" || !messages.length} onClick={() => setConfirmReset(true)}><AnimatedIcon name="refresh" data-icon="inline-start" />Nueva conversación</Button>
         </div>
       </div>
@@ -486,7 +489,8 @@ export function CozteAssistant({ demo, state, personName = "", onDataChanged, pe
         <section id="cozte-chat-panel" role="tabpanel" aria-labelledby="cozte-chat-tab" aria-label="Chat con Cozte" className={cn("min-w-0", mobilePanel === "chat" ? "flex" : "hidden lg:flex")}>
           <Card className="flex h-[calc(100dvh-13rem)] min-h-[30rem] w-full min-w-0 flex-col gap-0 overflow-hidden py-0 lg:h-[calc(100dvh-11rem)]">
             <CardContent className="flex min-h-0 flex-1 flex-col px-4 py-5 md:px-8"><ChatContainerRoot className="min-h-0 flex-1" aria-live="polite"><ChatContainerContent className="mx-auto min-h-full w-full max-w-4xl gap-4">
-              {!messages.length ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>{state.products.length ? `¿En qué te ayudo hoy${greetingName ? `, ${greetingName}` : ""}?` : `${greetingName ? `Hola, ${greetingName}. ` : ""}Empecemos por tu producción`}</EmptyTitle><EmptyDescription>{state.products.length ? "Pregúntame por tus costos, mándame un ticket o una venta, o pídeme un gráfico." : `¿Qué productos terminados y empacados fabrican${companyName ? ` en ${companyName}` : ""}, dónde y cómo?`}</EmptyDescription></EmptyHeader>
+              {!messages.length && journey?.current ? <div className="my-auto flex w-full justify-center py-2"><JourneyCard journey={journey} compact onStart={(stage) => { onStartStage?.(stage); void send(stage.prompt); }} onFinale={(text) => void send(text)} /></div> : null}
+              {!messages.length && !journey?.current ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>{state.products.length ? `¿En qué te ayudo hoy${greetingName ? `, ${greetingName}` : ""}?` : `${greetingName ? `Hola, ${greetingName}. ` : ""}Empecemos por tu producción`}</EmptyTitle><EmptyDescription>{state.products.length ? "Pregúntame por tus costos, mándame un ticket o una venta, o pídeme un gráfico." : `¿Qué productos terminados y empacados fabrican${companyName ? ` en ${companyName}` : ""}, dónde y cómo?`}</EmptyDescription></EmptyHeader>
                 {level === null && !demo ? <div className="flex w-full max-w-xl flex-col gap-2"><p className="text-sm font-medium">¿Cómo prefieres que te explique?</p><div className="grid gap-2 sm:grid-cols-3">{EXPLANATION_LEVELS.map((item) => <button key={item.id} type="button" onClick={() => void saveSettings({ level: item.id })} className="flex flex-col gap-1 rounded-lg border bg-background p-3 text-left text-sm transition-colors hover:bg-muted"><span className="font-medium">{item.label}</span><span className="text-xs text-muted-foreground">{item.hint}</span></button>)}</div><p className="text-xs text-muted-foreground">Puedes cambiarlo cuando quieras arriba.</p></div> : null}
               </Empty> : null}
               {messages.length ? <div ref={topSentinel} className="flex justify-center py-1 text-[11px] text-muted-foreground">

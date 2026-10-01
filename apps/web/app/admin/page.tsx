@@ -10,6 +10,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { countryByCode } from "@/lib/locations";
 import { formatMoney } from "@/lib/money";
 import { ADMIN_VIEW_COOKIE, listOrganizations, superadminEmail } from "@/lib/server/platform-admin";
+import { journeyMetrics, listJourneyDefinitions } from "@/lib/server/journey";
+import { JourneyEditor } from "@/components/admin/journey-editor";
 
 export const metadata: Metadata = { title: "Superadmin · Cozte", robots: { index: false, follow: false } };
 
@@ -23,7 +25,7 @@ export default async function AdminPage() {
   const email = await superadminEmail(session.userId);
   // To anyone else the panel does not exist.
   if (!email) notFound();
-  const [organizations, viewing] = await Promise.all([listOrganizations(), cookies().then((store) => store.get(ADMIN_VIEW_COOKIE)?.value ?? null)]);
+  const [organizations, viewing, journeys, metrics] = await Promise.all([listOrganizations(), cookies().then((store) => store.get(ADMIN_VIEW_COOKIE)?.value ?? null), listJourneyDefinitions(), journeyMetrics()]);
   const current = organizations.find((item) => item.id === viewing);
 
   return <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 md:px-8">
@@ -51,6 +53,10 @@ export default async function AdminPage() {
           </TableRow>)}</TableBody>
         </Table>
       </CardContent>
+    </Card>
+    <Card>
+      <CardHeader><CardTitle>Recorridos de descubrimiento</CardTitle><CardDescription>Las etapas que guían a cada empresa, por perfil. Se editan acá sin publicar una versión nueva; el avance de cada empresa se guarda por etapa.</CardDescription></CardHeader>
+      <CardContent><JourneyEditor journeys={journeys.map((item) => ({ key: item.key, name: item.definition.name, stored: item.stored, error: item.error, json: item.json, stages: item.definition.stages.map((stage) => ({ id: stage.id, title: stage.title })) }))} metrics={metrics} /></CardContent>
     </Card>
   </main>;
 }

@@ -6,6 +6,7 @@ import type { Onboarding } from "@/lib/onboarding";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery } from "./db";
 import { saveOrganizationLocation } from "./organization-location";
+import { saveExplanationLevel } from "./cozte-settings";
 import { DEFAULT_ORGANIZATION_NAME, ensureOrganization, rememberOrganizationName } from "./state";
 
 /**
@@ -24,6 +25,10 @@ export const onboardingInputSchema = z.object({
   country: z.string().trim().toUpperCase().refine((code) => Boolean(countryByCode(code)), "Elige un país de la lista"),
   city: z.string().trim().max(80).optional().default(""),
   currency: z.enum(supportedCurrencies).optional(),
+  /** How much the person knows about costs: how Cozte explains and whether the menu opens step by step. */
+  level: z.enum(["simple", "medium", "advanced"]).optional(),
+  /** Whether the company already sells: a business in operation or a project being planned. */
+  selling: z.boolean().optional(),
 });
 
 async function clerk() {
@@ -105,9 +110,11 @@ export async function completeOnboarding(principal: Principal, input: z.input<ty
     { sql: "UPDATE memberships SET display_name=? WHERE organization_id=? AND user_id=?", params: [value.personName, org, principal.userId] },
     // The main currency follows the answer only while nothing is costed yet (afterwards it stays fixed).
     { sql: "UPDATE organizations SET currency=?, revision=revision+1 WHERE id=? AND currency<>? AND NOT EXISTS (SELECT 1 FROM products WHERE organization_id=?) AND NOT EXISTS (SELECT 1 FROM materials WHERE organization_id=?) AND NOT EXISTS (SELECT 1 FROM shared_expenses WHERE organization_id=?)", params: [currency, org, currency, org, org, org] },
+    ...(value.selling !== undefined ? [{ sql: "UPDATE organizations SET business_mode=? WHERE id=?", params: [value.selling ? "operating" : "project", org] }] : []),
     { sql: "UPDATE organizations SET onboarded_at=COALESCE(onboarded_at, CURRENT_TIMESTAMP) WHERE id=?", params: [org] },
-    { sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, 'complete-onboarding', ?, ?)", params: [crypto.randomUUID(), org, principal.userId, org, JSON.stringify({ companyName, country: country.code, currency })] },
+    { sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, 'complete-onboarding', ?, ?)", params: [crypto.randomUUID(), org, principal.userId, org, JSON.stringify({ companyName, country: country.code, currency, level: value.level ?? null, selling: value.selling ?? null })] },
   ]);
+  if (value.level) await saveExplanationLevel(principal, value.level);
   const [saved] = await dbQuery<{ currency: Currency }>("SELECT currency FROM organizations WHERE id=?", [org]);
   return { personName: value.personName, companyName, country: country.code, currency: saved?.currency ?? currency };
 }

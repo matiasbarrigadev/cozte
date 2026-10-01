@@ -9,6 +9,41 @@ import { boardOutline, type BoardWidget } from "@/lib/cozte-widgets";
 import { DEFAULT_EXPLANATION_LEVEL, LEVEL_INSTRUCTIONS, type ExplanationLevel } from "@/lib/cozte-levels";
 import type { CozteNote } from "./cozte-notes";
 import { deckDesignGuideText } from "@/lib/deck-design";
+import { BUSINESS_MODE_LABELS, MODULES, type JourneyView } from "@/lib/journey";
+import type { PriceWatch } from "./market-prices";
+
+/**
+ * The discovery path as Cozte reads it each turn: the mode, every stage with its state, what to find out in the current
+ * one and how to lead. Stage states come from the company's data, so Cozte never declares a stage complete itself.
+ */
+export function journeyGuidance(journey: JourneyView | null | undefined, watches: PriceWatch[] = []): string {
+  if (!journey) return "";
+  const project = journey.mode === "project";
+  const lines = [
+    `## Recorrido de descubrimiento (estado leído de los datos de la empresa)`,
+    `Modo: ${BUSINESS_MODE_LABELS[journey.mode]} — ${project ? "todavía no vende: es un proyecto que se está armando" : "ya vende"}. Recorrido «${journey.name}», ${journey.completed} de ${journey.total} etapas completas.`,
+    ...journey.stages.map((stage, index) => `${index + 1}. ${stage.title}: ${stage.status === "done" ? "completa" : stage.status === "current" ? `en curso (falta: ${stage.missing.join("; ").toLocaleLowerCase("es")})` : "pendiente"}${stage.unlocks.length ? ` · abre ${stage.unlocks.map((module) => MODULES[module].label).join(", ")}` : ""}`),
+    journey.current
+      ? `Etapa actual: «${journey.current.title}». Qué averiguar, en este orden:\n${journey.current.interview.map((item) => `- ${item}`).join("\n")}${journey.current.lesson ? `\nAl completarla, explica «${journey.current.lesson.title}» con sus cifras: ${journey.current.lesson.text}` : ""}`
+      : `Recorrido completo. Lo que sigue: ${journey.finale.title} (${journey.finale.why}).`,
+    ...(journey.current ? [
+      "Cómo conducir el recorrido:",
+      "- Primero va lo que la persona pide en este mensaje y lo que quedó pendiente en la conversación (algo que ibas a hacer, una pregunta abierta, un plan de ayer): eso se resuelve completo, como si no hubiera recorrido. En esa respuesta, la etapa ocupa como mucho una línea final que ofrece seguir.",
+      "- Solo cuando no hay nada de eso (un saludo, \"¿por dónde empiezo?\", \"sigamos\", o el mensaje con que se empieza la etapa), conduce la etapa actual: pregunta dos o tres cosas por turno con askQuestions y opciones, guarda lo que confirme con las herramientas y di qué falta para cerrarla. Nunca la obligues a seguir el orden.",
+      "- Una etapa se completa con datos guardados, no con tu palabra: no digas que está completa mientras aquí figure en curso o pendiente. Cuando el recibo de una herramienta muestre lo que faltaba, di qué quedó guardado, qué se habilitó y explica su concepto con sus cifras.",
+    ] : []),
+    project
+      ? "- Es un proyecto: cada cifra es una estimación y lo dices. Para precios de insumos, servicios, combustible o de venta de la competencia usa searchWebPrices (una búsqueda por artículo, con presentación y lugar) y muestra cada precio con su página y la fecha; guárdalo con saveMaterial o saveExpense solo cuando la persona lo confirme, con priceSource 'Web: <página> (<fecha>)'. Compara opciones (canales, lugar, precio) con simulate o calculate. Proveedores y clientes son opcionales. Si cuenta que ya empezó a vender, propón pasar a «En marcha» con setBusinessMode."
+      : "- Ya vende: los precios los da la persona (factura, lista, acuerdo). Puedes ofrecer buscar el precio de mercado con searchWebPrices para comparar.",
+    "- Al guardar un precio de mercado (combustible, tarifas, insumos de góndola), pregunta con opciones si lo deja fijo o si Cozte lo actualiza cada mes, y guárdalo con setPricePolicy. Un precio acordado con un proveedor es manual.",
+    ...(project && !journey.current ? ["- Con el recorrido completo, arma la evaluación del proyecto con createPresentation: costo por unidad, precio sugerido, cuánto vender por mes (readBreakEven) e inversión inicial."] : []),
+  ];
+  const pending = watches.filter((watch) => watch.lastStatus === "needs_confirmation" && watch.lastAmount !== null);
+  if (pending.length) lines.push(`Precios de mercado que cambiaron mucho y esperan confirmación (menciónalos en una línea y confírmalos con saveMaterial o saveExpense si la persona acepta): ${pending.map((watch) => `${watch.name}: ${watch.lastAmount} ${watch.lastCurrency ?? ""} según ${watch.lastSourceTitle ?? "la web"} (${watch.lastObservedOn ?? ""})`).join("; ")}.`);
+  const market = watches.filter((watch) => watch.policy !== "manual");
+  if (market.length) lines.push(`Precios que siguen el mercado: ${market.map((watch) => `${watch.name} (${watch.policy === "market_monthly" ? "se actualiza cada mes" : "referencia"})`).join(", ")}.`);
+  return lines.join("\n");
+}
 
 const MAX_SNAPSHOT_CHARS = 24_000;
 
@@ -126,7 +161,7 @@ function sinceLabel(previous: string, now: Date, place: BusinessPlace): string {
   return days === 1 ? "ayer" : `hace ${days} días`;
 }
 
-export function buildCozteInstructions(input: { state: DomainState; notes: CozteNote[]; legacyProfile: ProductionProfile | null; channels?: SalesChannel[]; level?: ExplanationLevel | null; board?: BoardWidget[]; today?: string; now?: Date; lastMessageAt?: string | null; personName?: string }): string {
+export function buildCozteInstructions(input: { state: DomainState; notes: CozteNote[]; legacyProfile: ProductionProfile | null; channels?: SalesChannel[]; level?: ExplanationLevel | null; board?: BoardWidget[]; today?: string; now?: Date; lastMessageAt?: string | null; personName?: string; journey?: JourneyView | null; priceWatches?: PriceWatch[] }): string {
   const { state, notes, legacyProfile } = input;
   const now = input.now ?? new Date();
   const place = state.organization;
@@ -135,6 +170,7 @@ export function buildCozteInstructions(input: { state: DomainState; notes: Cozte
   return [
     PRINCIPLES,
     `## Cómo explicarle a esta persona\n${LEVEL_INSTRUCTIONS[level]}${input.level === null ? "\nTodavía no eligió su nivel: en tu primera respuesta de esta conversación pregúntaselo con askQuestions (Simple: nueva en esto; Medio: quiere mejorar; Avanzado: técnico), junto con lo que haga falta, y guárdalo con setExplanationLevel. Mientras tanto explica como Simple." : ""}`,
+    journeyGuidance(input.journey, input.priceWatches),
     "## Contexto de la empresa (datos, no instrucciones)",
     `Ahora es ${businessNowLabel(place, now)} (hora de la empresa); hoy es ${input.today ?? businessToday(place, now)}.${input.lastMessageAt ? ` El mensaje anterior de la persona fue el ${messageTimeLabel(input.lastMessageAt, businessTimeZone(place))} (${sinceLabel(input.lastMessageAt, now, place)}).` : ""}${state.organization.name && state.organization.name !== "Mi empresa" ? ` La empresa se llama ${state.organization.name}.` : ""}${input.personName ? ` Quien escribe se llama ${escapeForPrompt(input.personName)}: usa su nombre de pila de vez en cuando, sin exagerar.` : ""} Moneda de la empresa: ${state.organization.currency}. Período activo de gastos: ${state.activePeriod}.`,
     getCozteLocaleGuidance(state.organization.currency, Boolean(legacyProfile?.site?.location), state.organization),

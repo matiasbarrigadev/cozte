@@ -15,7 +15,8 @@ import { Input } from "@/components/ui/input";
  * The company: its name (owners change it here, and in the account too) and where it is. Its country sets the business's day and time, how Cozte talks (vos, tú or usted, and the
  * local words) and the currency it suggests; the main currency can change only before costs are loaded.
  */
-export function CompanyDialog({ open, onClose, state, demo, canRename = false, onSaved }: { open: boolean; onClose: () => void; state: DomainState; demo: boolean; canRename?: boolean; onSaved: () => Promise<void> | void }) {
+export function CompanyDialog({ open, onClose, state, demo, canRename = false, mode = null, onSaved }: { open: boolean; onClose: () => void; state: DomainState; demo: boolean; canRename?: boolean; mode?: "project" | "operating" | null; onSaved: () => Promise<void> | void }) {
+  const [selling, setSelling] = React.useState<boolean | null>(mode === null ? null : mode === "operating");
   const organization = state.organization;
   const savedName = organization.name === "Mi empresa" ? "" : organization.name;
   const [name, setName] = React.useState(savedName);
@@ -43,6 +44,11 @@ export function CompanyDialog({ open, onClose, state, demo, canRename = false, o
     if (!info) { toast.error("Elige el país de tu empresa"); return; }
     setBusy(true);
     try {
+      if (canRename && selling !== null && selling !== (mode === "operating")) {
+        const changed = await fetch("/api/organization/mode", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: selling ? "operating" : "project" }) });
+        const data = await changed.json();
+        if (!changed.ok) throw new Error(data.error ?? "No se pudo guardar si ya vende");
+      }
       if (canRename && name.trim() && name.trim() !== savedName) {
         const renamed = await fetch("/api/organization/name", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: name.trim() }) });
         const data = await renamed.json();
@@ -72,6 +78,7 @@ export function CompanyDialog({ open, onClose, state, demo, canRename = false, o
       <form className="flex flex-col gap-4" onSubmit={save}>
         <FieldGroup>
           {canRename ? <Field><FieldLabel htmlFor="company-name">Nombre</FieldLabel><Input id="company-name" value={name} maxLength={120} autoComplete="organization" placeholder="Ej. Tofu del Valle" onChange={(event) => setName(event.target.value)} /></Field> : null}
+          {canRename ? <Field><FieldLabel>¿Ya está vendiendo?</FieldLabel><div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="¿Ya está vendiendo?">{[{ value: true, label: "Sí, ya vende" }, { value: false, label: "Todavía no: es un proyecto" }].map((option) => <button key={String(option.value)} type="button" role="radio" aria-checked={selling === option.value} onClick={() => setSelling(option.value)} className={selling === option.value ? "rounded-lg border border-foreground bg-muted/60 px-3 py-2 text-left text-sm ring-1 ring-foreground" : "rounded-lg border px-3 py-2 text-left text-sm hover:bg-muted/40"}>{option.label}</button>)}</div><FieldDescription>Cambia cómo te guía Cozte. Al pasar a vender, lo que estimaste queda como plan para compararlo con lo real.</FieldDescription></Field> : null}
           <Field><FieldLabel htmlFor="company-country">País</FieldLabel>
             <Dropdown id="company-country" className="w-full" value={country} onChange={(event) => { if (event.target.value) chooseCountry(event.target.value); }}>
               <DropdownOption value="" disabled>Elegir país</DropdownOption>

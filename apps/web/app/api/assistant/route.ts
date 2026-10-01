@@ -16,6 +16,8 @@ import { storeChatAttachments, type ChatAttachment } from "@/lib/server/document
 import { loadChannels } from "@/lib/server/business";
 import { loadCozteSettings } from "@/lib/server/cozte-settings";
 import { loadMemberName } from "@/lib/server/onboarding";
+import { loadJourney } from "@/lib/server/journey";
+import { loadPriceWatches } from "@/lib/server/market-prices";
 import { COZTE_CHAT_PAGE_SIZE, COZTE_MODEL_HISTORY_MESSAGES, messageCreatedAt, modelHistory, modelWindow, withCreatedAt, withMessageTimes } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
 import { COZTE_ASSISTANT_ATTACHMENT_MEDIA_TYPES, COZTE_MAX_ATTACHMENT_COUNT, COZTE_MAX_IMAGE_COUNT, COZTE_MAX_IMAGE_BYTES, COZTE_MAX_PDF_BYTES, COZTE_MAX_SPREADSHEET_COUNT, COZTE_MAX_SPREADSHEET_BYTES, COZTE_MAX_TOTAL_ATTACHMENT_BYTES, COZTE_MAX_TOTAL_IMAGE_BYTES, COZTE_SPREADSHEET_MEDIA_TYPE, prepareCozteModelMessages } from "@/lib/cozte-assistant-attachments";
@@ -130,7 +132,11 @@ export async function POST(request: Request) {
     const receivedAt = new Date();
     const incoming: UIMessage = withCreatedAt({ id: message.id, role: "user", parts: message.parts }, receivedAt.toISOString());
     const validated = await validateUIMessages({ messages: [...previous, incoming], tools });
-    const instructions = buildCozteInstructions({ state, notes, channels, level: cozteSettings.level, board: cozteSettings.board, legacyProfile: profileState.draft ?? profileState.confirmed, personName, now: receivedAt, lastMessageAt: messageCreatedAt(stored.findLast((item) => item.role === "user") ?? {}) });
+    const [journey, priceWatches] = await Promise.all([
+      loadJourney(principal, state, { persist: false, level: cozteSettings.level }).catch((error) => { console.error("Journey lookup failed", error); return null; }),
+      loadPriceWatches(principal, state).catch(() => []),
+    ]);
+    const instructions = buildCozteInstructions({ journey, priceWatches, state, notes, channels, level: cozteSettings.level, board: cozteSettings.board, legacyProfile: profileState.draft ?? profileState.confirmed, personName, now: receivedAt, lastMessageAt: messageCreatedAt(stored.findLast((item) => item.role === "user") ?? {}) });
     // Receipts and delivery notes sent in the chat are kept so Cozte can attach them to what they back.
     const files = message.parts.filter((part) => part.type === "file");
     const attachments = files.length ? await storeChatAttachments(principal, candidateRunId, files) : [];

@@ -10,16 +10,30 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { CozteLogo } from "./cozte-logo";
 
 export type OnboardingResult = { personName: string; companyName: string; country: string; currency: Currency };
+
+type Level = "simple" | "medium" | "advanced";
+const LEVELS: { id: Level; title: string; hint: string }[] = [
+  { id: "simple", title: "Recién empiezo con los números", hint: "Te explico todo con ejemplos y vamos de a un paso." },
+  { id: "medium", title: "Llevo cuentas pero quiero ordenarlas", hint: "Términos básicos explicados la primera vez." },
+  { id: "advanced", title: "Manejo costos o soy contador", hint: "Directo al grano, con todas las secciones a mano." },
+];
+const STAGES: { selling: boolean; title: string; hint: string }[] = [
+  { selling: true, title: "Sí, ya vendo", hint: "Ordenamos lo que ya pasa: tus costos, ventas y entregas reales." },
+  { selling: false, title: "Todavía no, estoy armando un proyecto", hint: "Descubrimos juntos si cierra, con precios de mercado reales." },
+];
 
 /**
  * The first time a company opens Cozte: who is writing, what the company is called and where it is. Two short steps;
  * the country sets the main currency (still changeable here), the calendar and how Cozte talks. Then Cozte opens.
  */
 export function OnboardingDialog({ start, currency: currentCurrency, onDone }: { start: Onboarding; currency: Currency; onDone: (result: OnboardingResult) => Promise<void> | void }) {
-  const [step, setStep] = React.useState<1 | 2>(1);
+  const [step, setStep] = React.useState<1 | 2 | 3>(1);
+  const [level, setLevel] = React.useState<Level | null>(null);
+  const [selling, setSelling] = React.useState<boolean | null>(null);
   const [personName, setPersonName] = React.useState(start.personName);
   const [companyName, setCompanyName] = React.useState(start.companyName);
   const [country, setCountry] = React.useState(start.country ?? "");
@@ -38,10 +52,11 @@ export function OnboardingDialog({ start, currency: currentCurrency, onDone }: {
 
   async function finish(event: React.FormEvent) {
     event.preventDefault();
-    if (!info) { toast.error("Elige el país de tu empresa"); return; }
+    if (!info) { toast.error("Elige el país de tu empresa"); setStep(2); return; }
+    if (!level || selling === null) return;
     setBusy(true);
     try {
-      const response = await fetch("/api/onboarding", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ personName: personName.trim(), companyName: companyName.trim(), country, city: city.trim(), currency }) });
+      const response = await fetch("/api/onboarding", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ personName: personName.trim(), companyName: companyName.trim(), country, city: city.trim(), currency, level, selling }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "No se pudieron guardar los datos");
       await onDone(result as OnboardingResult);
@@ -52,8 +67,8 @@ export function OnboardingDialog({ start, currency: currentCurrency, onDone }: {
   // Stays open until the answers are saved: Escape and clicks outside do not close it.
   return <Dialog open onOpenChange={() => undefined}>
     <DialogContent showCloseButton={false} className="max-h-[92dvh] overflow-y-auto sm:max-w-md">
-      <div className="flex items-center justify-between gap-3"><CozteLogo className="text-xl" /><span className="text-xs text-muted-foreground tabular-nums">Paso {step} de 2</span></div>
-      <div className="flex gap-1.5" aria-hidden="true"><span className="h-1 flex-1 rounded-full bg-primary" /><span className={step === 2 ? "h-1 flex-1 rounded-full bg-primary" : "h-1 flex-1 rounded-full bg-muted"} /></div>
+      <div className="flex items-center justify-between gap-3"><CozteLogo className="text-xl" /><span className="text-xs text-muted-foreground tabular-nums">Paso {step} de 3</span></div>
+      <div className="flex gap-1.5" aria-hidden="true">{[1, 2, 3].map((item) => <span key={item} className={item <= step ? "h-1 flex-1 rounded-full bg-primary" : "h-1 flex-1 rounded-full bg-muted"} />)}</div>
       {step === 1 ? <form className="flex flex-col gap-5" onSubmit={(event) => { event.preventDefault(); if (namesReady) setStep(2); }}>
         <DialogHeader>
           <DialogTitle className="text-xl">Te damos la bienvenida a Cozte</DialogTitle>
@@ -64,7 +79,7 @@ export function OnboardingDialog({ start, currency: currentCurrency, onDone }: {
           <Field><FieldLabel htmlFor="onboarding-company">Nombre de tu empresa</FieldLabel><Input id="onboarding-company" value={companyName} maxLength={120} autoComplete="organization" placeholder="Ej. Tofu del Valle" onChange={(event) => setCompanyName(event.target.value)} /><FieldDescription>El nombre con que la conocen tus clientes. Se puede cambiar después.</FieldDescription></Field>
         </FieldGroup>
         <Button type="submit" size="lg" disabled={!namesReady}>Continuar</Button>
-      </form> : <form className="flex flex-col gap-5" onSubmit={finish}>
+      </form> : step === 2 ? <form className="flex flex-col gap-5" onSubmit={(event) => { event.preventDefault(); if (info) setStep(3); }}>
         <DialogHeader>
           <DialogTitle className="text-xl">¿Dónde está {companyName.trim() || "tu empresa"}?</DialogTitle>
           <DialogDescription>Con el país, Cozte sabe tu moneda, tu día y tu hora, y te habla como se habla allá.</DialogDescription>
@@ -85,11 +100,33 @@ export function OnboardingDialog({ start, currency: currentCurrency, onDone }: {
         {localTime ? <p className="rounded-lg bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Allá es {localTime}.</p> : null}
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
           <Button type="button" variant="ghost" onClick={() => setStep(1)} disabled={busy}>Volver</Button>
-          <Button type="submit" size="lg" disabled={busy || !info}>{busy ? "Guardando…" : `Empezar${firstName(personName) ? `, ${firstName(personName)}` : ""}`}</Button>
+          <Button type="submit" size="lg" disabled={!info}>Continuar</Button>
+        </div>
+      </form> : <form className="flex flex-col gap-5" onSubmit={finish}>
+        <DialogHeader>
+          <DialogTitle className="text-xl">Para arrancar por donde te sirve</DialogTitle>
+          <DialogDescription>Con esto Cozte elige cómo explicarte y por dónde empezar. Se puede cambiar cuando quieras.</DialogDescription>
+        </DialogHeader>
+        <ChoiceGroup label="¿Cuánto sabés de costos?" options={LEVELS.map((item) => ({ key: item.id, title: item.title, hint: item.hint, selected: level === item.id, onSelect: () => setLevel(item.id) }))} />
+        <ChoiceGroup label={`¿${companyName.trim() || "Tu empresa"} ya está vendiendo?`} options={STAGES.map((item) => ({ key: String(item.selling), title: item.title, hint: item.hint, selected: selling === item.selling, onSelect: () => setSelling(item.selling) }))} />
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+          <Button type="button" variant="ghost" onClick={() => setStep(2)} disabled={busy}>Volver</Button>
+          <Button type="submit" size="lg" disabled={busy || !level || selling === null}>{busy ? "Guardando…" : `Empezar${firstName(personName) ? `, ${firstName(personName)}` : ""}`}</Button>
         </div>
       </form>}
     </DialogContent>
   </Dialog>;
+}
+
+/** One choice among a few, each with a line that says what it means. */
+function ChoiceGroup({ label, options }: { label: string; options: { key: string; title: string; hint: string; selected: boolean; onSelect: () => void }[] }) {
+  return <div className="flex flex-col gap-2" role="radiogroup" aria-label={label}>
+    <p className="text-sm font-medium">{label}</p>
+    {options.map((option) => <button key={option.key} type="button" role="radio" aria-checked={option.selected} aria-label={`${option.title}: ${option.hint}`} onClick={option.onSelect}
+      className={cn("rounded-lg border p-3 text-left transition-colors", option.selected ? "border-foreground bg-muted/60 ring-1 ring-foreground" : "hover:bg-muted/40")}>
+      <span className="block text-sm font-medium">{option.title}</span><span className="block text-xs text-muted-foreground">{option.hint}</span>
+    </button>)}
+  </div>;
 }
 
 function countryCurrency(code: string | null): Currency | null {

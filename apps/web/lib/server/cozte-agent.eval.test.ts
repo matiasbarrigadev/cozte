@@ -32,6 +32,8 @@ import { loadDeliveries, organizationToday, recordPurchase, recordSale } from ".
 import { loadZones, saveZone } from "./delivery-zones";
 import { loadSuppliers } from "./suppliers";
 import { loadSalesMix } from "./break-even";
+import { loadJourney } from "./journey";
+import { loadPriceWatches } from "./market-prices";
 import { messageTimeLabel } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
 import { correctionMessage, finalAnswerStep, hasHardIssue, salvageAnswer, verifyCozteResponse, type TurnToolRecord } from "@/lib/cozte-response-verifier";
@@ -80,7 +82,9 @@ type Principal = { userId: string; organizationId: string; role: "owner" };
 async function productionTurn(input: { model: string; principal: Principal; history: ModelMessage[]; text: string; level?: "simple" | "medium" | "advanced"; now?: Date; lastMessageAt?: string }) {
   const settings = { ...cozteAgentSettings(), model: input.model };
   const state = await loadState(input.principal);
-  const instructions = buildCozteInstructions({ state, notes: await loadCozteNotes(input.principal), legacyProfile: null, level: input.level ?? "simple", board: (await loadCozteSettings(input.principal)).board, channels: await loadChannels(input.principal), now: input.now, lastMessageAt: input.lastMessageAt });
+  // As in production: the discovery path and the price policies are part of every turn's instructions.
+  const [journey, priceWatches] = await Promise.all([loadJourney(input.principal, state, { persist: false, level: input.level ?? "simple" }), loadPriceWatches(input.principal, state)]);
+  const instructions = buildCozteInstructions({ journey, priceWatches, state, notes: await loadCozteNotes(input.principal), legacyProfile: null, level: input.level ?? "simple", board: (await loadCozteSettings(input.principal)).board, channels: await loadChannels(input.principal), now: input.now, lastMessageAt: input.lastMessageAt });
   const tools = createCozteTools(input.principal, crypto.randomUUID());
   // As in production, the person's message starts with when it was written.
   input.history.push({ role: "user", content: input.now ? `[Escrito el ${messageTimeLabel(input.now.toISOString(), businessTimeZone(state.organization.currency))}] ${input.text}` : input.text });
@@ -550,6 +554,49 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     console.log(`\n[${model}] break-even ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}\n---\n${third.answer}\n---\n${fourth.answer}`);
     results.push({ model, scenario: "break-even", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "equilibrio", answer: first.answer }, { user: "gas", answer: second.answer }, { user: "mezcla", answer: third.answer }, { user: "fijos y variables", answer: fourth.answer }] });
     expect(failures).toEqual([]);
+  });
+
+  it.each(models)("leads a project still being planned through its first stage and finds prices on the web with their source, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    // As the onboarding leaves it: a project in Argentina, explained simply (set directly: the account service is not reachable here).
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET name='Alfajores Ana', currency='ARS', country='AR', time_zone='America/Argentina/Buenos_Aires', business_mode='project', onboarded_at=CURRENT_TIMESTAMP WHERE id=?", params: [principal.organizationId] }]);
+    // The web search service answers with one page that shows a price.
+    process.env.FIRECRAWL_API_KEY = "eval-key";
+    const real = globalThis.fetch;
+    const searches: string[] = [];
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.startsWith("https://api.firecrawl.dev/")) return real(input, init);
+      searches.push(JSON.parse(String(init?.body ?? "{}")).query ?? "");
+      return new Response(JSON.stringify({ success: true, data: { web: [{ url: "https://mayorista.example/dulce-de-leche", title: "Dulce de leche repostero 1 kg - Mayorista Sur", description: "Dulce de leche repostero por kilo", markdown: "Dulce de leche repostero x 1 kg $4.200\nRetiro en sucursal" }] }, creditsUsed: 2 }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    try {
+      const history: ModelMessage[] = [];
+      const first = await productionTurn({ model, principal, history, text: "Quiero empezar a armar mi proyecto de alfajores. Todavía no vendo nada." });
+      const second = await productionTurn({ model, principal, history, text: "Serían alfajores de maicena. Salen 50 por tanda y haría 8 tandas al mes. Cada tanda lleva 1 kg de maicena, 0,5 kg de dulce de leche y 0,3 kg de coco rallado." });
+      const third = await productionTurn({ model, principal, history, text: "¿Cuánto sale el kilo de dulce de leche? Buscalo vos." });
+      const state = await loadState(principal);
+      const journey = await loadJourney(principal, state);
+      const plain = third.answer.replace(/\s/g, "");
+      const checks = {
+        ledTheFirstStage: first.records.some((item) => item.name === "askQuestions") || /\?/.test(first.answer),
+        savedTheRecipe: journey.stages[0].status === "done",
+        searchedTheWeb: third.records.some((item) => item.name === "searchWebPrices" && item.ok) && searches.length > 0,
+        citedPriceAndSource: /4\.?200/.test(plain) && /(mayorista|dulce-de-leche|mayorista\.example)/i.test(third.answer),
+        didNotSaveUnconfirmed: !state.materials.some((item) => /dulce/i.test(item.name) && item.priceMinor === 4200),
+        answeredEveryTurn: [first, second, third].every((turn) => turn.verified),
+      };
+      const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+      console.log(`\n[${model}] project ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}\n---\n${third.answer}`);
+      results.push({ model, scenario: "project", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "proyecto", answer: first.answer }, { user: "receta", answer: second.answer }, { user: "precio web", answer: third.answer }] });
+      expect(failures).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      delete process.env.FIRECRAWL_API_KEY;
+    }
   });
 
   it.each(models)("sets up a delivery zone, delivers a new sale through it and names the places without a zone, with %s", async (model) => {

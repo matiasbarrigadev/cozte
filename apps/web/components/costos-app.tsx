@@ -39,6 +39,8 @@ import { FirstSteps } from "./business/first-steps";
 import { CompanyDialog } from "./company-dialog";
 import { OnboardingDialog } from "./onboarding";
 import { firstName, type Onboarding } from "@/lib/onboarding";
+import { MODULES, moduleOfView, type JourneyView, type ModuleAccess, type ModuleKey, type StageView } from "@/lib/journey";
+import { JourneyCard, LockedModule, noteStageStarted } from "./journey-card";
 import { usePersistentState } from "./business/data-table";
 import { countryByCode } from "@/lib/locations";
 import { MapPin } from "lucide-react";
@@ -49,8 +51,11 @@ import { dashboardSummary } from "@/lib/dashboard-summary";
 import { CompositionBar, CompositionLegend } from "./business/composition";
 import { AnimatedIcon, type AnimatedIconName } from "./animated-icon";
 import { CozteLogo } from "./cozte-logo";
+import { cn } from "@/lib/utils";
 
 type Dashboard = DomainState & {
+  /** The company's discovery path; absent in the demo. */
+  journey?: JourneyView;
   costs: ProductCost[];
   alerts: { id: string; material_id: string; message: string; first_detected_at: string }[];
   productionWork?: ProductionWorkMap | null;
@@ -81,6 +86,9 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
   const initialRoute = demo && !initialSection?.length ? { view: "dashboard" as View } : viewFromSegments(initialSection) ?? { view: "asistente" as View };
   const [welcome, setWelcome] = React.useState<Onboarding | null>(onboarding?.needed ? onboarding : null);
   const [personName, setPersonName] = React.useState(onboarding?.personName ?? "");
+  // Sections opened anyway from their locked screen, and those the path just opened (highlighted until visited).
+  const [exploring, setExploring] = React.useState<Set<View>>(() => new Set());
+  const [freshModules, setFreshModules] = React.useState<Set<ModuleKey>>(() => new Set(initial.journey?.newlyUnlocked ?? []));
   const [view, setView] = React.useState<View>(initialRoute.view);
   const [selected, setSelected] = React.useState<string | null>((initialRoute.view === "producto" ? initialRoute.productId : null) ?? initial.products[0]?.id ?? null);
   const [selectedDeck, setSelectedDeck] = React.useState<string | null>(initialRoute.view === "presentacion" ? initialRoute.productId ?? null : null);
@@ -166,8 +174,24 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
     if (demo) return;
     const response = await fetch("/api/state", { cache: "no-store" });
     if (!response.ok) throw new Error("No pudimos actualizar los datos");
-    setState(await response.json());
+    const next = await response.json() as Dashboard;
+    setState(next);
+    const opened = next.journey?.newlyUnlocked ?? [];
+    if (opened.length) {
+      setFreshModules((current) => new Set([...current, ...opened]));
+      toast.success(opened.length === 1 ? `Se habilitó ${MODULES[opened[0]].label}` : `Se habilitaron ${opened.map((module) => MODULES[module].label).join(", ")}`, { description: "Ya podés usarla desde el menú." });
+    }
   }
+
+  /** A stage of the path, started with Cozte. */
+  function startStage(stage: StageView) {
+    noteStageStarted(stage.id);
+    setPendingPrompt(stage.prompt);
+    navigate("asistente");
+  }
+  const journey = demo ? undefined : state.journey;
+  const viewAccess: ModuleAccess | undefined = journey?.modules[moduleOfView(view)];
+  const lockedView = viewAccess?.state === "locked" && !exploring.has(view);
 
 
   async function save(action: Record<string, unknown>, quiet = false) {
@@ -257,6 +281,7 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
     if (productId && next === "producto") setSelected(productId);
     if (next === "presentacion") setSelectedDeck(productId ?? null);
     setView(next);
+    setFreshModules((current) => { const section = moduleOfView(next); if (!current.has(section)) return current; const rest = new Set(current); rest.delete(section); return rest; });
     if (next === "historial") loadHistory();
     if (!demo) {
       const path = appPath(next, productId ?? (next === "producto" ? selected : next === "presentacion" ? selectedDeck : null));
@@ -289,13 +314,13 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
       <Sidebar collapsible="icon">
         <SidebarHeader><div className="min-h-15 px-2 py-3 group-data-[collapsible=icon]:hidden"><CozteLogo className="text-2xl" /><span className="mt-1 block text-xs text-sidebar-foreground/65">Costeo vivo</span></div></SidebarHeader>
         <SidebarContent>{navGroups.map((group) => <SidebarGroup key={group.label}><SidebarGroupLabel>{group.label}</SidebarGroupLabel><SidebarGroupContent><SidebarMenu>
-          {group.items.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id || (item.id === "presentaciones" && view === "presentacion")} badge={item.id === "planilla" ? changeCount : 0} onNavigate={() => navigate(item.id)} />)}
+          {group.items.map((item) => <NavigationItem key={item.id} item={item} active={view === item.id || (item.id === "presentaciones" && view === "presentacion")} badge={item.id === "planilla" ? changeCount : 0} access={journey?.modules[moduleOfView(item.id)]} fresh={freshModules.has(moduleOfView(item.id))} onNavigate={() => navigate(item.id)} />)}
         </SidebarMenu></SidebarGroupContent></SidebarGroup>)}</SidebarContent>
         <SidebarFooter><div className="flex min-w-0 items-center gap-2 px-2 pb-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">{demo ? <Badge variant="outline" className="border-white/25 bg-white/5 text-white">Demostración</Badge> : <><div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">{adminView ? <Link href="/admin" className="block truncate text-sm font-medium text-white">Superadmin · otras empresas</Link> : <OrganizationSwitcher hidePersonal appearance={{ elements: { organizationSwitcherTrigger: "cozte-org-trigger", organizationPreviewAvatarBox: "cozte-org-avatar", organizationSwitcherPopoverCard: "cozte-clerk-popover" } }} />}</div><UserButton appearance={{ elements: { userButtonTrigger: "cozte-user-trigger", userButtonAvatarBox: "cozte-user-avatar", userButtonPopoverCard: "cozte-clerk-popover" } }} /></>}</div></SidebarFooter>
       </Sidebar>
       <SidebarInset>
         <header className="flex h-16 items-center gap-3 border-b bg-card px-4 md:px-8"><SidebarTrigger /><Separator orientation="vertical" className="data-vertical:h-6 data-vertical:self-center" /><span className="truncate text-sm font-semibold text-foreground">{demo || adminView ? state.organization.name : <ActiveOrganizationName fallback={state.organization.name} />}</span><div className="ml-auto flex items-center gap-2">{demo ? <Button variant="outline" size="sm" render={<Link href="/sign-up" />} nativeButton={false}>Crear cuenta</Button> : null}{superadmin && !adminView ? <Button variant="outline" size="sm" render={<Link href="/admin" />} nativeButton={false}>Superadmin</Button> : null}<Button type="button" variant="outline" size="sm" className="max-w-56" title="Tu empresa: nombre, dónde está y su moneda principal" onClick={() => setCompanyOpen(true)}><MapPin data-icon="inline-start" /><span className="truncate">{state.organization.city || countryByCode(state.organization.country)?.name || "¿Dónde está?"}</span><span className="text-muted-foreground">· {currency}</span></Button></div></header>
-        <CompanyDialog key={`${state.organization.country}-${state.organization.timeZone}-${currency}-${companyOpen || askLocation}`} open={companyOpen || askLocation} state={state} demo={demo} canRename={Boolean(onboarding?.owner)} onSaved={refresh} onClose={() => { setCompanyOpen(false); setLocationAsked("yes"); }} />
+        <CompanyDialog key={`${state.organization.country}-${state.organization.timeZone}-${currency}-${companyOpen || askLocation}`} open={companyOpen || askLocation} state={state} demo={demo} canRename={Boolean(onboarding?.owner)} mode={journey?.mode ?? null} onSaved={refresh} onClose={() => { setCompanyOpen(false); setLocationAsked("yes"); }} />
         {welcome && !demo && !adminView ? <OnboardingDialog start={welcome} currency={currency} onDone={async (result) => {
           setPersonName(result.personName);
           setWelcome(null);
@@ -305,6 +330,7 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
           toast.success(`Listo, ${firstName(result.personName)}. Cozte ya conoce ${result.companyName}.`);
         }} /> : null}
         <main className={view === "asistente" ? "mx-auto flex w-full max-w-none flex-col gap-4 px-4 py-5 md:px-8" : "mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-7 md:px-8 md:py-10"}>
+          {lockedView && journey && viewAccess ? <LockedModule module={moduleOfView(view)} access={viewAccess} journey={journey} onStart={startStage} onExplore={() => setExploring((current) => new Set([...current, view]))} /> : <>
           {demo && view !== "asistente" ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
           {adminView ? <Alert><AlertTitle>Modo superadmin · {state.organization.name}</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-2"><span>Estás viendo esta empresa en solo lectura: no puedes cambiar sus datos ni hablar con su Cozte.</span><Button size="sm" variant="outline" render={<Link href="/admin" />} nativeButton={false}>Otras empresas</Button><form action="/api/admin/view" method="post"><input type="hidden" name="action" value="exit" /><Button type="submit" size="sm" variant="ghost">Salir del modo superadmin</Button></form></div></AlertDescription></Alert> : null}
           {view === "dashboard" ? <>
@@ -320,7 +346,8 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
               <CardContent><ol className="flex flex-col gap-2">{summary.gaps.slice(0, 5).map((gap, index) => <li key={gap} className="flex items-start gap-3 rounded-lg border bg-muted/30 px-3 py-2 text-sm"><span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums text-muted-foreground">{index + 1}</span><span>{gap}</span></li>)}</ol>{summary.gaps.length > 5 ? <p className="mt-2 text-xs text-muted-foreground">Y {summary.gaps.length - 5} dato{summary.gaps.length - 5 === 1 ? "" : "s"} más.</p> : null}</CardContent>
               <CardFooter className="flex flex-wrap gap-2"><Button onClick={() => navigate("asistente")}><AnimatedIcon name="assistant" data-icon="inline-start" />Completar con Cozte</Button><Button variant="outline" onClick={() => navigate("planilla")}>Abrir costos de producción</Button></CardFooter></Card> : null}
             {state.alerts.length ? <Alert><AlertTitle>{state.alerts.length} precio{state.alerts.length === 1 ? "" : "s"} para revisar</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-3"><span>{state.alerts.slice(0, 3).map((item) => item.message).join(" · ")}</span><Button variant="link" onClick={() => navigate("planilla")}>Abrir planilla</Button></div></AlertDescription></Alert> : null}
-            <FirstSteps state={state} demo={demo} onOpenCompany={() => setCompanyOpen(true)} onGo={(next) => navigate(next)} onAsk={(text) => { setPendingPrompt(text); navigate("asistente"); }} />
+            {journey ? <JourneyCard journey={journey} onStart={startStage} onFinale={(text) => { setPendingPrompt(text); navigate("asistente"); }} />
+              : <FirstSteps state={state} demo={demo} onOpenCompany={() => setCompanyOpen(true)} onGo={(next) => navigate(next)} onAsk={(text) => { setPendingPrompt(text); navigate("asistente"); }} />}
             {state.products.length ? <TodayCard state={state} demo={demo} onOpen={(section) => navigate(section)} /> : null}
             {state.products.length ? <MonthCard state={state} demo={demo} month={businessMonth} onOpen={(section) => navigate(section)} /> : null}
             <Card><CardHeader><CardTitle>Fichas de productos</CardTitle><CardDescription>Lo que cuesta fabricar cada unidad, en qué se va ese costo y cuánto deja su precio de venta.</CardDescription>{summary.composition.length ? <CompositionLegend /> : null}</CardHeader><CardContent>{state.products.length ? <><ul className="flex flex-col divide-y md:hidden" aria-label="Fichas de productos">{state.products.map((item) => {
@@ -395,10 +422,11 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
             onOpen={(id) => id ? navigate("presentacion", id) : navigate("presentaciones")}
             onAskCozte={(text) => { setPendingPrompt(text); navigate("asistente"); }} /> : null}
 
-          {view === "asistente" ? <CozteAssistant demo={demo} state={state} personName={personName} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")}
+          {view === "asistente" ? <CozteAssistant demo={demo} state={state} personName={personName} journey={journey} onStartStage={(stage) => noteStageStarted(stage.id)} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")}
             pendingPrompt={pendingPrompt} onPromptSent={() => setPendingPrompt(null)} onOpenPresentation={(id) => navigate("presentacion", id)} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}
+          </>}
         </main>
       </SidebarInset>
       <Dialog open={reviewOpen} onOpenChange={setReviewOpen}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"><DialogHeader><DialogTitle>Antes de confirmar</DialogTitle><DialogDescription>Ningún cambio de la planilla se aplica hasta que lo apruebes.</DialogDescription></DialogHeader>
@@ -430,9 +458,17 @@ function ActiveOrganizationName({ fallback }: { fallback: string }) {
   return organization?.name ?? fallback;
 }
 
-function NavigationItem({ item, active, badge, onNavigate }: { item: NavItem; active: boolean; badge: number; onNavigate: () => void }) {
+/** A section in the menu: dimmed with a lock while the path has not opened it, with what is missing for an advanced reader. */
+function NavigationItem({ item, active, badge, access, fresh, onNavigate }: { item: NavItem; active: boolean; badge: number; access?: ModuleAccess; fresh?: boolean; onNavigate: () => void }) {
   const { setOpenMobile } = useSidebar();
-  return <SidebarMenuItem><SidebarMenuButton isActive={active} tooltip={item.label} onClick={() => { onNavigate(); setOpenMobile(false); }}><AnimatedIcon name={item.icon} /><span>{item.label}</span>{badge > 0 ? <Badge variant="secondary">{badge}</Badge> : null}</SidebarMenuButton></SidebarMenuItem>;
+  const locked = access?.state === "locked";
+  return <SidebarMenuItem><SidebarMenuButton isActive={active} tooltip={locked ? `${item.label}: ${access?.reason}` : access?.badge ? `${item.label} · ${access.badge}` : item.label} onClick={() => { onNavigate(); setOpenMobile(false); }} className={cn(locked && "opacity-55")} aria-label={locked ? `${item.label} (cerrada: ${access?.reason})` : undefined}>
+    <AnimatedIcon name={item.icon} /><span className="truncate">{item.label}</span>
+    {locked ? <AnimatedIcon name="lock" size={13} className="ml-auto shrink-0 opacity-70" />
+      : fresh ? <span className="ml-auto size-2 shrink-0 rounded-full bg-[var(--data-3)] ring-2 ring-[color-mix(in_oklab,var(--data-3)_35%,transparent)]" aria-label="Recién habilitada" />
+      : access?.badge ? <span className="ml-auto max-w-24 shrink-0 truncate rounded-full border border-white/20 px-1.5 text-[10px] text-sidebar-foreground/70 group-data-[collapsible=icon]:hidden" title={access.badge}>{access.badge}</span>
+      : badge > 0 ? <Badge variant="secondary">{badge}</Badge> : null}
+  </SidebarMenuButton></SidebarMenuItem>;
 }
 
 function ProductComponents({ product, state, onSave, busy, demo }: { product: Product; state: Dashboard; onSave: (action: Record<string, unknown>) => Promise<boolean>; busy: boolean; demo: boolean }) {
