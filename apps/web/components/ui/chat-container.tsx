@@ -25,9 +25,9 @@ function ChatContainerRoot({
 }: ChatContainerRootProps) {
   return (
     <StickToBottom
-      // relative: positioned children (screen-reader text, indicators) stay inside the scroller instead of
-      // stretching the page from their place in the full conversation.
-      className={cn("relative flex overflow-y-auto", className)}
+      // The scrolling happens in the inner area (StickToBottom.Content); this frame never scrolls, so there is
+      // only one scrollbar.
+      className={cn("relative flex overflow-hidden", className)}
       resize="smooth"
       initial="instant"
       role="log"
@@ -46,6 +46,9 @@ function ChatContainerContent({
   return (
     <StickToBottom.Content
       className={cn("flex w-full flex-col", className)}
+      // relative: positioned children (screen-reader text, indicators) belong to the scrolling area, so they scroll
+      // with the conversation instead of stretching an outer box or the page.
+      scrollClassName="relative"
       {...props}
     >
       {children}

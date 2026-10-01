@@ -22,8 +22,8 @@ import { Card, CardContent, CardFooter } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { firstName } from "@/lib/onboarding";
-import type { JourneyView, StageView } from "@/lib/journey";
-import { JourneyCard } from "./journey-card";
+import type { JourneyView } from "@/lib/journey";
+import { JourneyPanel, JourneyProgress } from "./journey-card";
 import { ChatContainerContent, ChatContainerRoot, ChatContainerScrollAnchor } from "@/components/ui/chat-container";
 import { PromptInput, PromptInputActions, PromptInputTextarea } from "@/components/ui/prompt-input";
 import { PromptSuggestion } from "@/components/ui/prompt-suggestion";
@@ -55,7 +55,7 @@ const suggestions = [
   "¿Cómo vengo este mes?",
 ];
 
-export function CozteAssistant({ demo, state, personName = "", journey, onStartStage, onDataChanged, pendingPrompt, onPromptSent, onOpenPresentation }: { demo: boolean; state: DomainState & { costs: ProductCost[] }; personName?: string; journey?: JourneyView; onStartStage?: (stage: StageView) => void; onDataChanged: () => Promise<void>; onOpenCosts?: () => void; pendingPrompt?: string | null; onPromptSent?: () => void; onOpenPresentation?: (id: string) => void }) {
+export function CozteAssistant({ demo, state, personName = "", journey, onDataChanged, pendingPrompt, onPromptSent, onOpenPresentation }: { demo: boolean; state: DomainState & { costs: ProductCost[] }; personName?: string; journey?: JourneyView; onDataChanged: () => Promise<void>; onOpenCosts?: () => void; pendingPrompt?: string | null; onPromptSent?: () => void; onOpenPresentation?: (id: string) => void }) {
   const [input, setInput] = React.useState("");
   const [attachments, setAttachments] = React.useState<File[]>([]);
   const [preparing, setPreparing] = React.useState(false);
@@ -78,6 +78,8 @@ export function CozteAssistant({ demo, state, personName = "", journey, onStartS
   const busyProposalIds = React.useRef(new Set<string>());
   const [loading, setLoading] = React.useState(!demo);
   const greetingName = firstName(personName);
+  // Until the first stage is complete, the right side shows the path instead of the board.
+  const journeyFirst = Boolean(journey && journey.stages[0] && journey.stages[0].status !== "done");
   const companyName = state.organization.name && state.organization.name !== "Mi empresa" ? state.organization.name : "";
   // The chat loads its latest page; older ones come in as the person scrolls up.
   const [hasOlder, setHasOlder] = React.useState(false);
@@ -476,21 +478,19 @@ export function CozteAssistant({ demo, state, personName = "", journey, onStartS
               {EXPLANATION_LEVELS.map((item) => <DropdownOption key={item.id} value={item.id}>{item.label}</DropdownOption>)}
             </Dropdown>
           </label>
-          {journey?.current && messages.length ? <Button type="button" size="sm" variant="outline" disabled={status !== "ready" || loading} title={journey.current.why} onClick={() => { onStartStage?.(journey.current!); void send(journey.current!.prompt); }}><AnimatedIcon name="sparkles" data-icon="inline-start" />Etapa {journey.stages.findIndex((stage) => stage.id === journey.current!.id) + 1} de {journey.total}: {journey.current.title}</Button> : null}
           <Button type="button" size="sm" variant="outline" disabled={status !== "ready" || !messages.length} onClick={() => setConfirmReset(true)}><AnimatedIcon name="refresh" data-icon="inline-start" />Nueva conversación</Button>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1 lg:hidden" role="tablist" aria-label="Secciones de Cozte">
         <button id="cozte-chat-tab" type="button" role="tab" aria-selected={mobilePanel === "chat"} aria-controls="cozte-chat-panel" onClick={() => setMobilePanel("chat")} className={cn("rounded-md px-3 py-2 text-sm font-medium transition-colors", mobilePanel === "chat" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Chat</button>
-        <button id="cozte-board-tab" type="button" role="tab" aria-selected={mobilePanel === "board"} aria-controls="cozte-board-panel" onClick={() => setMobilePanel("board")} className={cn("flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors", mobilePanel === "board" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>Tablero{board.length ? <Badge variant="secondary">{board.length}</Badge> : null}</button>
+        <button id="cozte-board-tab" type="button" role="tab" aria-selected={mobilePanel === "board"} aria-controls="cozte-board-panel" onClick={() => setMobilePanel("board")} className={cn("flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors", mobilePanel === "board" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{journeyFirst ? "Recorrido" : "Tablero"}{journeyFirst && journey ? <Badge variant="secondary">{journey.completed}/{journey.total}</Badge> : board.length ? <Badge variant="secondary">{board.length}</Badge> : null}</button>
       </div>
 
       <div className="grid min-h-0 gap-3 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <section id="cozte-chat-panel" role="tabpanel" aria-labelledby="cozte-chat-tab" aria-label="Chat con Cozte" className={cn("min-w-0", mobilePanel === "chat" ? "flex" : "hidden lg:flex")}>
           <Card className="flex h-[calc(100dvh-13rem)] min-h-[30rem] w-full min-w-0 flex-col gap-0 overflow-hidden py-0 lg:h-[calc(100dvh-11rem)]">
             <CardContent className="flex min-h-0 flex-1 flex-col px-4 py-5 md:px-8"><ChatContainerRoot className="min-h-0 flex-1" aria-live="polite"><ChatContainerContent className="mx-auto min-h-full w-full max-w-4xl gap-4">
-              {!messages.length && journey?.current ? <div className="my-auto flex w-full justify-center py-2"><JourneyCard journey={journey} compact onStart={(stage) => { onStartStage?.(stage); void send(stage.prompt); }} onFinale={(text) => void send(text)} /></div> : null}
-              {!messages.length && !journey?.current ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>{state.products.length ? `¿En qué te ayudo hoy${greetingName ? `, ${greetingName}` : ""}?` : `${greetingName ? `Hola, ${greetingName}. ` : ""}Empecemos por tu producción`}</EmptyTitle><EmptyDescription>{state.products.length ? "Pregúntame por tus costos, mándame un ticket o una venta, o pídeme un gráfico." : `¿Qué productos terminados y empacados fabrican${companyName ? ` en ${companyName}` : ""}, dónde y cómo?`}</EmptyDescription></EmptyHeader>
+              {!messages.length ? <Empty className="my-auto"><EmptyHeader><EmptyMedia variant="icon"><AnimatedIcon name="sparkles" size={24} /></EmptyMedia><EmptyTitle>{state.products.length ? `¿En qué te ayudo hoy${greetingName ? `, ${greetingName}` : ""}?` : `${greetingName ? `Hola, ${greetingName}. ` : ""}${journey?.mode === "project" ? "Empecemos por tu proyecto" : "Empecemos por tu producción"}`}</EmptyTitle><EmptyDescription>{state.products.length ? "Pregúntame por tus costos, mándame un ticket o una venta, o pídeme un gráfico." : journey?.mode === "project" ? "Contame qué querés producir y lo armamos paso a paso: a la derecha ves el recorrido." : `¿Qué productos terminados y empacados fabrican${companyName ? ` en ${companyName}` : ""}, dónde y cómo?`}</EmptyDescription></EmptyHeader>
                 {level === null && !demo ? <div className="flex w-full max-w-xl flex-col gap-2"><p className="text-sm font-medium">¿Cómo prefieres que te explique?</p><div className="grid gap-2 sm:grid-cols-3">{EXPLANATION_LEVELS.map((item) => <button key={item.id} type="button" onClick={() => void saveSettings({ level: item.id })} className="flex flex-col gap-1 rounded-lg border bg-background p-3 text-left text-sm transition-colors hover:bg-muted"><span className="font-medium">{item.label}</span><span className="text-xs text-muted-foreground">{item.hint}</span></button>)}</div><p className="text-xs text-muted-foreground">Puedes cambiarlo cuando quieras arriba.</p></div> : null}
               </Empty> : null}
               {messages.length ? <div ref={topSentinel} className="flex justify-center py-1 text-[11px] text-muted-foreground">
@@ -542,7 +542,8 @@ export function CozteAssistant({ demo, state, personName = "", journey, onStartS
         </section>
 
         <aside id="cozte-board-panel" role="tabpanel" aria-labelledby="cozte-board-tab" aria-label="Tu tablero" className={cn("min-w-0", mobilePanel === "board" ? "flex" : "hidden lg:flex")}>
-          <BoardPanel board={board} onChange={(next) => void saveSettings({ board: next })} onAsk={demo ? undefined : (text) => { setMobilePanel("chat"); void send(text); }} />
+          {journeyFirst ? <JourneyPanel journey={journey!} />
+            : <BoardPanel board={board} onChange={(next) => void saveSettings({ board: next })} onAsk={demo ? undefined : (text) => { setMobilePanel("chat"); void send(text); }} prepend={journey?.current ? <JourneyProgress journey={journey} /> : null} />}
         </aside>
       </div>
     </div>

@@ -29,7 +29,7 @@ const STARTERS: WidgetKind[] = ["month", "sales-by-channel", "unit-cost", "chann
  * The board next to the chat: widgets pinned by the person or by Cozte, always with live data. Each one can be
  * enlarged, reordered, removed or sent to Cozte as a question; new ones come from a catalog with a live preview.
  */
-export function BoardPanel({ board, onChange, onAsk }: { board: BoardWidget[]; onChange: (next: BoardWidget[]) => void; onAsk?: (text: string) => void }) {
+export function BoardPanel({ board, onChange, onAsk, prepend }: { board: BoardWidget[]; onChange: (next: BoardWidget[]) => void; onAsk?: (text: string) => void; /** Shown above the widgets (the path's progress). */ prepend?: React.ReactNode }) {
   const [galleryOpen, setGalleryOpen] = React.useState(false);
   const choices = useAvailableVisuals();
   const starters = STARTERS.map((kind) => choices.find((choice) => choice.kind === kind)).filter((choice): choice is WidgetChoice => Boolean(choice?.available)).slice(0, 4);
@@ -47,6 +47,7 @@ export function BoardPanel({ board, onChange, onAsk }: { board: BoardWidget[]; o
       <CardDescription>Lo que quieres tener a la vista, siempre al día. Agrégalo tú o pídeselo a Cozte: «fija las ventas por canal».</CardDescription>
     </CardHeader>
     <CardContent className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-4">
+      {prepend}
       {board.length ? board.map((widget, index) => <CozteVisual key={widget.id} widget={widget} compact onAsk={onAsk}
         onMoveUp={index > 0 ? () => onChange(moveWidget(board, widget.id, index - 1)) : undefined}
         onMoveDown={index < board.length - 1 ? () => onChange(moveWidget(board, widget.id, index + 1)) : undefined}

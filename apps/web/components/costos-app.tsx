@@ -39,8 +39,8 @@ import { FirstSteps } from "./business/first-steps";
 import { CompanyDialog } from "./company-dialog";
 import { OnboardingDialog } from "./onboarding";
 import { firstName, type Onboarding } from "@/lib/onboarding";
-import { MODULES, moduleOfView, type JourneyView, type ModuleAccess, type ModuleKey, type StageView } from "@/lib/journey";
-import { JourneyCard, LockedModule, noteStageStarted } from "./journey-card";
+import { MODULES, moduleOfView, type JourneyView, type ModuleAccess, type ModuleKey } from "@/lib/journey";
+import { JourneySummary, LockedModule } from "./journey-card";
 import { usePersistentState } from "./business/data-table";
 import { countryByCode } from "@/lib/locations";
 import { MapPin } from "lucide-react";
@@ -183,12 +183,6 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
     }
   }
 
-  /** A stage of the path, started with Cozte. */
-  function startStage(stage: StageView) {
-    noteStageStarted(stage.id);
-    setPendingPrompt(stage.prompt);
-    navigate("asistente");
-  }
   const journey = demo ? undefined : state.journey;
   const viewAccess: ModuleAccess | undefined = journey?.modules[moduleOfView(view)];
   const lockedView = viewAccess?.state === "locked" && !exploring.has(view);
@@ -330,7 +324,7 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
           toast.success(`Listo, ${firstName(result.personName)}. Cozte ya conoce ${result.companyName}.`);
         }} /> : null}
         <main className={view === "asistente" ? "mx-auto flex w-full max-w-none flex-col gap-4 px-4 py-5 md:px-8" : "mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-7 md:px-8 md:py-10"}>
-          {lockedView && journey && viewAccess ? <LockedModule module={moduleOfView(view)} access={viewAccess} journey={journey} onStart={startStage} onExplore={() => setExploring((current) => new Set([...current, view]))} /> : <>
+          {lockedView && journey && viewAccess ? <LockedModule module={moduleOfView(view)} access={viewAccess} journey={journey} onOpenCozte={() => navigate("asistente")} onExplore={() => setExploring((current) => new Set([...current, view]))} /> : <>
           {demo && view !== "asistente" ? <Alert><AlertTitle>Vista de ejemplo</AlertTitle><AlertDescription>Puedes explorar y simular cambios. Para guardarlos, crea una cuenta.</AlertDescription></Alert> : null}
           {adminView ? <Alert><AlertTitle>Modo superadmin · {state.organization.name}</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-2"><span>Estás viendo esta empresa en solo lectura: no puedes cambiar sus datos ni hablar con su Cozte.</span><Button size="sm" variant="outline" render={<Link href="/admin" />} nativeButton={false}>Otras empresas</Button><form action="/api/admin/view" method="post"><input type="hidden" name="action" value="exit" /><Button type="submit" size="sm" variant="ghost">Salir del modo superadmin</Button></form></div></AlertDescription></Alert> : null}
           {view === "dashboard" ? <>
@@ -346,7 +340,7 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
               <CardContent><ol className="flex flex-col gap-2">{summary.gaps.slice(0, 5).map((gap, index) => <li key={gap} className="flex items-start gap-3 rounded-lg border bg-muted/30 px-3 py-2 text-sm"><span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums text-muted-foreground">{index + 1}</span><span>{gap}</span></li>)}</ol>{summary.gaps.length > 5 ? <p className="mt-2 text-xs text-muted-foreground">Y {summary.gaps.length - 5} dato{summary.gaps.length - 5 === 1 ? "" : "s"} más.</p> : null}</CardContent>
               <CardFooter className="flex flex-wrap gap-2"><Button onClick={() => navigate("asistente")}><AnimatedIcon name="assistant" data-icon="inline-start" />Completar con Cozte</Button><Button variant="outline" onClick={() => navigate("planilla")}>Abrir costos de producción</Button></CardFooter></Card> : null}
             {state.alerts.length ? <Alert><AlertTitle>{state.alerts.length} precio{state.alerts.length === 1 ? "" : "s"} para revisar</AlertTitle><AlertDescription><div className="flex flex-wrap items-center gap-3"><span>{state.alerts.slice(0, 3).map((item) => item.message).join(" · ")}</span><Button variant="link" onClick={() => navigate("planilla")}>Abrir planilla</Button></div></AlertDescription></Alert> : null}
-            {journey ? <JourneyCard journey={journey} onStart={startStage} onFinale={(text) => { setPendingPrompt(text); navigate("asistente"); }} />
+            {journey ? <JourneySummary journey={journey} onOpenCozte={() => navigate("asistente")} />
               : <FirstSteps state={state} demo={demo} onOpenCompany={() => setCompanyOpen(true)} onGo={(next) => navigate(next)} onAsk={(text) => { setPendingPrompt(text); navigate("asistente"); }} />}
             {state.products.length ? <TodayCard state={state} demo={demo} onOpen={(section) => navigate(section)} /> : null}
             {state.products.length ? <MonthCard state={state} demo={demo} month={businessMonth} onOpen={(section) => navigate(section)} /> : null}
@@ -422,7 +416,7 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
             onOpen={(id) => id ? navigate("presentacion", id) : navigate("presentaciones")}
             onAskCozte={(text) => { setPendingPrompt(text); navigate("asistente"); }} /> : null}
 
-          {view === "asistente" ? <CozteAssistant demo={demo} state={state} personName={personName} journey={journey} onStartStage={(stage) => noteStageStarted(stage.id)} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")}
+          {view === "asistente" ? <CozteAssistant demo={demo} state={state} personName={personName} journey={journey} onDataChanged={refresh} onOpenCosts={() => navigate("planilla")}
             pendingPrompt={pendingPrompt} onPromptSent={() => setPendingPrompt(null)} onOpenPresentation={(id) => navigate("presentacion", id)} /> : null}
 
           {view === "historial" ? <CostHistory state={state} events={history} snapshots={snapshots} profileSnapshots={profileSnapshots} /> : null}

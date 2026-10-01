@@ -16,7 +16,7 @@ import { storeChatAttachments, type ChatAttachment } from "@/lib/server/document
 import { loadChannels } from "@/lib/server/business";
 import { loadCozteSettings } from "@/lib/server/cozte-settings";
 import { loadMemberName } from "@/lib/server/onboarding";
-import { loadJourney } from "@/lib/server/journey";
+import { loadJourney, markStageStarted } from "@/lib/server/journey";
 import { loadPriceWatches } from "@/lib/server/market-prices";
 import { COZTE_CHAT_PAGE_SIZE, COZTE_MODEL_HISTORY_MESSAGES, messageCreatedAt, modelHistory, modelWindow, withCreatedAt, withMessageTimes } from "@/lib/cozte-conversation-memory";
 import { businessTimeZone } from "@/lib/business";
@@ -136,6 +136,8 @@ export async function POST(request: Request) {
       loadJourney(principal, state, { persist: false, level: cozteSettings.level }).catch((error) => { console.error("Journey lookup failed", error); return null; }),
       loadPriceWatches(principal, state).catch(() => []),
     ]);
+    // Talking with Cozte while a stage is current starts it (for the path's metrics).
+    if (journey?.current) void markStageStarted(principal, journey.current.id).catch(() => undefined);
     const instructions = buildCozteInstructions({ journey, priceWatches, state, notes, channels, level: cozteSettings.level, board: cozteSettings.board, legacyProfile: profileState.draft ?? profileState.confirmed, personName, now: receivedAt, lastMessageAt: messageCreatedAt(stored.findLast((item) => item.role === "user") ?? {}) });
     // Receipts and delivery notes sent in the chat are kept so Cozte can attach them to what they back.
     const files = message.parts.filter((part) => part.type === "file");

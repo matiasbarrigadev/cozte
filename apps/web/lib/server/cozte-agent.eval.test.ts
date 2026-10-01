@@ -556,6 +556,27 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     expect(failures).toEqual([]);
   });
 
+  it.each(models)("turns a vague project idea into a first product with stated assumptions instead of asking again, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET name='Sketch', currency='CLP', country='CL', time_zone='America/Santiago', business_mode='project', onboarded_at=CURRENT_TIMESTAMP WHERE id=?", params: [principal.organizationId] }]);
+    const history: ModelMessage[] = [];
+    const first = await productionTurn({ model, principal, history, text: "La idea es vender carteles de neón LED." });
+    const second = await productionTurn({ model, principal, history, text: "Dale, como vos digas." });
+    const products = (await loadState(principal)).products;
+    const checks = {
+      proposedWithOptions: first.records.some((item) => item.name === "askQuestions") || first.records.some((item) => item.name === "saveProduct" && item.ok),
+      savedAProduct: products.length > 0 && products.some((product) => /ne[oó]n|cartel|led/i.test(product.name)),
+      answeredEveryTurn: [first, second].every((turn) => turn.verified),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] vague-project ${JSON.stringify(checks)} ${JSON.stringify(products.map((product) => product.name))}\n${first.answer}\n---\n${second.answer}`);
+    results.push({ model, scenario: "vague-project", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "idea", answer: first.answer }, { user: "dale", answer: second.answer }] });
+    expect(failures).toEqual([]);
+  });
+
   it.each(models)("leads a project still being planned through its first stage and finds prices on the web with their source, with %s", async (model) => {
     process.env.DATA_BRIDGE_URL = bridgeUrl;
     process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
@@ -580,12 +601,13 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       const third = await productionTurn({ model, principal, history, text: "¿Cuánto sale el kilo de dulce de leche? Buscalo vos." });
       const state = await loadState(principal);
       const journey = await loadJourney(principal, state);
-      const plain = third.answer.replace(/\s/g, "");
+      const later = `${second.answer} ${third.answer}`.replace(/\s/g, "");
       const checks = {
         ledTheFirstStage: first.records.some((item) => item.name === "askQuestions") || /\?/.test(first.answer),
         savedTheRecipe: journey.stages[0].status === "done",
-        searchedTheWeb: third.records.some((item) => item.name === "searchWebPrices" && item.ok) && searches.length > 0,
-        citedPriceAndSource: /4\.?200/.test(plain) && /(mayorista|dulce-de-leche|mayorista\.example)/i.test(third.answer),
+        // It may search as soon as it has the recipe, or when asked.
+        searchedTheWeb: [second, third].some((turn) => turn.records.some((item) => item.name === "searchWebPrices" && item.ok)) && searches.length > 0,
+        citedPriceAndSource: /4\.?200/.test(later) && /(mayorista|dulce-de-leche|mayorista\.example)/i.test(`${second.answer} ${third.answer}`),
         didNotSaveUnconfirmed: !state.materials.some((item) => /dulce/i.test(item.name) && item.priceMinor === 4200),
         answeredEveryTurn: [first, second, third].every((turn) => turn.verified),
       };
