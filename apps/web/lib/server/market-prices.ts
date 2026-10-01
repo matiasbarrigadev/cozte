@@ -96,7 +96,8 @@ export async function extractMarketPrice(input: { item: string; unit: string; cu
 
 async function defaultAsk(system: string, prompt: string): Promise<string> {
   const settings = cozteAgentSettings();
-  const result = await generateText({ model: settings.model, system, prompt, maxOutputTokens: 600, providerOptions: cozteProviderOptions(settings) });
+  // The model reasons before answering: room for that, plus the short JSON.
+  const result = await generateText({ model: settings.model, system, prompt, maxOutputTokens: 2000, providerOptions: cozteProviderOptions(settings) });
   return result.text;
 }
 

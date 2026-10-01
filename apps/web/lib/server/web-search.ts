@@ -17,10 +17,12 @@ const clean = (text: string, max: number) => text.replace(/<[^>]*>/g, " ").repla
 
 /** The lines of a page that talk about prices, not the whole page. */
 export function priceExcerpt(markdown: string, max = 1500): string {
-  const lines = markdown.split(/\r?\n/).map((line) => line.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").trim()).filter(Boolean);
-  const priced = lines.filter((line) => /\d/.test(line) && /(\$|ars|clp|uyu|pyg|cop|mxn|pen|bob|usd|eur|precio|valor|kg|kilo|gramo|litro|\blt\b|\bl\b|unidad|bolsa|caja|pack|tarifa|kwh|m3|por\s)/i.test(line) && line.length <= 300);
-  const text = (priced.length ? priced : lines).join(" · ");
-  return clean(text, max);
+  // Images and links (even when their text spans lines) become their words; then each line is judged on its own.
+  const text = markdown.replace(/!\[[\s\S]*?\]\([^)]*\)/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  // A price line shows money (a currency sign or code next to a number) or a price per unit.
+  const priced = lines.filter((line) => line.length <= 300 && /(\$\s?\d|\d\s?(\$|ars|clp|uyu|pyg|cop|mxn|pen|bob|usd|eur|pesos)\b|\b(ars|clp|uyu|pyg|cop|mxn|pen|bob|usd|eur)\s?\d|precio[^.]{0,40}\d|\d[^.]{0,20}\/\s?(kg|kilo|l|lt|litro|unidad|kwh|m3)\b)/i.test(line));
+  return clean((priced.length ? priced : lines).join(" · "), max);
 }
 
 async function usedThisMonth(organizationId: string): Promise<number> {
