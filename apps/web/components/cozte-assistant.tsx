@@ -608,6 +608,14 @@ function presentationCards(parts: UIMessage["parts"]): Map<number, { id: string;
   return new Map([...last].map(([id, value]) => [value.index, { id, revision: value.revision }]));
 }
 
+/**
+ * The questions a turn ends with: showing questions ends a turn, so when a draft that already showed them was
+ * corrected and asked again, only the last set is the one to answer.
+ */
+function lastQuestionsIndex(parts: UIMessage["parts"]): number {
+  return parts.findLastIndex((part) => part.type === "tool-askQuestions" && (part.state === "input-available" || part.state === "output-available") && parseCozteQuestions(part.input) !== null);
+}
+
 /** One chat message. Memoized so only the reply that is streaming re-renders on each update. */
 const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persisted = noExecutions, streaming, onAnswer, onPinVisual, pinnedKeys = "", onOpenPresentation }: { message: UIMessage; persisted?: PersistedToolExecution[]; streaming: boolean; onAnswer?: (text: string) => void; onPinVisual?: (widget: WidgetSpec) => void; pinnedKeys?: string; onOpenPresentation?: (id: string) => void }) {
   // A reply that finishes while on screen is written out; one loaded from history appears whole.
@@ -620,6 +628,7 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
   const answer = message.role === "assistant" ? answerTextIndexes(message.parts as ActivityPart[], streaming) : null;
   // One card per presentation, at the last tool call that touched it, so a deck edited several times shows once.
   const deckCards = message.role === "assistant" ? presentationCards(message.parts) : null;
+  const questionsAt = message.role === "assistant" ? lastQuestionsIndex(message.parts) : -1;
   return<div id={`cozte-message-${message.id}`} data-message-id={message.id} className={message.role === "user" ? "ml-auto flex max-w-[88%] scroll-mt-6 flex-col gap-2 rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground" : "flex max-w-[94%] scroll-mt-6 flex-col gap-2 rounded-xl bg-muted px-4 py-3 text-sm"}>
     <span className="flex items-baseline gap-2 text-xs font-semibold">{message.role === "user" ? "Tú" : "Cozte"}{(() => {
       const createdAt = messageCreatedAt(message);
@@ -649,6 +658,7 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
         return <PresentationCard key={`deck-${deck.id}`} id={deck.id} revision={deck.revision} onOpen={onOpenPresentation} />;
       }
       if (part.type === "tool-askQuestions" && (part.state === "input-available" || part.state === "output-available")) {
+        if (index !== questionsAt) return null;
         const set = parseCozteQuestions(part.input);
         return set ? <CozteQuestionForm key={part.toolCallId} set={set} onAnswer={onAnswer} /> : null;
       }
