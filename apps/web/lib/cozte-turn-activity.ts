@@ -50,6 +50,7 @@ const running: Record<string, string> = {
   searchWebPrices: "Buscando precios en la web",
   setPricePolicy: "Guardando cómo se actualiza el precio",
   setBusinessMode: "Guardando si la empresa ya vende",
+  confirmRecipe: "Confirmando la receta",
   setCostBehavior: "Definiendo cómo se comporta el gasto",
   setSalesMix: "Guardando la mezcla de ventas",
   askQuestions: "Preparando unas preguntas",
@@ -95,6 +96,7 @@ const summaryVerb: Record<string, [string, string]> = {
   searchWebPrices: ["buscó precios en la web", "buscó precios en la web {n} veces"],
   setPricePolicy: ["definió cómo se actualiza 1 precio", "definió cómo se actualizan {n} precios"],
   setBusinessMode: ["guardó si la empresa ya vende", "guardó si la empresa ya vende"],
+  confirmRecipe: ["confirmó 1 receta", "confirmó {n} recetas"],
   setCostBehavior: ["definió cómo se comporta 1 gasto", "definió cómo se comportan {n} gastos"],
   setSalesMix: ["guardó la mezcla de ventas", "guardó la mezcla de ventas"],
 };

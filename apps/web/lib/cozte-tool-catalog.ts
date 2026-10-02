@@ -38,6 +38,7 @@ export const COZTE_TOOL_LABELS = {
   searchWebPrices: "Buscar precios en la web",
   setPricePolicy: "Definir cómo se actualiza un precio",
   setBusinessMode: "Guardar si la empresa ya vende",
+  confirmRecipe: "Confirmar que la receta está completa",
   setCostBehavior: "Definir cómo se comporta un gasto",
   setSalesMix: "Guardar la mezcla de ventas",
   askQuestions: "Preguntarte",
@@ -48,7 +49,7 @@ export type CozteToolName = keyof typeof COZTE_TOOL_LABELS;
 export const COZTE_TOOL_NAMES = Object.keys(COZTE_TOOL_LABELS) as CozteToolName[];
 
 /** Tools that can change stored data; the UI refreshes and the verifier requires their receipts. */
-export const COZTE_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveNote", "saveChannel", "recordPurchase", "recordSale", "updateSale", "updateDelivery", "setInvestmentCost", "voidRecord", "setExplanationLevel", "manageBoard", "createPresentation", "editPresentation", "sharePresentation", "setCompanyLocation", "saveCustomer", "saveDeliveryZone", "saveSupplier", "planRoute", "setCostBehavior", "setSalesMix", "setPricePolicy", "setBusinessMode"]);
+export const COZTE_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveNote", "saveChannel", "recordPurchase", "recordSale", "updateSale", "updateDelivery", "setInvestmentCost", "voidRecord", "setExplanationLevel", "manageBoard", "createPresentation", "editPresentation", "sharePresentation", "setCompanyLocation", "saveCustomer", "saveDeliveryZone", "saveSupplier", "planRoute", "setCostBehavior", "setSalesMix", "setPricePolicy", "setBusinessMode", "confirmRecipe"]);
 
 /** Tools whose successful result changes costs shown elsewhere in the app. */
 export const COZTE_COST_WRITE_TOOLS: ReadonlySet<string> = new Set<CozteToolName>(["saveProduct", "saveMaterial", "saveRecipe", "saveExpense", "saveCategory", "removeItem", "saveChannel", "recordPurchase", "recordSale", "updateSale", "updateDelivery", "setInvestmentCost", "voidRecord"]);

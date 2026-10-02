@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_JOURNEYS, moduleAccess, parseJourneyDefinition, stageViews, type JourneyFacts } from "./journey";
 
-const none: JourneyFacts = { products: 0, productsWithRecipe: 0, productsWithPrice: 0, materialsUsed: 0, materialsUsedPriced: 0, suppliers: 0, purchases: 0, productionExpenses: 0, channels: 0, channelsWithDelivery: 0, deliveryZones: 0, sales: 0, deliveries: 0, customers: 0 };
+const none: JourneyFacts = { products: 0, productsWithRecipe: 0, productsWithPrice: 0, materialsUsed: 0, materialsUsedPriced: 0, recipesConfirmed: 0, suppliers: 0, purchases: 0, productionExpenses: 0, channels: 0, channelsWithDelivery: 0, deliveryZones: 0, sales: 0, deliveries: 0, customers: 0 };
 const base = { level: "simple" as const, unlockAll: false, unlocked: new Set<string>(), withData: new Set<never>(), firstSale: false };
 
 describe("discovery path stages", () => {
@@ -10,7 +10,10 @@ describe("discovery path stages", () => {
     const withRecipe = { ...none, products: 1, productsWithRecipe: 1, materialsUsed: 2, materialsUsedPriced: 1 };
     const stages = stageViews(DEFAULT_JOURNEYS.operating, withRecipe);
     expect(stages.map((stage) => stage.status)).toEqual(["done", "current", "pending", "pending", "pending"]);
-    expect(stages[1].missing).toEqual(["Todos los insumos de las recetas con precio"]);
+    expect(stages[1].missing).toEqual(["Una receta que confirmaste como completa", "Todos los insumos de las recetas con precio"]);
+    // Every supply priced is not enough: the person says the recipe is complete.
+    expect(stageViews(DEFAULT_JOURNEYS.operating, { ...withRecipe, materialsUsedPriced: 2 })[1].missing).toEqual(["Una receta que confirmaste como completa"]);
+    expect(stageViews(DEFAULT_JOURNEYS.operating, { ...withRecipe, materialsUsedPriced: 2, recipesConfirmed: 1 })[1].status).toBe("done");
     // A later stage done first does not hide an earlier one still missing.
     expect(stageViews(DEFAULT_JOURNEYS.operating, { ...none, productionExpenses: 2 }).map((stage) => stage.status)).toEqual(["current", "pending", "done", "pending", "pending"]);
   });

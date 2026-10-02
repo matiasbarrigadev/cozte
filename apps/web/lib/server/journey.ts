@@ -26,8 +26,9 @@ export async function loadJourneyDefinition(key: string): Promise<{ key: string;
 /** What the company has, counted, for the completion rules. */
 export async function loadJourneyFacts(principal: Principal, state: DomainState): Promise<JourneyFacts> {
   const org = principal.organizationId;
-  const [row] = await dbQuery<{ suppliers: number; purchases: number; channels: number; channels_with_delivery: number; zones: number; sales: number; deliveries: number; customers: number }>(
+  const [row] = await dbQuery<{ suppliers: number; purchases: number; channels: number; channels_with_delivery: number; zones: number; sales: number; deliveries: number; customers: number; recipes_confirmed: number }>(
     `SELECT
+      (SELECT COUNT(*) FROM products p WHERE p.organization_id=? AND p.archived_at IS NULL AND p.recipe_confirmed_at IS NOT NULL AND EXISTS (SELECT 1 FROM product_materials m WHERE m.product_id=p.id)) AS recipes_confirmed,
       (SELECT COUNT(*) FROM suppliers WHERE organization_id=? AND archived_at IS NULL) AS suppliers,
       (SELECT COUNT(*) FROM purchases WHERE organization_id=? AND archived_at IS NULL) AS purchases,
       (SELECT COUNT(*) FROM sales_channels WHERE organization_id=? AND archived_at IS NULL) AS channels,
@@ -36,7 +37,7 @@ export async function loadJourneyFacts(principal: Principal, state: DomainState)
       (SELECT COUNT(*) FROM sales WHERE organization_id=? AND archived_at IS NULL) AS sales,
       (SELECT COUNT(*) FROM deliveries WHERE organization_id=? AND archived_at IS NULL) AS deliveries,
       (SELECT COUNT(*) FROM customers WHERE organization_id=? AND archived_at IS NULL) AS customers`,
-    [org, org, org, org, org, org, org, org]);
+    [org, org, org, org, org, org, org, org, org]);
   const used = new Set(state.components.map((item) => item.materialId));
   const usedMaterials = state.materials.filter((item) => used.has(item.id));
   return {
@@ -45,6 +46,7 @@ export async function loadJourneyFacts(principal: Principal, state: DomainState)
     productsWithPrice: state.products.filter((product) => product.salePriceMinor > 0).length,
     materialsUsed: usedMaterials.length,
     materialsUsedPriced: usedMaterials.filter((item) => item.priceMinor !== null).length,
+    recipesConfirmed: row?.recipes_confirmed ?? 0,
     suppliers: row?.suppliers ?? 0, purchases: row?.purchases ?? 0,
     productionExpenses: productionExpenses(state).length,
     channels: row?.channels ?? 0, channelsWithDelivery: row?.channels_with_delivery ?? 0, deliveryZones: row?.zones ?? 0,
@@ -115,9 +117,32 @@ export async function markStageStarted(principal: Principal, stageId: string): P
   await dbBatch([{ sql: "INSERT INTO journey_progress (organization_id, journey_key, stage_id, started_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT (organization_id, journey_key, stage_id) DO UPDATE SET started_at=COALESCE(started_at, CURRENT_TIMESTAMP)", params: [principal.organizationId, key, stageId] }], { retrySafe: true });
 }
 
+/** The person says a product's recipe is complete, or that it still misses something: what closes the supplies stage. */
+export async function confirmRecipe(principal: Principal, productId: string, complete: boolean, reason: string): Promise<void> {
+  if (principal.adminView || principal.role === "viewer") throw new ApiError(403, "No tienes permiso para cambiar esto");
+  const org = principal.organizationId;
+  await dbBatch([
+    { sql: "UPDATE products SET recipe_confirmed_at=CASE WHEN ?=1 THEN COALESCE(recipe_confirmed_at, CURRENT_TIMESTAMP) ELSE NULL END WHERE id=? AND organization_id=?", params: [complete ? 1 : 0, productId, org] },
+    { sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, 'confirm-recipe', ?, ?)", params: [crypto.randomUUID(), org, principal.userId, productId, JSON.stringify({ complete, reason })] },
+  ]);
+}
+
+/**
+ * What Cozte suggested adding to a recipe before confirming it, by turn. Over a suggestion, a recipe is confirmed only
+ * on a later turn: the person has to have read it and answered.
+ */
+export async function recipeSuggestion(principal: Principal, productId: string, runId: string, items: string[]): Promise<"answered" | "asked-now"> {
+  const rows = await dbQuery<{ details_json: string }>("SELECT details_json FROM audit_events WHERE organization_id=? AND entity_id=? AND action='suggest-recipe-items' ORDER BY created_at DESC LIMIT 10", [principal.organizationId, productId]);
+  const earlier = rows.some((row) => { try { return (JSON.parse(row.details_json) as { runId?: string }).runId !== runId; } catch { return false; } });
+  if (earlier) return "answered";
+  if (!rows.length) await dbBatch([{ sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, 'suggest-recipe-items', ?, ?)", params: [crypto.randomUUID(), principal.organizationId, principal.userId, productId, JSON.stringify({ runId, items })] }]);
+  return "asked-now";
+}
+
 /**
  * Whether the company already sells. Moving from a project to a business in operation keeps the project's plan
- * (costs, prices and break-even at that moment) to compare it later with what really happens.
+ * (costs, prices and break-even at that moment) to compare it later with what really happens. Stages started on the
+ * path it leaves and never finished are dropped: they are not part of its progress.
  */
 export async function saveBusinessMode(principal: Principal, mode: BusinessMode, source: "user" | "cozte"): Promise<{ mode: BusinessMode; planSaved: boolean }> {
   if (principal.adminView || principal.role === "viewer") throw new ApiError(403, "No tienes permiso para cambiar esto");
@@ -135,6 +160,7 @@ export async function saveBusinessMode(principal: Principal, mode: BusinessMode,
   }
   await dbBatch([
     { sql: "UPDATE organizations SET business_mode=? WHERE id=?", params: [mode, org] },
+    { sql: "DELETE FROM journey_progress WHERE organization_id=? AND completed_at IS NULL AND journey_key<>?", params: [org, current?.journey_key ?? mode] },
     ...(plan ? [{ sql: "INSERT INTO business_plans (organization_id, snapshot_json) VALUES (?, ?) ON CONFLICT (organization_id) DO UPDATE SET snapshot_json=excluded.snapshot_json, created_at=CURRENT_TIMESTAMP", params: [org, plan] }] : []),
     { sql: "INSERT INTO audit_events (id, organization_id, actor_id, action, entity_id, details_json) VALUES (?, ?, ?, 'set-business-mode', ?, ?)", params: [crypto.randomUUID(), org, principal.userId, org, JSON.stringify({ mode, from: current?.business_mode ?? null, source })] },
   ]);

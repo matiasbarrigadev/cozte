@@ -100,7 +100,27 @@ describe.skipIf(!bridgeUrl)("discovery path against D1", { timeout: 90_000 }, ()
     expect((await loadPriceWatches(principal))[0]).toMatchObject({ lastStatus: "needs_confirmation", lastAmount: 32000 });
   });
 
+  it("closes the supplies stage only when the person confirms the recipe is complete", async () => {
+    expect((await run("confirmRecipe", { product: "Alfajor", complete: true, mayBeMissing: [], reason: "Está completa" })).error).toMatch(/todavía no tiene insumos/);
+    await run("saveRecipe", { product: "Alfajor", items: [{ material: "Harina 000", perLot: 0.2 }] });
+    const priced = await loadJourney(principal, await loadState(principal), { persist: true });
+    expect(priced.current?.id).toBe("insumos");
+    expect(priced.current?.missing).toEqual(["Una receta que confirmaste como completa"]);
+    // Something may be missing: not on the turn it is suggested, only once the person answers on a later one.
+    expect(await run("confirmRecipe", { product: "Alfajor", complete: true, mayBeMissing: ["Dulce de leche"], reason: "Está completa" })).toMatchObject({ ok: false, pending: true });
+    expect((await run("confirmRecipe", { product: "Alfajor", complete: true, mayBeMissing: ["Dulce de leche"], reason: "Está completa" })).ok).toBe(false);
+    const later = createCozteTools(principal, crypto.randomUUID());
+    const confirmed = await (later.confirmRecipe.execute as (input: unknown, options: { toolCallId: string }) => Promise<Output>)({ product: "Alfajor", complete: true, mayBeMissing: ["Dulce de leche"], reason: "Sí, está completa así" }, { toolCallId: "later-1" });
+    expect(confirmed.done?.[0]).toMatch(/confirmada como completa/);
+    expect((await loadJourney(principal, await loadState(principal), { persist: true })).stages[1].status).toBe("done");
+    expect((await run("confirmRecipe", { product: "Alfajor", complete: false, mayBeMissing: [], reason: "Le falta el dulce de leche" })).ok).toBe(true);
+    expect((await loadJourney(principal, await loadState(principal))).stages[1].status).toBe("current");
+    expect((await run("confirmRecipe", { product: "Alfajor", complete: true, mayBeMissing: [], reason: "Ahora sí está completa" })).ok).toBe(true);
+  });
+
   it("moves to a business in operation keeping the plan, and opens the sales sections", async () => {
+    // A stage started on the project path and never finished does not stay behind.
+    await markStageStarted(principal, "lugar");
     expect((await run("setBusinessMode", { mode: "operating", reason: "Hice mis primeras ventas" }))).toMatchObject({ ok: true, planSaved: true });
     const journey = await loadJourney(principal, await loadState(principal), { persist: true });
     expect(journey.mode).toBe("operating");
@@ -109,6 +129,8 @@ describe.skipIf(!bridgeUrl)("discovery path against D1", { timeout: 90_000 }, ()
     expect(journey.modules.ventas.reason).toMatch(/Dónde vendés/);
     const breakEven = await run("readBreakEven", {});
     expect(breakEven.planBeforeSelling).toMatchObject({ currency: "ARS" });
+    const rows = await dbQuery<{ journey_key: string; stage_id: string }>("SELECT journey_key, stage_id FROM journey_progress WHERE organization_id=? AND journey_key='project' ORDER BY stage_id", [principal.organizationId]);
+    expect(rows.map((row) => row.stage_id)).toEqual(["insumos", "producto"]);
   });
 
   it("uses an edited path without a release, and the built-in one again after a reset", async () => {

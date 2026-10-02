@@ -577,6 +577,48 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     expect(failures).toEqual([]);
   });
 
+  it.each(models)("suggests what a recipe may be missing before confirming it complete, and confirms it when the person insists, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET name='Sketch', currency='CLP', country='CL', time_zone='America/Santiago', business_mode='project', onboarded_at=CURRENT_TIMESTAMP WHERE id=?", params: [principal.organizationId] }]);
+    // As Sketch & Etch was left: one sign, one supply priced, a one-line recipe. No real web searches here.
+    vi.stubEnv("FIRECRAWL_API_KEY", "");
+    const seed = createCozteTools(principal, crypto.randomUUID());
+    let call = 0;
+    const run = async (name: keyof typeof seed, input: Record<string, unknown>) => {
+      const output = await (seed[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<{ ok?: boolean }>)(input, { toolCallId: `seed-${++call}` });
+      expect(output, JSON.stringify(output)).toMatchObject({ ok: true });
+    };
+    await run("saveProduct", { name: "Cartel LED neón chico", goodUnitsPerLot: 1, lotsPerMonth: 60, hoursPerLot: 1 });
+    await run("saveMaterial", { name: "Tira LED neón", purchaseUnit: "m", price: 1750, priceSource: "Lo que dijo la persona" });
+    await run("saveRecipe", { product: "Cartel LED neón chico", items: [{ material: "Tira LED neón", perUnit: 3 }] });
+    expect((await loadJourney(principal, await loadState(principal))).current?.id).toBe("insumos");
+    const history: ModelMessage[] = [];
+    const first = await productionTurn({ model, principal, history, text: "La receta ya está completa, sigamos." });
+    const afterFirst = await loadJourney(principal, await loadState(principal));
+    const second = await productionTurn({ model, principal, history, text: "No, así está completa, no lleva nada más." });
+    const journey = await loadJourney(principal, await loadState(principal));
+    const confirmed = (turn: typeof first) => turn.records.some((item) => item.name === "confirmRecipe" && item.ok && /confirmada como completa/.test(JSON.stringify(item.output)));
+    const checks = {
+      suggestedWhatMayBeMissing: /fuente|transformador|base|acr[ií]lico|soporte|cable|embalaje|empaque|controlador/i.test(first.answer + JSON.stringify(first.records.filter((item) => item.name === "askQuestions").map((item) => item.input))),
+      askedBeforeConfirming: !confirmed(first) && afterFirst.stages[1].status !== "done",
+      confirmedWhenInsisted: confirmed(second) && journey.stages[1].status === "done",
+      answeredEveryTurn: [first, second].every((turn) => turn.verified),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`
+[${model}] recipe-complete ${JSON.stringify(checks)}
+${first.answer}
+${JSON.stringify(first.records.filter((item) => item.name !== "readCosts").map((item) => [item.name, item.input, item.output]))}
+---
+${second.answer}`);
+    vi.unstubAllEnvs();
+    results.push({ model, scenario: "recipe-complete", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "completa", answer: first.answer }, { user: "insiste", answer: second.answer }] });
+    expect(failures).toEqual([]);
+  });
+
   it.each(models)("leads a project still being planned through its first stage and finds prices on the web with their source, with %s", async (model) => {
     process.env.DATA_BRIDGE_URL = bridgeUrl;
     process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";

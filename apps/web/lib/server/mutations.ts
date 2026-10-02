@@ -43,7 +43,7 @@ export const mutationSchema = z.discriminatedUnion("action", [
   }),
   common.extend({
     action: z.literal("create-material"),
-    name, supplier: z.string().trim().max(120), purchaseUnit: name,
+    name, supplier: z.string().trim().max(120), purchaseUnit: z.string().trim().min(1).max(60),
     category: category.optional(), effectiveDate: z.iso.date().optional(),
     price: sourceAmount.optional(), currency: currency.optional(), source: z.string().trim().max(200).optional(),
   }),
