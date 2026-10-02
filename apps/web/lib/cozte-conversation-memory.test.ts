@@ -34,6 +34,9 @@ describe("Cozte conversation memory", () => {
     expect(JSON.stringify(compact.parts[0])).not.toContain("P49");
     expect((compact.parts[1] as unknown as { output: unknown }).output).toEqual({ ok: true, done: ["Gasto Gas creado"], costsAfter: [{ product: "Tofu", unitCost: 900, status: "estimated" }] });
     expect(compactToolOutputForHistory("saveMaterial", { ok: false, error: "Falta unidad" })).toEqual({ ok: false, error: "Falta unidad" });
+    // What a web search found stays for the next turn ("pero ahí ya lo investigaste").
+    expect(compactToolOutputForHistory("searchWebPrices", { ok: true, query: "plancha acrilico 3mm", searchedAt: "2026-10-02", country: "CL", results: [{ title: "Easy.cl", url: "https://easy.cl/p", snippet: "largo", excerpt: "$ 13.920 · ($ 27.840 por m2)" }], note: "datos" }))
+      .toEqual({ ok: true, query: "plancha acrilico 3mm", searchedAt: "2026-10-02", results: [{ title: "Easy.cl", url: "https://easy.cl/p", prices: "$ 13.920 · ($ 27.840 por m2)" }] });
   });
 });
 

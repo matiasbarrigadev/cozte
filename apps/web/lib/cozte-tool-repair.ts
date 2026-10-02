@@ -113,6 +113,10 @@ export function coerceToSchema(value: unknown, schema: ToolJsonSchema | undefine
     if (types.includes("null") && text === "null") return null;
   }
   if (typeof value === "number" && types.includes("string") && !types.includes("number")) return String(value);
+  if (isRecord(value) && types.includes("string") && !types.includes("object")) {
+    const label = ["label", "text", "value", "option", "title", "name"].map((key) => value[key]).find((item) => typeof item === "string" && item.trim());
+    if (label !== undefined) return label;
+  }
   return value;
 }
 

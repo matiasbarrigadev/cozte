@@ -228,3 +228,27 @@ describe("an answer that promises more at the end", () => {
     expect(salvageAnswer(text, verifyCozteResponse(text, saved), saved)).toBe("Listo, guardé la receta del cartel. Falta:\n- la mano de obra\n- los gastos del taller");
   });
 });
+
+describe("the answers of a real turn that asked to look prices up", () => {
+  const user = "un pote de 100ml de pegamento dura para 3 carteles, y un pote de 300ml de acelerante para 6. Lo que nose son los precios exactos si podes invetigalos";
+  const context = { sources: [user] };
+
+  it("catches a save told in the present that never ran, and a heading left without its list", () => {
+    const first = "Buena info, Ignacio. Te paso lo que voy a guardar y lo que necesito investigar.\n\n**Lo que guardo ya:**\n- 1 cartel chico tarda **3 horas** (1 metro de neón por hora, cartel = 3 m).\n- **Pegamento**: pote de 100 ml rinde **3 carteles**.\n\n**Lo que voy a buscar en la web** (precios en Chile, zona Coyhaique o Santiago como referencia):\n\n¿Querés que avance con la búsqueda de precios en la web ahora, o preferís investigar vos y volvemos con los números?";
+    const codes = verifyCozteResponse(first, [], context).issues.map((issue) => issue.code);
+    expect(codes).toContain("unbacked-write-claim");
+    expect(codes).toContain("unfinished-answer");
+    // A heading followed by its list, or a plain sentence ending in a colon before a question, is complete.
+    expect(verifyCozteResponse("**Lo que falta:**\n- la mano de obra\n- el arriendo", [], context).ok).toBe(true);
+    expect(verifyCozteResponse("Te lo pregunto así:\n\n**¿Cómo seguimos con los precios?**", [], context).ok).toBe(true);
+  });
+
+  it("keeps a rewrite that searched the web without the figures it worked out by heart", () => {
+    const search: TurnToolRecord[] = [{ name: "searchWebPrices", ok: true, write: false, output: { ok: true, results: [{ title: "Plancha Acrílico Transparente 3mm 1,22 x 2,44 m | Tienda Microgeo", excerpt: "**$39,120**" }, { title: "Plancha acrílica 60x80 cm | Easy.cl", excerpt: "$ 13.920 · ($ 27.840 por m2)" }] } }];
+    const revised = "Busqué los precios en la web:\n\n- Tienda Microgeo: **$39.120** la plancha → ~$13.134/m²\n- Easy (60 x 80 cm): $13.920, que equivale a **$27.840/m²**\n\n¿Querés que use alguno como base para el costo del cartel?";
+    const verification = verifyCozteResponse(revised, search, context);
+    expect(verification.issues.map((issue) => issue.code)).toEqual(["unverified-figures"]);
+    expect(salvageAnswer(revised, verification, search, context)).toBe("Busqué los precios en la web:\n\n- Easy (60 x 80 cm): $13.920, que equivale a **$27.840/m²**\n\n¿Querés que use alguno como base para el costo del cartel?");
+    expect(receiptOnlyAnswer(search)).toContain("Easy.cl: $ 13.920");
+  });
+});

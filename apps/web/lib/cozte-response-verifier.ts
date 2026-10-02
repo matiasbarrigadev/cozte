@@ -29,7 +29,7 @@ export const hasHardIssue = (verification: Verification) => verification.issues.
 // Word boundaries are lookarounds on letters: \b treats accented letters such as "é" as non-word characters.
 
 /** First-person reports of an action taken now: only a successful write in this turn backs them. */
-const actionClaim = /(?<![\p{L}\p{N}])(?:guard[eé]|registr[eé]|cre[eé]|actualic[eé]|cargu[eé]|agregu[eé]|a[ñn]ad[ií]|modifiqu[eé]|apliqu[eé]|renombr[eé]|asign[eé]|vincul[eé]|conect[eé])(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])(?:guardad|cread|aplicad)[oa]s?\s+en\s+firme(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])reporte\s+literal(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])resultado:?\s*\*{0,2}`?(?:applied|aplicado|guardado)/giu;
+const actionClaim = /(?<![\p{L}\p{N}])(?:guard[eé]|registr[eé]|cre[eé]|actualic[eé]|cargu[eé]|agregu[eé]|a[ñn]ad[ií]|modifiqu[eé]|apliqu[eé]|renombr[eé]|asign[eé]|vincul[eé]|conect[eé])(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])(?:guardad|cread|aplicad)[oa]s?\s+en\s+firme(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])reporte\s+literal(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])resultado:?\s*\*{0,2}`?(?:applied|aplicado|guardado)|(?<![\p{L}\p{N}])lo\s+que\s+(?:ya\s+)?(?:te\s+)?(?:guardo|registro|anoto|cargo)(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])(?:guardo|anoto)\s+ya(?![\p{L}\p{N}])/giu;
 
 /**
  * Statements about what is stored: a write or a fresh read in this turn backs them.
@@ -195,6 +195,8 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
   const showsSomething = tools.some((tool) => tool.ok && ["askQuestions", "showVisual", "createPresentation", "editPresentation", "simulate"].includes(tool.name));
   if (!showsSomething && !issues.some((issue) => issue.code === "announced-not-executed") && endsAnnouncing(answer)) {
     issues.push({ code: "unfinished-answer", detail: "La respuesta termina anunciando algo (una frase que termina en dos puntos) que no aparece. Escribe esa lista completa o muestra esas preguntas con askQuestions." });
+  } else if (emptyHeadings(answer.split("\n")).size) {
+    issues.push({ code: "unfinished-answer", detail: "La respuesta tiene un título que anuncia una lista (termina en dos puntos) y no la trae. Escribe la lista o quita el título." });
   }
   const evidence = JSON.stringify(tools.map((tool) => tool.output)) ?? "";
   // Every amount and percentage shown comes from a tool of this turn or from the conversation: none is worked out by heart.
@@ -226,6 +228,17 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
 /** The last thing written promises more ("Para seguir, contame dos cosas:"), with nothing after it. */
 function endsAnnouncing(answer: string): boolean {
   return /[:：]\s*$/.test(answer.replace(/[*_`>\s]+$/g, ""));
+}
+
+/** Headings that announce a list ("**Lo que voy a buscar:**") followed by a question or nothing instead of it. */
+function emptyHeadings(lines: string[]): Set<number> {
+  const empty = new Set<number>();
+  lines.forEach((line, index) => {
+    if (!/^\s*(?:\*\*|#{1,6}\s)/.test(line) || !/[:：]\s*$/.test(line.replace(/[*_`\s]+$/g, ""))) return;
+    const next = lines.slice(index + 1).find((item) => item.trim());
+    if (next === undefined || /^\s*[*_]*¿/.test(next) || /\?\s*[*_]*\s*$/.test(next)) empty.add(index);
+  });
+  return empty;
 }
 
 /** An answer's lines split into sentences (a table row stays whole), so one bad sentence can go and the rest stay. */
@@ -262,7 +275,9 @@ export function salvageAnswer(text: string, verification: Verification, tools: T
   // A promise left hanging at the end goes away whole; a line ending in a colon in the middle is followed by its list.
   let source = text;
   if (codes.delete("unfinished-answer")) {
-    const kept = text.trimEnd().split("\n");
+    const lines = text.trimEnd().split("\n");
+    const headings = emptyHeadings(lines);
+    const kept = lines.filter((_, index) => !headings.has(index));
     while (kept.length && (kept.at(-1)!.trim() === "" || endsAnnouncing(kept.at(-1)!))) kept.pop();
     source = kept.join("\n");
     if (!codes.size) {
@@ -373,6 +388,11 @@ export function turnResults(records: TurnToolRecord[]): string[] {
       lines.push(`${output.label.trim().replace(/^./, (first) => first.toUpperCase())}: ${format(output.result)}.`);
     }
     if (item.name === "showVisual" && typeof output.conclusion === "string" && output.conclusion.trim()) lines.push(output.conclusion.trim());
+    if (item.name === "searchWebPrices" && Array.isArray(output.results) && output.results.length) {
+      const found = (output.results as { title?: string; excerpt?: string; snippet?: string }[]).slice(0, 3)
+        .map((result) => `${String(result.title ?? "").trim()}${result.excerpt && /\d/.test(result.excerpt) && result.excerpt.length <= 160 ? `: ${result.excerpt.trim()}` : ""}`).filter((line) => line.trim());
+      if (found.length) lines.push(`En la web (${typeof output.query === "string" ? output.query : "búsqueda"}${typeof output.searchedAt === "string" ? `, ${output.searchedAt}` : ""}): ${found.join("; ")}.`);
+    }
   }
   return lines;
 }

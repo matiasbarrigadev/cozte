@@ -31,6 +31,10 @@ export function compactToolOutputForHistory(toolName: string, output: unknown): 
   if (toolName === "readCosts" || toolName === "simulate" || toolName === "readBusiness") {
     return { ok: record.ok !== false, note: toolName === "simulate" ? "Simulación sin guardar." : "Lectura del estado en ese momento; puede haber cambiado, vuelve a leer si lo necesitas.", ...(typeof record.error === "string" ? { error: record.error } : {}) };
   }
+  if (toolName === "searchWebPrices") {
+    const results = Array.isArray(record.results) ? (record.results as Record<string, unknown>[]).slice(0, 5).map((result) => ({ title: result.title, url: result.url, prices: String(result.excerpt ?? result.snippet ?? "").slice(0, 300) })) : [];
+    return { ok: record.ok !== false, query: record.query, searchedAt: record.searchedAt, results, ...(typeof record.error === "string" ? { error: record.error } : {}) };
+  }
   if (toolName === "calculate") return { ok: record.ok !== false, label: record.label, expression: record.expression, result: record.result, error: record.error };
   const kept: Record<string, unknown> = { ok: record.ok !== false };
   for (const key of ["done", "error", "needs", "options", "pendingReview", "unchanged", "saved", "presentationId", "title", "publicUrl", "shows", "board"] as const) if (record[key] !== undefined) kept[key] = clip(record[key], 1200);

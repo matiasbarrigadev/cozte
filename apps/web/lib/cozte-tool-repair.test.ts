@@ -43,4 +43,14 @@ describe("Cozte tool argument repair", () => {
     expect(valid(loose)).toBe(true);
     expect(loose.changes).toEqual([{ action: "update", slide: 3, set: { bullets: ["Uno", "Dos"] } }]);
   });
+
+  it("takes the label of an option a model sends as an object", () => {
+    // MiniMax sent askQuestions options as {label, description} four times in a row in a real turn.
+    const askQuestions = z.object({ questions: z.array(z.object({ question: z.string(), options: z.array(z.string()).min(2) })).min(1) });
+    const schema = asSchema(askQuestions).jsonSchema as ToolJsonSchema;
+    const raw = JSON.stringify({ questions: [{ question: "¿Cómo seguimos?", options: [{ label: "Propones valores", description: "Estimación" }, { label: "Los consulto yo" }] }] });
+    const repaired = JSON.parse(repairCozteToolInput("askQuestions", raw, schema)!);
+    expect(new Ajv().compile(schema as object)(repaired)).toBe(true);
+    expect(repaired.questions[0].options).toEqual(["Propones valores", "Los consulto yo"]);
+  });
 });

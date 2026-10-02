@@ -619,6 +619,57 @@ ${second.answer}`);
     expect(failures).toEqual([]);
   });
 
+  it.each(models)("looks prices up when asked instead of asking whether to, and saves what the person told, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET name='Sketch', currency='CLP', country='CL', time_zone='America/Santiago', business_mode='project', onboarded_at=CURRENT_TIMESTAMP WHERE id=?", params: [principal.organizationId] }]);
+    const seed = createCozteTools(principal, crypto.randomUUID());
+    let call = 0;
+    const run = async (name: keyof typeof seed, input: Record<string, unknown>) => {
+      const output = await (seed[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<{ ok?: boolean }>)(input, { toolCallId: `seed-${++call}` });
+      expect(output, JSON.stringify(output)).toMatchObject({ ok: true });
+    };
+    await run("saveProduct", { name: "Cartel LED neón chico", goodUnitsPerLot: 1, lotsPerMonth: 60, hoursPerLot: 1 });
+    await run("saveMaterial", { name: "Tira LED neón", purchaseUnit: "m", price: 1750, priceSource: "Lo que dijo la persona" });
+    await run("saveRecipe", { product: "Cartel LED neón chico", items: [{ material: "Tira LED neón", perUnit: 3 }] });
+    vi.stubEnv("FIRECRAWL_API_KEY", "eval-key");
+    const real = globalThis.fetch;
+    const searches: string[] = [];
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.startsWith("https://api.firecrawl.dev/")) return real(input, init);
+      const query = String(JSON.parse(String(init?.body ?? "{}")).query ?? "");
+      searches.push(query);
+      const page = /acr[ií]lic/i.test(query) ? { url: "https://www.easy.cl/plancha-acrilica", title: "Plancha acrílica transparente 3 mm 60x80 cm | Easy.cl", markdown: "$ 13.920 · ($ 27.840 por m2)" }
+        : /aceler|activador/i.test(query) ? { url: "https://listado.mercadolibre.cl/activador", title: "Activador para cianoacrilato spray 150 ml", markdown: "Activador spray 150 ml $9.990" }
+        : { url: "https://listado.mercadolibre.cl/pegamento", title: "Pegamento cianoacrilato 100 ml", markdown: "Pegamento cianoacrilato 100 ml $6.490" };
+      return new Response(JSON.stringify({ success: true, data: { web: [{ ...page, description: page.title }] }, creditsUsed: 2 }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    try {
+      const history: ModelMessage[] = [];
+      const turn = await productionTurn({ model, principal, history, text: "Es en mi casa así que el arriendo, la electricidad y el gas los comparto con mi hogar, aunque lo que más gasto es electricidad por el soldador. Hago un metro de neón por hora, o sea un cartel me toma 3 horas. Uso pegamento y acelerante para pegar el neón en el acrílico: un pote de 100 ml de pegamento dura para 3 carteles y un pote de 300 ml de acelerante para 6. Lo que no sé son los precios exactos, si podés investígalos." });
+      const state = await loadState(principal);
+      const checks = {
+        searchedTheWeb: turn.records.some((item) => item.name === "searchWebPrices" && item.ok) && searches.length > 0,
+        didNotAskWhetherToSearch: !/(?:quer[eé]s|quieres) que (?:avance|busque|investigue)|busco los precios?/i.test(turn.answer),
+        citedAPrice: /13.?920|9.?990|6.?490/.test(turn.answer.replace(/s/g, "")),
+        savedWhatWasTold: state.products.some((product) => product.productionHoursMilli === 3000) || turn.records.some((item) => item.write && item.ok),
+        answeredEveryTurn: turn.verified,
+      };
+      const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+      console.log(`
+[${model}] research-prices ${JSON.stringify(checks)} ${JSON.stringify(searches)}
+${turn.answer}`);
+      results.push({ model, scenario: "research-prices", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "investigalos", answer: turn.answer }] });
+      expect(failures).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each(models)("leads a project still being planned through its first stage and finds prices on the web with their source, with %s", async (model) => {
     process.env.DATA_BRIDGE_URL = bridgeUrl;
     process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";

@@ -430,6 +430,7 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
         await retractAnswer(writable, original.draft, [firstNote]);
         await recordCozteEvent(input.runId, "quality_revision", { flags, response: text.slice(0, 4000) });
         let revisedText = "";
+        const before = steps.length;
         try {
           const revision = await agent.stream({
             messages: [...conversation.filter((message) => message.role !== "system"), { role: "user", content: qualityFeedback(flags) }],
@@ -443,12 +444,33 @@ export async function cozteAssistantWorkflow(input: CozteWorkflowInput): Promise
           const secondReview = await review(revisedText, "revised");
           if (secondReview) finalQuality = { id: `quality-${input.runId}-revised`, summary: secondReview, revised: true };
         } else {
-          // The rewrite did not hold up: the verified original comes back.
-          retracted.delete(original.index);
-          const failed = answerDraft(input.runId, steps, retracted, "La versión revisada no pasó la verificación");
-          if (failed && failed.index !== original.index) retracted.set(failed.index, failed.draft.reason);
-          await writeReceiptAnswer(writable, cleanLegacyWording(stripForeignScript(original.draft.text)), `restored-${input.runId}`, failed && failed.index !== original.index ? failed.draft : null);
-          await recordCozteEvent(input.runId, "quality_revision_rejected", {});
+          const revisionRecords = toolRecords(steps);
+          const revisionCheck = revisedText ? verifyCozteResponse(revisedText, revisionRecords, context) : null;
+          // The rewrite without the sentences that break it, when the rest holds up.
+          const salvagedRevision = revisionCheck && !revisionCheck.ok ? salvageAnswer(revisedText, revisionCheck, revisionRecords, context) : null;
+          // A rewrite that searched or saved did work the original never saw: bringing the original back would contradict it.
+          const ranTools = steps.slice(before).some((step) => step.toolResults.length > 0);
+          const failed = answerDraft(input.runId, steps, retracted, revisionCheck ? discardReason(revisionCheck) : "La versión revisada no pasó la verificación");
+          const failedDraft = failed && failed.index !== original.index ? failed : null;
+          if (failedDraft) retracted.set(failedDraft.index, failedDraft.draft.reason);
+          if (salvagedRevision) {
+            await writeReceiptAnswer(writable, salvagedRevision, `salvaged-${input.runId}`, failedDraft?.draft ?? null);
+            text = salvagedRevision;
+            salvagedText = salvagedRevision;
+            await recordCozteEvent(input.runId, "quality_revision_salvaged", { issues: revisionCheck?.issues ?? [], salvaged: salvagedRevision.slice(0, 4000) });
+            const secondReview = await review(salvagedRevision, "revised");
+            if (secondReview) finalQuality = { id: `quality-${input.runId}-revised`, summary: secondReview, revised: true };
+          } else if (ranTools) {
+            receiptText = receiptOnlyAnswer(revisionRecords);
+            await writeReceiptAnswer(writable, receiptText, `receipt-${input.runId}`, failedDraft?.draft ?? null);
+            text = receiptText;
+            await recordCozteEvent(input.runId, "quality_revision_rejected", { issues: revisionCheck?.issues ?? [], fallback: "receipt" });
+          } else {
+            // The rewrite did not hold up: the verified original comes back.
+            retracted.delete(original.index);
+            await writeReceiptAnswer(writable, cleanLegacyWording(stripForeignScript(original.draft.text)), `restored-${input.runId}`, failedDraft?.draft ?? null);
+            await recordCozteEvent(input.runId, "quality_revision_rejected", { issues: revisionCheck?.issues ?? [] });
+          }
         }
       } else if (firstReview) {
         finalQuality = { id: `quality-${input.runId}-first`, summary: firstReview, revised: false };
