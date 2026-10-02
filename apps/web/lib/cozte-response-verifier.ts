@@ -193,10 +193,10 @@ export function verifyCozteResponse(text: string, tools: TurnToolRecord[], conte
   // An answer that ends announcing a list or questions ("contame dos cosas:") that never come leaves the person waiting.
   // What follows the colon can be on screen instead of in the text: questions, a visual, a deck, a simulation.
   const showsSomething = tools.some((tool) => tool.ok && ["askQuestions", "showVisual", "createPresentation", "editPresentation", "simulate"].includes(tool.name));
-  if (!showsSomething && !issues.some((issue) => issue.code === "announced-not-executed") && endsAnnouncing(answer)) {
-    issues.push({ code: "unfinished-answer", detail: "La respuesta termina anunciando algo (una frase que termina en dos puntos) que no aparece. Escribe esa lista completa o muestra esas preguntas con askQuestions." });
-  } else if (emptyHeadings(answer.split("\n")).size) {
-    issues.push({ code: "unfinished-answer", detail: "La respuesta tiene un título que anuncia una lista (termina en dos puntos) y no la trae. Escribe la lista o quita el título." });
+  if (!showsSomething && !issues.some((issue) => issue.code === "announced-not-executed")) {
+    if (endsAnnouncing(answer)) issues.push({ code: "unfinished-answer", detail: "La respuesta termina anunciando algo (una frase que termina en dos puntos) que no aparece. Escribe esa lista completa o muestra esas preguntas con askQuestions." });
+    else if (emptyHeadings(answer.split("\n")).size) issues.push({ code: "unfinished-answer", detail: "La respuesta tiene un título que anuncia una lista (termina en dos puntos) y no la trae. Escribe la lista o quita el título." });
+    else if (missingOptions(answer)) issues.push({ code: "unfinished-answer", detail: "La respuesta anuncia opciones y pregunta cuál elige, pero no las muestra. Escribe cada opción con su cifra (hecha con calculate) o muéstralas con askQuestions." });
   }
   const evidence = JSON.stringify(tools.map((tool) => tool.output)) ?? "";
   // Every amount and percentage shown comes from a tool of this turn or from the conversation: none is worked out by heart.
@@ -239,6 +239,38 @@ function emptyHeadings(lines: string[]): Set<number> {
     if (next === undefined || /^\s*[*_]*¿/.test(next) || /\?\s*[*_]*\s*$/.test(next)) empty.add(index);
   });
   return empty;
+}
+
+const listLine = /^\s*(?:[-*•]|\d+[.)])\s|^\s*\|/;
+/** A question about options shown above it ("¿Con cuál de los tres te quedás?"). */
+const asksWhichOption = /(?<![\p{L}])(?:cu[aá]l(?:es)?\s+de\s+(?:los|las|estos|estas|esos|esas)|(?:alguna|alguno|una|uno)\s+de\s+(?:las|los|estas|estos)\s+(?:opciones|alternativas)|de\s+(?:los|las)\s+(?:dos|tres|cuatro|cinco))(?![\p{L}])/iu;
+
+/**
+ * An introduction that announces options ("depende de qué parte uses:") followed straight by the question about them,
+ * with the options nowhere: they were never written, or went away with the figures they carried.
+ */
+function missingOptions(answer: string): boolean {
+  const lines = answer.split("\n");
+  if (lines.some((line) => listLine.test(line))) return false;
+  return lines.some((line, index) => {
+    if (!/[:：]\s*$/.test(line.replace(/[*_`\s]+$/g, ""))) return false;
+    const next = lines.slice(index + 1).find((item) => item.trim());
+    return next !== undefined && asksWhichOption.test(next);
+  });
+}
+
+/**
+ * A list item without its trailing parts that carry the problem ("20 % → $400 por hora → $1.200 por cartel" keeps
+ * "20 % → $400 por hora"), so an option stays with what was verified. Null when nothing meaningful is left.
+ */
+function trimmedItem(unit: string, offends: (unit: string) => boolean): string | null {
+  const cuts = [...unit.matchAll(/\s*(?:→|->|=>|=|;|,|\(|—|–|\s-\s)/g)].map((match) => match.index ?? 0).filter((index) => index > 0).reverse();
+  for (const cut of cuts) {
+    let head = unit.slice(0, cut).trimEnd();
+    if ((head.match(/\*\*/g) ?? []).length % 2) head += "**";
+    if (head.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "").replace(/[*_`]/g, "").trim().length >= 3 && !offends(head)) return head;
+  }
+  return null;
 }
 
 /** An answer's lines split into sentences (a table row stays whole), so one bad sentence can go and the rest stay. */
@@ -288,7 +320,9 @@ export function salvageAnswer(text: string, verification: Verification, tools: T
   const offends = (unit: string) => unit.trim() !== "" && verifyCozteResponse(unit, tools, context).issues.some((issue) => codes.has(issue.code));
   const lines = source.split("\n").flatMap((line) => {
     if (!line.trim()) return [line];
-    const kept = answerUnits(line).filter((unit) => !offends(unit)).join("").trimEnd();
+    // In a list, an item keeps what holds up; in prose, a sentence that breaks goes whole.
+    const item = listLine.test(line) && !/^\s*\|/.test(line);
+    const kept = answerUnits(line).map((unit) => !offends(unit) ? unit : item ? trimmedItem(unit, offends) ?? "" : "").join("").trimEnd();
     return kept.trim() ? [kept] : [];
   });
   const salvaged = tidyAnswer(lines);

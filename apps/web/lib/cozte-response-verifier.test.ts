@@ -248,7 +248,33 @@ describe("the answers of a real turn that asked to look prices up", () => {
     const revised = "Busqué los precios en la web:\n\n- Tienda Microgeo: **$39.120** la plancha → ~$13.134/m²\n- Easy (60 x 80 cm): $13.920, que equivale a **$27.840/m²**\n\n¿Querés que use alguno como base para el costo del cartel?";
     const verification = verifyCozteResponse(revised, search, context);
     expect(verification.issues.map((issue) => issue.code)).toEqual(["unverified-figures"]);
-    expect(salvageAnswer(revised, verification, search, context)).toBe("Busqué los precios en la web:\n\n- Easy (60 x 80 cm): $13.920, que equivale a **$27.840/m²**\n\n¿Querés que use alguno como base para el costo del cartel?");
+    expect(salvageAnswer(revised, verification, search, context)).toBe("Busqué los precios en la web:\n\n- Tienda Microgeo: **$39.120** la plancha\n- Easy (60 x 80 cm): $13.920, que equivale a **$27.840/m²**\n\n¿Querés que use alguno como base para el costo del cartel?");
     expect(receiptOnlyAnswer(search)).toContain("Easy.cl: $ 13.920");
+  });
+});
+
+describe("options whose figures were not all calculated", () => {
+  // A real turn: the cost per hour came from calculate, the cost per sign was worked out by heart.
+  const calculations: TurnToolRecord[] = [
+    { name: "calculate", ok: true, write: false, output: { ok: true, label: "Horas de soldador al mes (25 días)", expression: "3*25", result: 75 } },
+    { name: "calculate", ok: true, write: false, output: { ok: true, label: "Costo por hora de soldador (20% de la boleta)", expression: "150000*0.2/75", result: 400 } },
+    { name: "calculate", ok: true, write: false, output: { ok: true, label: "Costo por hora de soldador (30% de la boleta)", expression: "150000*0.3/75", result: 600 } },
+    { name: "calculate", ok: true, write: false, output: { ok: true, label: "Costo por hora de soldador (50% de la boleta)", expression: "150000*0.5/75", result: 1000 } },
+  ];
+  const context = { sources: ["la luz me viene unos 150,000 y lo uso 3 horas por día, tres horas por cartel"] };
+  const answer = "Listo, te paso los números en limpio. Asumí 25 días de trabajo, así que el soldador se usa **75 horas al mes**. La parte de la boleta que es del taller depende de qué tantas herramientas eléctricas uses:\n\n- **20%** de la boleta → **$400 por hora** → **$1.200 por cartel** (3 h de soldador)\n- **30%** de la boleta → **$600 por hora** → **$1.800 por cartel**\n- **50%** de la boleta → **$1.000 por hora** → **$3.000 por cartel**\n\n¿Con cuál de los tres te quedás? (o decime otro porcentaje)";
+
+  it("keeps each option with what was calculated instead of dropping them all", () => {
+    const verification = verifyCozteResponse(answer, calculations, context);
+    expect(verification.issues.map((issue) => issue.code)).toEqual(["unverified-figures"]);
+    expect(salvageAnswer(answer, verification, calculations, context)).toBe("Listo, te paso los números en limpio. Asumí 25 días de trabajo, así que el soldador se usa **75 horas al mes**. La parte de la boleta que es del taller depende de qué tantas herramientas eléctricas uses:\n\n- **20%** de la boleta → **$400 por hora**\n- **30%** de la boleta → **$600 por hora**\n- **50%** de la boleta → **$1.000 por hora**\n\n¿Con cuál de los tres te quedás? (o decime otro porcentaje)");
+  });
+
+  it("never lets the question about options stand without them", () => {
+    const withoutOptions = "La parte de la boleta que es del taller depende de qué tantas herramientas eléctricas uses:\n\n¿Con cuál de los tres te quedás? (o decime otro porcentaje)";
+    expect(verifyCozteResponse(withoutOptions, calculations, context).issues.map((issue) => issue.code)).toEqual(["unfinished-answer"]);
+    // A plain question after a colon, or options written in the text, are fine.
+    expect(verifyCozteResponse("Una cosa más:\n\n¿Querés que lo guarde así?", calculations, context).ok).toBe(true);
+    expect(verifyCozteResponse("¿Preferís pagar $400 o $600 por hora? ¿Cuál de los dos?", calculations, context).ok).toBe(true);
   });
 });

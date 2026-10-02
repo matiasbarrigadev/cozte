@@ -608,12 +608,7 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
       answeredEveryTurn: [first, second].every((turn) => turn.verified),
     };
     const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
-    console.log(`
-[${model}] recipe-complete ${JSON.stringify(checks)}
-${first.answer}
-${JSON.stringify(first.records.filter((item) => item.name !== "readCosts").map((item) => [item.name, item.input, item.output]))}
----
-${second.answer}`);
+    console.log(`\n[${model}] recipe-complete ${JSON.stringify(checks)}\n${first.answer}\n${JSON.stringify(first.records.filter((item) => item.name !== "readCosts").map((item) => [item.name, item.input, item.output]))}\n---\n${second.answer}`);
     vi.unstubAllEnvs();
     results.push({ model, scenario: "recipe-complete", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "completa", answer: first.answer }, { user: "insiste", answer: second.answer }] });
     expect(failures).toEqual([]);
@@ -653,15 +648,14 @@ ${second.answer}`);
       const state = await loadState(principal);
       const checks = {
         searchedTheWeb: turn.records.some((item) => item.name === "searchWebPrices" && item.ok) && searches.length > 0,
-        didNotAskWhetherToSearch: !/(?:quer[eé]s|quieres) que (?:avance|busque|investigue)|busco los precios?/i.test(turn.answer),
-        citedAPrice: /13.?920|9.?990|6.?490/.test(turn.answer.replace(/s/g, "")),
+        didNotAskWhetherToSearch: !/(?:quer[eé]s|quieres) que (?:avance|busque|investigue)|busco los precios\?/i.test(turn.answer),
+        // The prices found reach the person: in the answer, or in the options of the questions shown with it.
+        citedAPrice: /13\.?920|9\.?990|6\.?490/.test(`${turn.answer} ${JSON.stringify(turn.records.filter((item) => item.name === "askQuestions").map((item) => item.input))}`.replace(/\s/g, "")),
         savedWhatWasTold: state.products.some((product) => product.productionHoursMilli === 3000) || turn.records.some((item) => item.write && item.ok),
         answeredEveryTurn: turn.verified,
       };
       const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
-      console.log(`
-[${model}] research-prices ${JSON.stringify(checks)} ${JSON.stringify(searches)}
-${turn.answer}`);
+      console.log(`\n[${model}] research-prices ${JSON.stringify(checks)} ${JSON.stringify(searches)}\n${turn.answer}\n${JSON.stringify(turn.records.filter((item) => item.name === "askQuestions").map((item) => item.input))}`);
       results.push({ model, scenario: "research-prices", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "investigalos", answer: turn.answer }] });
       expect(failures).toEqual([]);
     } finally {
