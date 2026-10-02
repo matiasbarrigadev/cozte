@@ -639,7 +639,13 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, persi
       const liveToolCallIds = new Set(message.parts.filter(isToolUIPart).map((part) => part.toolCallId));
       return <CozteTurnActivity parts={message.parts} persisted={persisted.filter((execution) => !liveToolCallIds.has(execution.toolCallId))} streaming={streaming} />;
     })() : null}
-    {message.role === "assistant" && streaming ? <CozteLiveStatus status={liveStatus(message.parts as ActivityPart[])} /> : message.parts.map((part, index) => {
+    {message.role === "assistant" && streaming ? <CozteLiveStatus status={liveStatus(message.parts as ActivityPart[])} /> : (() => {
+      // What the person can act on (questions, charts, decks) comes after the answer that introduces it, wherever the
+      // tool call sits among the parts: the answer says "dos preguntas:" and they follow.
+      const actionable = (part: UIMessage["parts"][number], index: number) => message.role === "assistant" && (part.type === "tool-showVisual" || part.type === "tool-askQuestions" || Boolean(deckCards?.has(index)));
+      const order = message.parts.map((part, index) => ({ part, index }));
+      return [...order.filter((item) => !actionable(item.part, item.index)), ...order.filter((item) => actionable(item.part, item.index))];
+    })().map(({ part, index }) => {
       // Only the final message is the answer; notes written before tools live in the collapsed trace.
       if (part.type === "text") return message.role === "assistant" ? answer?.has(index) ? <StreamedAnswer key={index} text={part.text} animate={reveal} /> : null : <p key={index} className="whitespace-pre-wrap leading-relaxed">{part.text}</p>;
       if (part.type === "file" && part.mediaType.startsWith("image/")) return <div key={index} className="flex flex-col items-start gap-1"><Image src={part.url} alt={part.filename ?? "Imagen adjunta"} width={320} height={224} unoptimized className="max-h-56 max-w-full rounded-md object-contain" /><span className="max-w-full truncate text-xs opacity-80">{part.filename ?? "Imagen adjunta"}</span></div>;
