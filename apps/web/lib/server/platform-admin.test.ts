@@ -5,7 +5,7 @@ vi.mock("server-only", () => ({}));
 const session = { userId: "user_1" as string | null, orgId: "org_own" as string | null, orgRole: "org:admin" };
 const jar = new Map<string, string>();
 const users: Record<string, { emailAddresses: { emailAddress: string; verification: { status: string } }[] }> = {};
-const admins = new Set(["matiasbarriga7@gmail.com"]);
+const admins = new Set(["admin@example.com"]);
 const organizations = new Set(["org_own", "org_client"]);
 
 vi.mock("@clerk/nextjs/server", () => ({
@@ -48,9 +48,9 @@ describe("superadmin access", () => {
   });
 
   it("lets the superadmin view another company, read-only and without being its member", async () => {
-    signIn("MatiasBarriga7@gmail.com");
+    signIn("Admin@Example.com");
     jar.set(ADMIN_VIEW_COOKIE, "org_client");
-    expect(await requirePrincipal()).toEqual({ userId: session.userId, organizationId: "org_client", role: "viewer", adminView: { email: "matiasbarriga7@gmail.com" } });
+    expect(await requirePrincipal()).toEqual({ userId: session.userId, organizationId: "org_client", role: "viewer", adminView: { email: "admin@example.com" } });
     await expect(requirePrincipal(true)).rejects.toThrow(/superadmin: es solo lectura/);
     // Even without a company of their own selected.
     session.orgId = null;
@@ -58,10 +58,10 @@ describe("superadmin access", () => {
   });
 
   it("does not honor an unverified e-mail or a company that does not exist", async () => {
-    signIn("matiasbarriga7@gmail.com", "unverified");
+    signIn("admin@example.com", "unverified");
     jar.set(ADMIN_VIEW_COOKIE, "org_client");
     expect((await requirePrincipal()).organizationId).toBe("org_own");
-    signIn("matiasbarriga7@gmail.com");
+    signIn("admin@example.com");
     jar.set(ADMIN_VIEW_COOKIE, "org_made_up");
     expect((await requirePrincipal(true)).organizationId).toBe("org_own");
   });

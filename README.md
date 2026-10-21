@@ -226,4 +226,4 @@ Si encuentras una vulnerabilidad, repórtala de forma privada desde la pestaña 
 
 ## Licencia
 
-Este repositorio no incluye una licencia de código abierto: el código es público para consulta y todos los derechos están reservados.
+Distribuido bajo la [licencia MIT](LICENSE).
