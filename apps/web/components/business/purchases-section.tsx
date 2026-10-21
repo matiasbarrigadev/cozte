@@ -17,10 +17,12 @@ import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
-import { MonthPicker, ReceiptLink, SectionHeader, Stat, Tip, businessAction, notifySaved, todayFor, todayIso, uploadDocument, useBusinessView, useMoney } from "./business-ui";
-import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, downloadCsv, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
+import { MonthPicker, ReceiptLink, SectionHeader, Stat, Tip, businessAction, formatDate, notifySaved, todayFor, todayIso, uploadDocument, useBusinessView, useMoney } from "./business-ui";
+import { EditableDate, EditableNumber, EditableText, SortableHead, TableToolbar, downloadCsv, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
 import { RecordHistory } from "./record-history";
-import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
+import { supplierKey, type SupplierKind, type SupplierRow } from "@/lib/suppliers";
+import { QuickSupplierDialog, SupplierCell, SupplierPicker, type SupplierEntry } from "./supplier-picker";
+import { useSupplierList } from "./suppliers-section";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { relativeDay } from "./delivery-status";
 
@@ -39,12 +41,21 @@ function inversePurchasePatch(purchase: Purchase, patch: PurchasePatch): Purchas
 }
 
 const KINDS: PurchaseKind[] = ["material", "expense", "fixed_payment", "investment"];
+
+/** The kind a supplier created from a purchase starts with. */
+const supplierKindFor = (kind: PurchaseKind): SupplierKind => kind === "material" ? "materials" : kind === "investment" ? "other" : "services";
+const toSupplierEntry = (row: SupplierRow): SupplierEntry => ({ id: row.id, name: row.name, kind: row.kind, materials: row.materials, phone: row.phone });
 const AREAS: CostArea[] = ["production", "delivery", "sales", "admin"];
 
 export function PurchasesSection({ state, demo, month, onMonthChange, onOpenCozte, onDataChanged }: { state: DomainState; demo: boolean; month: string; onMonthChange: (month: string) => void; onOpenCozte: () => void; onDataChanged: () => Promise<void> }) {
   const { view, loading, reload } = useBusinessView(month, demo, state);
   const money = useMoney(state.organization.currency);
   const [open, setOpen] = React.useState(false);
+  const [suppliersVersion, setSuppliersVersion] = React.useState(0);
+  const { data: supplierData } = useSupplierList(demo, suppliersVersion + (view?.purchases.length ?? 0));
+  const supplierRows = React.useMemo(() => supplierData?.suppliers ?? [], [supplierData]);
+  const suppliers = React.useMemo(() => supplierRows.map(toSupplierEntry), [supplierRows]);
+  const supplierCreated = () => setSuppliersVersion((value) => value + 1);
   const purchases = view?.purchases ?? [];
   const byKind = (kind: PurchaseKind) => purchases.filter((item) => item.kind === kind).reduce((sum, item) => sum + item.amountMinor, 0);
 
@@ -73,26 +84,25 @@ export function PurchasesSection({ state, demo, month, onMonthChange, onOpenCozt
       </div>
       <Card>
         <CardHeader><CardTitle>Compras del mes</CardTitle><CardDescription>La más reciente primero. <span className="hidden md:inline">Haz clic en una celda para corregirla;</span><span className="md:hidden">Toca «Editar» para corregirla;</span> el tipo define si es costo del producto, gasto del mes o una inversión.</CardDescription></CardHeader>
-        <CardContent>{purchases.length ? <PurchasesTable purchases={purchases} month={month} today={todayFor(demo)} demo={demo} money={money} onUpdate={update} onArchive={(purchase) => void archive(purchase.id)} />
+        <CardContent>{purchases.length ? <PurchasesTable purchases={purchases} suppliers={suppliers} onSupplierCreated={supplierCreated} month={month} today={todayFor(demo)} demo={demo} money={money} onUpdate={update} onArchive={(purchase) => void archive(purchase.id)} />
           : <Empty className="py-6"><EmptyHeader><EmptyTitle>No hay compras en {monthName(month)}</EmptyTitle><EmptyDescription>Regístralas acá o mándale a Cozte la foto del ticket.</EmptyDescription></EmptyHeader></Empty>}</CardContent>
       </Card>
       <div className="grid gap-3 md:grid-cols-2">
         {KINDS.map((kind) => <Tip key={kind} title={PURCHASE_KIND_LABELS[kind]}>{PURCHASE_KIND_HINTS[kind]}</Tip>)}
       </div>
     </div>}
-    {open ? <PurchaseDialog state={state} demo={demo} month={month} onClose={() => setOpen(false)} onSaved={async () => { setOpen(false); reload(); await onDataChanged().catch(() => {}); }} /> : null}
+    {open ? <PurchaseDialog state={state} demo={demo} month={month} suppliers={supplierRows} onSupplierCreated={supplierCreated} onClose={() => setOpen(false)} onSaved={async () => { setOpen(false); reload(); await onDataChanged().catch(() => {}); }} /> : null}
   </>;
 }
 
 type SortKey = "date" | "amount" | "description";
 
 /** The month's purchases as an editable sheet with search and filters, most recent first. */
-function PurchasesTable({ purchases, month, today, demo, money, onUpdate, onArchive }: { purchases: Purchase[]; month: string; today: string; demo: boolean; money: (value: number) => string; onUpdate: (purchase: Purchase, patch: PurchasePatch, message?: string) => Promise<void>; onArchive: (purchase: Purchase) => void }) {
+function PurchasesTable({ purchases, suppliers, onSupplierCreated, month, today, demo, money, onUpdate, onArchive }: { purchases: Purchase[]; suppliers: SupplierEntry[]; onSupplierCreated: () => void; month: string; today: string; demo: boolean; money: (value: number) => string; onUpdate: (purchase: Purchase, patch: PurchasePatch, message?: string) => Promise<void>; onArchive: (purchase: Purchase) => void }) {
   const [search, setSearch] = React.useState("");
   const [kind, setKind] = usePersistentState<string>("compras:tipo", "all");
   const [area, setArea] = usePersistentState<string>("compras:area", "all");
   const [sort, setSort] = React.useState<SortState<SortKey>>(null);
-  const suppliers = React.useMemo(() => [...new Set(purchases.map((item) => item.supplier).filter(Boolean))].map((value) => ({ value })), [purchases]);
   const rows = React.useMemo(() => {
     const filtered = purchases.filter((item) => (kind === "all" || item.kind === kind) && (area === "all" || item.area === area) && matches(search, [item.description, item.supplier, item.materialName, item.expenseName, PURCHASE_KIND_LABELS[item.kind], AREA_LABELS[item.area]]));
     const direction = sort?.direction === "asc" ? 1 : -1;
@@ -110,7 +120,7 @@ function PurchasesTable({ purchases, month, today, demo, money, onUpdate, onArch
       { id: "area", label: "Área", value: area, onChange: setArea, options: [{ value: "all", label: "Todas las áreas" }, ...AREAS.map((item) => ({ value: item, label: AREA_LABELS[item] }))] },
     ]}><Button type="button" size="sm" variant="outline" className="h-8" onClick={exportRows} title="Descarga lo que ves (con los filtros aplicados)"><AnimatedIcon name="cloud" data-icon="inline-start" size={14} />Descargar Excel</Button></TableToolbar>
     {history ? <RecordHistory kind="purchase" id={history.id} title={history.description} demo={demo} onClose={() => setHistory(null)} /> : null}
-    {isMobile ? <PurchaseCards rows={rows} today={today} demo={demo} money={money} suppliers={suppliers} locked={locked} onUpdate={onUpdate} onArchive={onArchive} onHistory={setHistory} /> : <div className="max-h-[min(70vh,48rem)] overflow-auto rounded-lg border">
+    {isMobile ? <PurchaseCards rows={rows} today={today} demo={demo} money={money} suppliers={suppliers} onSupplierCreated={onSupplierCreated} locked={locked} onUpdate={onUpdate} onArchive={onArchive} onHistory={setHistory} /> : <div className="max-h-[min(70vh,48rem)] overflow-auto rounded-lg border">
       <Table className="border-separate border-spacing-0">
         <TableHeader className="sticky top-0 z-20 bg-card"><TableRow className="hover:bg-transparent">
           <SortableHead column="date" label="Fecha" sort={sort} onSort={setSort} className="sticky left-0 z-30 min-w-48 bg-muted" />
@@ -129,7 +139,7 @@ function PurchasesTable({ purchases, month, today, demo, money, onUpdate, onArch
             <span className="pr-3 text-xs whitespace-nowrap text-muted-foreground">{relativeDay(item.purchasedOn, today)}</span>
           </div></TableCell>
           <TableCell className={sheetCell}><EditableText value={item.description} label="Qué se compró" onCommit={(description) => { if (description.length >= 2) void onUpdate(item, { description }); }} /></TableCell>
-          <TableCell className={sheetCell}><EditableSuggest suggestions={suppliers} value={item.supplier} label="Proveedor" placeholder="—" onCommit={(supplier) => void onUpdate(item, { supplier })} /></TableCell>
+          <TableCell className={sheetCell}><SupplierCell value={item.supplier} suppliers={suppliers} kind={supplierKindFor(item.kind)} demo={demo} onSupplierCreated={onSupplierCreated} onCommit={(supplier) => void onUpdate(item, { supplier }, supplier ? `Proveedor: ${supplier}` : "Compra sin proveedor")} /></TableCell>
           <TableCell className={cn(sheetCell, "px-3")}><Badge variant="outline" title={PURCHASE_KIND_HINTS[item.kind]}>{PURCHASE_KIND_LABELS[item.kind]}</Badge></TableCell>
           <TableCell className={sheetCell}><Dropdown variant="cell" aria-label="Área" value={item.area} disabled={item.kind === "material" || locked(item)} onChange={(event) => { if (event.target.value !== item.area) void onUpdate(item, { area: event.target.value as CostArea }); }}>
             {AREAS.map((value) => <DropdownOption key={value} value={value}>{AREA_LABELS[value]}</DropdownOption>)}
@@ -160,8 +170,8 @@ function PurchasesTable({ purchases, month, today, demo, money, onUpdate, onArch
 }
 
 /** Purchases as cards for a phone, with an edit dialog instead of the wide sheet. */
-function PurchaseCards({ rows, today, demo, money, suppliers, locked, onUpdate, onArchive, onHistory }: {
-  rows: Purchase[]; today: string; demo: boolean; money: (value: number) => string; suppliers: Suggestion[]; locked: (purchase: Purchase) => boolean;
+function PurchaseCards({ rows, today, demo, money, suppliers, onSupplierCreated, locked, onUpdate, onArchive, onHistory }: {
+  rows: Purchase[]; today: string; demo: boolean; money: (value: number) => string; suppliers: SupplierEntry[]; onSupplierCreated: () => void; locked: (purchase: Purchase) => boolean;
   onUpdate: (purchase: Purchase, patch: PurchasePatch, message?: string) => Promise<void>; onArchive: (purchase: Purchase) => void; onHistory: (purchase: Purchase) => void;
 }) {
   const [editing, setEditing] = React.useState<Purchase | null>(null);
@@ -190,14 +200,16 @@ function PurchaseCards({ rows, today, demo, money, suppliers, locked, onUpdate, 
         <Button type="button" variant="ghost" size="icon" className="size-10" aria-label={`Anular ${item.description}`} onClick={() => onArchive(item)}><AnimatedIcon name="delete" /></Button>
       </div>
     </li>)}</ul>
-    {editing ? <PurchaseEditDialog purchase={editing} suppliers={suppliers} locked={locked(editing)} onClose={() => setEditing(null)}
+    {editing ? <PurchaseEditDialog purchase={editing} suppliers={suppliers} demo={demo} onSupplierCreated={onSupplierCreated} locked={locked(editing)} onClose={() => setEditing(null)}
       onSave={async (patch) => { if (Object.keys(patch).length) await onUpdate(editing, patch); setEditing(null); }} /> : null}
   </>;
 }
 
-function PurchaseEditDialog({ purchase, suppliers, locked, onClose, onSave }: { purchase: Purchase; suppliers: Suggestion[]; locked: boolean; onClose: () => void; onSave: (patch: PurchasePatch) => Promise<void> }) {
+function PurchaseEditDialog({ purchase, suppliers, demo, onSupplierCreated, locked, onClose, onSave }: { purchase: Purchase; suppliers: SupplierEntry[]; demo: boolean; onSupplierCreated: () => void; locked: boolean; onClose: () => void; onSave: (patch: PurchasePatch) => Promise<void> }) {
   const [busy, setBusy] = React.useState(false);
-  const [supplier, setSupplier] = React.useState(purchase.supplier);
+  // The purchase's supplier from the list (or as it was written, for an old purchase), changed only by picking or creating one.
+  const [supplier, setSupplier] = React.useState<SupplierEntry | null>(() => purchase.supplier ? suppliers.find((entry) => supplierKey(entry.name) === supplierKey(purchase.supplier)) ?? { id: "", name: purchase.supplier, kind: supplierKindFor(purchase.kind) } : null);
+  const [creating, setCreating] = React.useState<string | null>(null);
   const [area, setArea] = React.useState<CostArea>(purchase.area);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -207,7 +219,7 @@ function PurchaseEditDialog({ purchase, suppliers, locked, onClose, onSave }: { 
     if (!locked && purchasedOn && purchasedOn !== purchase.purchasedOn) patch.purchasedOn = purchasedOn;
     const description = String(data.get("description") ?? "").trim();
     if (description.length >= 2 && description !== purchase.description) patch.description = description;
-    if (supplier.trim() !== purchase.supplier) patch.supplier = supplier.trim();
+    if ((supplier?.name ?? "") !== purchase.supplier) patch.supplier = supplier?.name ?? "";
     if (!locked && purchase.kind !== "material" && area !== purchase.area) patch.area = area;
     const amount = Number(data.get("amount"));
     if (!locked && data.get("amount") !== null && Number.isFinite(amount) && amount >= 0 && amount !== purchase.amountMinor) patch.amount = amount;
@@ -221,7 +233,7 @@ function PurchaseEditDialog({ purchase, suppliers, locked, onClose, onSave }: { 
     <form className="flex flex-col gap-4" onSubmit={submit}><FieldGroup>
       <Field><FieldLabel htmlFor="edit-purchased-on">Fecha</FieldLabel><DatePicker id="edit-purchased-on" name="purchasedOn" defaultValue={purchase.purchasedOn} disabled={locked} /></Field>
       <Field><FieldLabel htmlFor="edit-purchase-description">Qué se compró</FieldLabel><Input id="edit-purchase-description" name="description" required minLength={2} defaultValue={purchase.description} /></Field>
-      <Field><FieldLabel htmlFor="edit-purchase-supplier">Proveedor</FieldLabel><SuggestInput id="edit-purchase-supplier" value={supplier} suggestions={suppliers} onValueChange={(value) => setSupplier(value)} placeholder="Sin proveedor" /></Field>
+      <Field><FieldLabel htmlFor="edit-purchase-supplier">Proveedor</FieldLabel><SupplierPicker id="edit-purchase-supplier" suppliers={suppliers} value={supplier} onChange={setSupplier} onCreate={setCreating} /></Field>
       <div className="grid grid-cols-2 gap-3">
         <Field><FieldLabel htmlFor="edit-purchase-amount">Monto</FieldLabel><Input id="edit-purchase-amount" name="amount" type="number" min="0" step="any" inputMode="decimal" defaultValue={purchase.amountMinor} disabled={locked} /></Field>
         <Field><FieldLabel htmlFor="edit-purchase-area">Área</FieldLabel><Dropdown id="edit-purchase-area" className="w-full" value={area} disabled={locked || purchase.kind === "material"} onChange={(event) => setArea(event.target.value as CostArea)}>{AREAS.map((value) => <DropdownOption key={value} value={value}>{AREA_LABELS[value]}</DropdownOption>)}</Dropdown></Field>
@@ -230,11 +242,20 @@ function PurchaseEditDialog({ purchase, suppliers, locked, onClose, onSave }: { 
     </FieldGroup>
       <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancelar</Button><Button type="submit" disabled={busy}>{busy ? "Guardando…" : "Guardar"}</Button></DialogFooter>
     </form>
+    {creating !== null ? <QuickSupplierDialog name={creating} kind={supplierKindFor(purchase.kind)} demo={demo} onClose={() => setCreating(null)} onCreated={(entry) => { setCreating(null); setSupplier(entry); onSupplierCreated(); }} /> : null}
   </DialogContent></Dialog>;
 }
 
-function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: DomainState; demo: boolean; month: string; onClose: () => void; onSaved: () => void }) {
+function PurchaseDialog({ state, demo, month, suppliers: supplierRows, onSupplierCreated, onClose, onSaved }: { state: DomainState; demo: boolean; month: string; suppliers: SupplierRow[]; onSupplierCreated: () => void; onClose: () => void; onSaved: () => void }) {
   const currency = state.organization.currency;
+  const money = useMoney(currency);
+  const [created, setCreated] = React.useState<SupplierEntry[]>([]);
+  const suppliers = React.useMemo(() => [...created.filter((entry) => !supplierRows.some((row) => row.id === entry.id)), ...supplierRows.map(toSupplierEntry)], [created, supplierRows]);
+  const [supplier, setSupplier] = React.useState<SupplierEntry | null>(null);
+  const [creating, setCreating] = React.useState<string | null>(null);
+  const [materialId, setMaterialId] = React.useState(state.materials[0]?.id ?? "");
+  const [quantity, setQuantity] = React.useState("");
+  const [amount, setAmount] = React.useState("");
   const idempotencyKey = React.useMemo(() => crypto.randomUUID(), []);
   const [kind, setKind] = React.useState<PurchaseKind>("expense");
   const [area, setArea] = React.useState<CostArea>("admin");
@@ -243,6 +264,15 @@ function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: Domai
   const activeExpenses = state.expenses.filter((item) => item.period === state.activePeriod);
   const defaultDate = todayIso().startsWith(month) ? todayIso() : `${month}-01`;
   const areaLocked = kind === "material" || kind === "fixed_payment";
+  // A supply brings its usual supplier, while none is chosen.
+  const chooseMaterial = (id: string) => {
+    setMaterialId(id);
+    const usual = state.materials.find((item) => item.id === id)?.supplier;
+    if (!supplier && usual) setSupplier(suppliers.find((entry) => supplierKey(entry.name) === supplierKey(usual)) ?? null);
+  };
+  // What this supplier charged for this supply the last time, to check the invoice or fill the total.
+  const lastPrice = kind === "material" && supplier ? supplierRows.find((row) => row.id === supplier.id)?.prices.find((price) => price.materialId === materialId) ?? null : null;
+  const suggested = lastPrice && Number(quantity) > 0 ? Math.round(lastPrice.last * Number(quantity) * 100) / 100 : null;
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -252,9 +282,9 @@ function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: Domai
     try {
       const documentId = file && !demo ? await uploadDocument(file) : undefined;
       await businessAction({ action: "record-purchase", idempotencyKey, purchase: {
-        purchasedOn: text("date"), description: text("description"), supplier: text("supplier"), amount: Number(text("amount")), kind,
+        purchasedOn: text("date"), description: text("description"), supplier: supplier?.name ?? "", amount: Number(amount), kind,
         ...(areaLocked ? {} : { area }),
-        ...(kind === "material" ? { materialId: text("material"), ...(text("quantity") ? { quantity: Number(text("quantity")) } : {}), updateMaterialPrice: data.get("updatePrice") === "on" } : {}),
+        ...(kind === "material" ? { materialId, ...(quantity.trim() ? { quantity: Number(quantity) } : {}), updateMaterialPrice: data.get("updatePrice") === "on" } : {}),
         ...(kind === "fixed_payment" ? { expenseId: text("expense") } : {}),
         ...(kind === "investment" ? { usefulLifeMonths: Number(text("life")), ...(area === "production" ? { includeInUnitCost: data.get("includeInUnitCost") === "on" } : {}) } : {}),
         documentId,
@@ -270,17 +300,21 @@ function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: Domai
     <form className="flex flex-col gap-4" onSubmit={submit}><FieldGroup>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field><FieldLabel htmlFor="purchase-date">Fecha</FieldLabel><DatePicker id="purchase-date" name="date" required defaultValue={defaultDate} today={defaultDate} /></Field>
-        <Field><FieldLabel htmlFor="purchase-amount">Total pagado</FieldLabel><Input id="purchase-amount" name="amount" type="number" min="0" step="0.01" required /></Field>
+        <Field><FieldLabel htmlFor="purchase-amount">Total pagado</FieldLabel><Input id="purchase-amount" name="amount" type="number" min="0" step="0.01" required value={amount} onChange={(event) => setAmount(event.target.value)} /></Field>
       </div>
       <Field><FieldLabel htmlFor="purchase-description">Qué compraste</FieldLabel><Input id="purchase-description" name="description" required minLength={2} placeholder="Ej. Cinta de embalaje" /></Field>
-      <Field><FieldLabel htmlFor="purchase-supplier">Dónde o a quién</FieldLabel><Input id="purchase-supplier" name="supplier" placeholder="Opcional" /></Field>
+      <Field><FieldLabel htmlFor="purchase-supplier">Proveedor</FieldLabel><SupplierPicker id="purchase-supplier" suppliers={suppliers} value={supplier} onChange={setSupplier} onCreate={setCreating} /></Field>
       <Field><FieldLabel htmlFor="purchase-kind">¿Qué tipo de compra es?</FieldLabel>
-        <Dropdown id="purchase-kind" className="w-full" value={kind} onChange={(event) => setKind(event.target.value as PurchaseKind)}>{KINDS.map((item) => <DropdownOption key={item} value={item} disabled={(item === "material" && !state.materials.length) || (item === "fixed_payment" && !activeExpenses.length)}>{PURCHASE_KIND_LABELS[item]}</DropdownOption>)}</Dropdown>
+        <Dropdown id="purchase-kind" className="w-full" value={kind} onChange={(event) => { const next = event.target.value as PurchaseKind; setKind(next); if (next === "material") chooseMaterial(materialId); }}>{KINDS.map((item) => <DropdownOption key={item} value={item} disabled={(item === "material" && !state.materials.length) || (item === "fixed_payment" && !activeExpenses.length)}>{PURCHASE_KIND_LABELS[item]}</DropdownOption>)}</Dropdown>
         <FieldDescription>{PURCHASE_KIND_HINTS[kind]}</FieldDescription>
       </Field>
       {kind === "material" ? <div className="grid gap-3 sm:grid-cols-2">
-        <Field><FieldLabel htmlFor="purchase-material">Insumo</FieldLabel><Dropdown id="purchase-material" name="material" className="w-full">{state.materials.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name} ({item.purchaseUnit})</DropdownOption>)}</Dropdown></Field>
-        <Field><FieldLabel htmlFor="purchase-quantity">Cantidad comprada</FieldLabel><Input id="purchase-quantity" name="quantity" type="number" min="0.001" step="0.001" placeholder="En su unidad de compra" /></Field>
+        <Field><FieldLabel htmlFor="purchase-material">Insumo</FieldLabel><Dropdown id="purchase-material" className="w-full" value={materialId} onChange={(event) => chooseMaterial(event.target.value)}>{state.materials.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name} ({item.purchaseUnit})</DropdownOption>)}</Dropdown></Field>
+        <Field><FieldLabel htmlFor="purchase-quantity">Cantidad comprada</FieldLabel><Input id="purchase-quantity" type="number" min="0.001" step="0.001" placeholder="En su unidad de compra" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></Field>
+        {lastPrice ? <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-muted/60 px-3 py-2 text-xs sm:col-span-2">
+          <span>La última vez {supplier?.name} te cobró <span className="font-semibold tabular-nums">{money(lastPrice.last)}</span> por {lastPrice.unit || "unidad"} ({formatDate(lastPrice.lastOn)}).</span>
+          {suggested !== null && String(suggested) !== amount ? <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setAmount(String(suggested))}>Usar {money(suggested)}</Button> : null}
+        </p> : null}
         <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" name="updatePrice" defaultChecked className="size-4" />Actualizar el precio del insumo con esta compra</label>
       </div> : null}
       {kind === "fixed_payment" ? <Field><FieldLabel htmlFor="purchase-expense">Gasto mensual que pagaste</FieldLabel><Dropdown id="purchase-expense" name="expense" className="w-full">{activeExpenses.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name} ({AREA_LABELS[item.area ?? "production"]})</DropdownOption>)}</Dropdown></Field> : null}
@@ -293,5 +327,6 @@ function PurchaseDialog({ state, demo, month, onClose, onSaved }: { state: Domai
       <Field><FieldLabel htmlFor="purchase-receipt">Comprobante</FieldLabel><Input id="purchase-receipt" type="file" accept=".pdf,image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><FieldDescription>Foto o PDF de hasta 4 MB. Opcional.</FieldDescription></Field>
     </FieldGroup>
     <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancelar</Button><Button type="submit" disabled={busy}>{busy ? "Guardando…" : "Registrar compra"}</Button></DialogFooter></form>
+    {creating !== null ? <QuickSupplierDialog name={creating} kind={supplierKindFor(kind)} demo={demo} onClose={() => setCreating(null)} onCreated={(entry) => { setCreating(null); setCreated((current) => [entry, ...current]); setSupplier(entry); onSupplierCreated(); }} /> : null}
   </DialogContent></Dialog>;
 }

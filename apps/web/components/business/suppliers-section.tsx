@@ -57,7 +57,7 @@ function ChangeChip({ change }: { change: number | null }) {
 /** The biggest move among a supplier's prices. */
 const biggestMove = (row: SupplierRow) => row.prices.filter((price) => price.change !== null).sort((a, b) => Math.abs(b.change!) - Math.abs(a.change!))[0] ?? null;
 
-function useSupplierList(demo: boolean, refreshKey: number): { data: ListData | null; reload: () => void } {
+export function useSupplierList(demo: boolean, refreshKey: number): { data: ListData | null; reload: () => void } {
   const demoChanges = useDemoVersion(demo);
   const [loaded, setLoaded] = React.useState<ListData | null>(null);
   const [tick, setTick] = React.useState(0);
