@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PAYMENT_METHODS, PAYMENT_METHOD_LABELS, PAYMENT_STATUS_LABELS, canFillSaleCosts, channelPrice, isOpenDelivery, needsDelivery, saleItemsText, salePayment, saleVariableCost, type CustomerDirectory, type PaymentMethod, type Sale, type SalePatch, type SalesChannel } from "@/lib/business";
+import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PAYMENT_METHODS, PAYMENT_METHOD_LABELS, PAYMENT_STATUS_LABELS, canFillSaleCosts, customerPrice, type CustomerEntry, isOpenDelivery, needsDelivery, saleItemsText, salePayment, saleVariableCost, type CustomerDirectory, type PaymentMethod, type Sale, type SalePatch, type SalesChannel } from "@/lib/business";
 import { calculateCosts, type DomainState } from "@/lib/domain";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import { useDeliveries } from "./deliveries-section";
 import { SaleCards } from "./mobile-cards";
 import { PaymentBadge, PaymentDialog, PaymentPicker, paymentFields, type PaymentChoice } from "./payment";
 import { SaleRegister, type SalePreset } from "./sale-register";
+import { CustomerPicker, QuickCustomerDialog } from "./customer-picker";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 const leftOf = (sale: Sale) => sale.variableCostMinor === null ? null : sale.totalMinor - sale.variableCostMinor - sale.sellingCostMinor - sale.deliveryCostMinor;
@@ -79,7 +80,8 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
   const other = useBusinessView(otherMonth, demo, state);
   const { data: deliveryData } = useDeliveries(todayMonth, demo, state.revision);
   const money = useMoney(state.organization.currency);
-  const directory = useCustomerDirectory(demo, current.view?.sales.length);
+  const [customersVersion, setCustomersVersion] = React.useState(0);
+  const directory = useCustomerDirectory(demo, `${current.view?.sales.length ?? 0}:${customersVersion}`);
   const customerSuggestions = React.useMemo<Suggestion[]>(() => directory.customers.map((item) => ({ value: item.name, hint: [item.address, item.sales > 1 ? `${item.sales} compras` : ""].filter(Boolean).join(" · ") || undefined })), [directory]);
   const [saleOpen, setSaleOpen] = React.useState(false);
   const [itemsSale, setItemsSale] = React.useState<Sale | null>(null);
@@ -171,7 +173,7 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
           note={late.length ? `${plural(late.length, "atrasada", "atrasadas")} de días anteriores` : deliverToday.length ? "Ninguna atrasada" : "Nada para hoy"} onClick={onOpenDeliveries} action="Ir a Entregas" />
       </div>
 
-      {state.products.length ? <SaleRegister ref={searchRef} state={state} channels={view.channels} demo={demo} today={today} suggestions={customerSuggestions} preset={preset} onSaved={changed} onOpenDialog={() => setSaleOpen(true)} onOpenChannels={onOpenChannels} />
+      {state.products.length ? <SaleRegister ref={searchRef} state={state} channels={view.channels} demo={demo} today={today} customers={directory.customers} onCustomerCreated={() => setCustomersVersion((value) => value + 1)} preset={preset} onSaved={changed} onOpenDialog={() => setSaleOpen(true)} onOpenChannels={onOpenChannels} />
         : <Card><CardContent><Empty className="py-6"><EmptyHeader><EmptyTitle>Primero, tus productos</EmptyTitle><EmptyDescription>Para registrar ventas, Cozte necesita saber qué vendes y cuánto cuesta hacerlo. Cárgalos en Costos de producción o cuéntaselos a Cozte.</EmptyDescription></EmptyHeader><Button variant="outline" onClick={onOpenCozte}>Contarle a Cozte qué fabrico</Button></Empty></CardContent></Card>}
 
       {fillable.length ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50/70 px-4 py-3 text-sm dark:border-amber-400/30 dark:bg-amber-500/5">
@@ -389,20 +391,23 @@ type Line = { key: number; productId: string; quantity: string; price: string };
 /** The full form: several products, delivery with its address, a receipt. `initialCustomer` opens it for a known customer, with their default address. */
 export function SaleDialog({ directory, state, channels, demo, month, onClose, onSaved, initialCustomer = "" }: { directory: CustomerDirectory; state: DomainState; channels: SalesChannel[]; demo: boolean; month: string; onClose: () => void; onSaved: () => void; initialCustomer?: string }) {
   const initial = initialCustomer ? directory.customers.find((item) => item.name === initialCustomer) : undefined;
-  const [customer, setCustomer] = React.useState(initialCustomer);
+  const [customer, setCustomer] = React.useState<CustomerEntry | null>(initial ?? null);
+  const [creating, setCreating] = React.useState<string | null>(null);
+  const [created, setCreated] = React.useState<CustomerEntry[]>([]);
   const [address, setAddress] = React.useState(initial?.address ?? "");
   const [recipient, setRecipient] = React.useState(initial?.recipient ?? "");
   const [contact, setContact] = React.useState(initial?.contact ?? "");
-  const pickCustomer = (name: string) => {
-    const known = directory.customers.find((item) => item.name === name);
+  const pickCustomer = (known: CustomerEntry | null) => {
+    setCustomer(known);
     if (!known) return;
     if (known.address) setAddress(known.address);
     if (known.contact) setContact(known.contact);
     if (known.recipient) setRecipient(known.recipient);
+    if (known.defaultChannelId && channels.some((item) => item.id === known.defaultChannelId)) setChannelId(known.defaultChannelId);
   };
   const money = useMoney(state.organization.currency);
   const idempotencyKey = React.useMemo(() => crypto.randomUUID(), []);
-  const [channelId, setChannelId] = React.useState(channels[0]?.id ?? DIRECT_CHANNEL.id);
+  const [channelId, setChannelId] = React.useState(initial?.defaultChannelId && channels.some((item) => item.id === initial.defaultChannelId) ? initial.defaultChannelId : channels[0]?.id ?? DIRECT_CHANNEL.id);
   const [lines, setLines] = React.useState<Line[]>([{ key: 0, productId: state.products[0]?.id ?? "", quantity: "1", price: "" }]);
   const [file, setFile] = React.useState<File | null>(null);
   const [payment, setPayment] = React.useState<PaymentChoice>("cash");
@@ -426,7 +431,7 @@ export function SaleDialog({ directory, state, channels, demo, month, onClose, o
       await businessAction({ action: "record-sale", idempotencyKey, sale: {
         soldOn: String(data.get("date")), channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id,
         items: lines.filter((line) => line.productId && Number(line.quantity) > 0).map((line) => ({ productId: line.productId, quantity: Number(line.quantity), ...(line.price ? { unitPrice: Number(line.price) } : {}) })),
-        ...(delivery ? { deliveryCost: Number(delivery) } : {}), customer: customer.trim(), documentId,
+        ...(delivery ? { deliveryCost: Number(delivery) } : {}), customer: customer?.name ?? "", documentId,
         ...(deliveryDetails ? { delivery: deliveryDetails } : {}),
         ...paymentFields(payment),
       } }, demo);
@@ -447,7 +452,7 @@ export function SaleDialog({ directory, state, channels, demo, month, onClose, o
         <span className="text-sm font-medium">Productos</span>
         {lines.map((line) => {
           const product = state.products.find((item) => item.id === line.productId);
-          const listPrice = product ? channelPrice(product, channel, state.organization.currency) : null;
+          const listPrice = product ? customerPrice(product, channel, customer, state.organization.currency).price : null;
           return <div key={line.key} className="grid grid-cols-[minmax(0,1fr)_6rem_8rem_auto] items-center gap-2">
             <Dropdown aria-label="Producto" className="w-full" value={line.productId} onChange={(event) => update(line.key, { productId: event.target.value })}>{state.products.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}</Dropdown>
             <Input aria-label="Cantidad" type="number" min="0.001" step="0.001" required value={line.quantity} onChange={(event) => update(line.key, { quantity: event.target.value })} />
@@ -459,7 +464,7 @@ export function SaleDialog({ directory, state, channels, demo, month, onClose, o
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field><FieldLabel htmlFor="sale-delivery">Costo de entrega</FieldLabel><Input id="sale-delivery" name="delivery" type="number" min="0" step="any" inputMode="decimal" placeholder={money(channel.deliveryCostPerOrderMinor)} /><FieldDescription>Déjalo vacío para usar el habitual del canal.</FieldDescription></Field>
-        <Field><FieldLabel htmlFor="sale-customer">Cliente</FieldLabel><SuggestInput id="sale-customer" value={customer} placeholder="Opcional" suggestions={directory.customers.map((item) => ({ value: item.name, hint: item.address || undefined }))} onValueChange={(value, picked) => { setCustomer(value); if (picked) pickCustomer(value); }} /></Field>
+        <Field><FieldLabel htmlFor="sale-customer">Cliente</FieldLabel><CustomerPicker id="sale-customer" customers={[...created, ...directory.customers]} channels={channels} value={customer} onChange={pickCustomer} onCreate={setCreating} /></Field>
       </div>
       <Field><FieldLabel>Pago</FieldLabel><PaymentPicker value={payment} onChange={setPayment} /></Field>
       {delivers ? <fieldset className="flex flex-col gap-3 rounded-lg border p-3">
@@ -476,5 +481,6 @@ export function SaleDialog({ directory, state, channels, demo, month, onClose, o
       <Field><FieldLabel htmlFor="sale-receipt">Remito o factura</FieldLabel><Input id="sale-receipt" type="file" accept=".pdf,image/png,image/jpeg,image/webp" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><FieldDescription>PDF o imagen de hasta 4 MB. Opcional.</FieldDescription></Field>
     </FieldGroup>
     <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancelar</Button><Button type="submit" disabled={busy || !state.products.length}>{busy ? "Guardando…" : "Registrar venta"}</Button></DialogFooter></form>
+    {creating !== null ? <QuickCustomerDialog name={creating} products={state.products} channels={channels} currency={state.organization.currency} demo={demo} onClose={() => setCreating(null)} onCreated={(entry) => { setCreating(null); setCreated((current) => [entry, ...current]); pickCustomer(entry); }} /> : null}
   </DialogContent></Dialog>;
 }

@@ -614,6 +614,36 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     expect(failures).toEqual([]);
   });
 
+  it.each(models)("keeps a customer's price agreement and sells to them with it, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET name='Sketch', currency='CLP', country='CL', time_zone='America/Santiago', business_mode='operating', onboarded_at=CURRENT_TIMESTAMP WHERE id=?", params: [principal.organizationId] }]);
+    const seed = createCozteTools(principal, crypto.randomUUID());
+    let call = 0;
+    const run = async (name: keyof typeof seed, input: Record<string, unknown>) => {
+      const output = await (seed[name].execute as (input: unknown, options: { toolCallId: string }) => Promise<{ ok?: boolean }>)(input, { toolCallId: `seed-${++call}` });
+      expect(output, JSON.stringify(output)).toMatchObject({ ok: true });
+    };
+    await run("saveProduct", { name: "Cartel grande", goodUnitsPerLot: 1, lotsPerMonth: 10, hoursPerLot: 5, salePrice: 50000 });
+    await run("saveChannel", { name: "Mayorista", priceAdjustmentPercent: -20 });
+    const history: ModelMessage[] = [];
+    const first = await productionTurn({ model, principal, history, text: "Café Central es cliente mayorista y con ellos acordamos el cartel grande a 35.000 la unidad." });
+    const second = await productionTurn({ model, principal, history, text: "Hoy le vendí 2 carteles grandes a Café Central." });
+    const month = (await organizationToday(principal)).slice(0, 7);
+    const sale = (await loadBusinessView(principal, month)).sales.find((item) => item.customer.includes("Café Central"));
+    const checks = {
+      savedTheAgreement: first.records.some((item) => item.name === "saveCustomer" && item.ok),
+      soldAtTheAgreedPrice: sale?.totalMinor === 70000 && sale.channelName === "Mayorista",
+      answeredEveryTurn: [first, second].every((turn) => turn.verified),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] customer-prices ${JSON.stringify(checks)} ${JSON.stringify(sale && { total: sale.totalMinor, channel: sale.channelName })}\n${first.answer}\n---\n${second.answer}`);
+    results.push({ model, scenario: "customer-prices", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "acuerdo", answer: first.answer }, { user: "venta", answer: second.answer }] });
+    expect(failures).toEqual([]);
+  });
+
   it.each(models)("records a sale the customer still owes and collects it when they pay, with %s", async (model) => {
     process.env.DATA_BRIDGE_URL = bridgeUrl;
     process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";

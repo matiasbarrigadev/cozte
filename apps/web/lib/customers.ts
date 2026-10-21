@@ -1,4 +1,4 @@
-import type { CustomerDirectory } from "./business";
+import type { CustomerDirectory, CustomerPricing } from "./business";
 /**
  * Customers: one record per client with their addresses, and what they bought. Pure functions shared by the server
  * and the demo: name keys that join "Librería El Ateneo" and "libreria el ateneo", stats and a status in plain words.
@@ -6,7 +6,7 @@ import type { CustomerDirectory } from "./business";
 
 export type CustomerAddress = { id: string; label: string; address: string; zone: string; recipient: string; contact: string; notes: string; isDefault: boolean };
 
-export type Customer = { id: string; name: string; phone: string; email: string; notes: string; source: "user" | "cozte" | "import"; createdAt: string; addresses: CustomerAddress[] };
+export type Customer = CustomerPricing & { id: string; name: string; phone: string; email: string; notes: string; source: "user" | "cozte" | "import"; createdAt: string; addresses: CustomerAddress[] };
 
 /** The facts of a sale a customer's stats need. */
 export type CustomerSale = {
@@ -140,7 +140,8 @@ export function customersFromHistory(rows: ImportSource[]): ImportedCustomer[] {
 export function directoryFromCustomers(rows: CustomerRow[], typed: CustomerDirectory): CustomerDirectory {
   const customers = rows.map((row) => {
     const main = row.addresses.find((address) => address.isDefault) ?? row.addresses[0];
-    return { name: row.name, address: main?.address ?? "", contact: main?.contact || row.phone, recipient: main?.recipient ?? "", lastOn: row.stats.lastOn ?? row.createdAt.slice(0, 10), sales: row.stats.sales };
+    return { id: row.id, name: row.name, address: main?.address ?? "", contact: main?.contact || row.phone, recipient: main?.recipient ?? "", lastOn: row.stats.lastOn ?? row.createdAt.slice(0, 10), sales: row.stats.sales,
+      defaultChannelId: row.defaultChannelId ?? null, priceAdjustmentBps: row.priceAdjustmentBps ?? 0, prices: row.prices ?? [] };
   });
   const addresses = [...new Set([...rows.flatMap((row) => row.addresses.map((address) => address.address)), ...typed.addresses])].slice(0, 400);
   return { customers, recipients: typed.recipients, addresses, carriers: typed.carriers };

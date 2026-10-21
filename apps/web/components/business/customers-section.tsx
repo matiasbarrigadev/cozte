@@ -24,6 +24,7 @@ import { SectionHeader, Stat, businessAction, notifySaved, todayFor, useBusiness
 import { SortableHead, TableToolbar, downloadCsv, matches, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
 import { relativeDay } from "./delivery-status";
 import { SaleDialog } from "./sales-section";
+import { CustomerPricingEditor } from "./customer-picker";
 
 /**
  * Customers: one record per client with their addresses, and what they bought. The list shows who buys, how often
@@ -310,6 +311,7 @@ function CustomerSheet({ id, state, demo, others, onClose, onChanged }: { id: st
           <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">Email<Input key={`e-${detail.customer.email}`} defaultValue={detail.customer.email} type="email" maxLength={120} onBlur={(event) => saveField("email", event.currentTarget.value)} className="text-sm" /></label>
           <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground sm:col-span-2">Notas<Textarea key={`n-${detail.customer.notes}`} defaultValue={detail.customer.notes} rows={2} maxLength={1000} placeholder="Horarios, cómo le gusta que le avisen, condiciones…" onBlur={(event) => saveField("notes", event.currentTarget.value)} className="text-sm" /></label>
         </section>
+        {view ? <CustomerPricingEditor key={JSON.stringify([detail.customer.defaultChannelId, detail.customer.priceAdjustmentBps, detail.customer.prices])} customerId={id} pricing={detail.customer} products={state.products} channels={view.channels} currency={state.organization.currency} demo={demo} onSaved={changed} /> : null}
         <Addresses customerId={id} addresses={detail.customer.addresses} onAct={act} />
         <section className="flex flex-col gap-2" aria-label="Ventas del cliente">
           <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">Sus ventas</h3>{view ? <Button size="sm" onClick={() => setSelling(true)}><AnimatedIcon name="plus" data-icon="inline-start" />Registrar venta</Button> : null}</div>

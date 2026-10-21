@@ -708,7 +708,33 @@ export function receivableOf(owed: Pick<Sale, "totalMinor" | "paidMinor" | "sold
 
 export type BusinessView = ReturnType<typeof buildBusinessView>;
 
-export type CustomerEntry = { name: string; address: string; contact: string; recipient: string; lastOn: string; sales: number };
+/** What a customer usually buys through and their price agreement. */
+export type CustomerPricing = {
+  /** Their channel (retail, wholesale, with delivery): chosen for them when a sale does not say another. */
+  defaultChannelId?: string | null;
+  /** Above (+) or below (−) the channel's price, in hundredths of a percent. */
+  priceAdjustmentBps?: number;
+  /** Fixed prices agreed for some products, above any adjustment. */
+  prices?: { productId: string; unitPriceMinor: number }[];
+};
+
+export type CustomerEntry = CustomerPricing & { id?: string; name: string; address: string; contact: string; recipient: string; lastOn: string; sales: number };
+
+/** Whether a customer has a price agreement of their own. */
+export const hasPriceAgreement = (pricing: CustomerPricing | null | undefined) => Boolean(pricing && ((pricing.priceAdjustmentBps ?? 0) !== 0 || pricing.prices?.length));
+
+/**
+ * What a product costs a customer through a channel: the price agreed with them for it, or the channel's price moved
+ * by their adjustment, or the channel's price.
+ */
+export function customerPrice(product: Pick<Product, "id" | "salePriceMinor">, channel: SalesChannel, pricing: CustomerPricing | null | undefined, currency?: string | null): { price: number | null; source: "agreed" | "adjusted" | "channel" } {
+  const agreed = pricing?.prices?.find((item) => item.productId === product.id);
+  if (agreed) return { price: agreed.unitPriceMinor, source: "agreed" };
+  const base = channelPrice(product, channel, currency);
+  const adjustment = pricing?.priceAdjustmentBps ?? 0;
+  if (base === null || !adjustment) return { price: base, source: "channel" };
+  return { price: roundMoney(base * (10_000 + adjustment) / 10_000, currency), source: "adjusted" };
+}
 export type CustomerDirectory = { customers: CustomerEntry[]; recipients: string[]; addresses: string[]; carriers: string[] };
 export type DirectoryRow = { customer: string; soldOn: string; recipient?: string | null; address?: string | null; contact?: string | null; carrier?: string | null };
 

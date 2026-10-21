@@ -8,10 +8,10 @@ import { convertNativeMilli } from "@/lib/currency";
 import { costsAsOf } from "@/lib/cost-snapshots";
 import type { SnapshotRow } from "@/lib/cost-analysis";
 import { fxTableNear, quotesFor } from "./fx";
-import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PAYMENT_METHODS, PURCHASE_KIND_LABELS, buildBusinessView, initialPayment, nextPayment, type PaymentMethod, buildCustomerDirectory, businessToday, describeHistoryEvent, type HistoryEvent, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
+import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PAYMENT_METHODS, customerPrice, hasPriceAgreement, PURCHASE_KIND_LABELS, buildBusinessView, initialPayment, nextPayment, type PaymentMethod, buildCustomerDirectory, businessToday, describeHistoryEvent, type HistoryEvent, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement, type SqlValue } from "./db";
-import { customerAddressFor, loadCustomers, resolveCustomer, resolveCustomerEntry } from "./customers";
+import { customerAddressFor, customerPricingFor, findCustomer, loadCustomers, resolveCustomer, resolveCustomerEntry } from "./customers";
 import { directoryFromCustomers } from "@/lib/customers";
 import { nextDeliveryDay, zoneCost, zoneDeliveryFields, type DeliveryZone } from "@/lib/delivery-zones";
 import { deliveryZoneFor, loadZones } from "./delivery-zones";
@@ -397,6 +397,8 @@ export type RecordedSale = {
   deliveryAddress?: string | null; customerAddress?: string | null;
   /** Whether the sale created its customer now. */
   newCustomer?: boolean;
+  /** Whether the customer's agreed prices were used. */
+  agreedPrices?: boolean;
 };
 
 /** Records a sale with its channel's rules; prices and costs are fixed now so the month's result does not drift. */
@@ -405,9 +407,19 @@ export async function recordSale(principal: Principal, input: SaleInput, options
   const value = saleInputSchema.parse(input);
   const duplicate = await dbQuery<{ id: string }>("SELECT id FROM sales WHERE organization_id=? AND idempotency_key=?", [principal.organizationId, options.idempotencyKey]);
   const [state, channels] = await Promise.all([loadState(principal), loadChannels(principal)]);
-  const channel = value.channelId ? channels.find((item) => item.id === value.channelId) : DIRECT_CHANNEL;
+  const known = value.customer.trim() ? await findCustomer(principal, value.customer.trim()) : null;
+  const pricing = known ? await customerPricingFor(principal, known.id) : null;
+  // Without a channel, the customer's own; then the price agreed with them, wherever no price was given.
+  const channelId = value.channelId === undefined ? pricing?.defaultChannelId ?? null : value.channelId;
+  const channel = channelId ? channels.find((item) => item.id === channelId) : DIRECT_CHANNEL;
   if (!channel) throw new ApiError(404, "Canal no encontrado");
-  const priced = priceSale(state, await saleCostsOn(principal, state, value.soldOn, value.items.map((item) => item.productId)), channel, value.items, value.deliveryCost);
+  const items = value.items.map((item) => {
+    if (item.unitPrice !== undefined || !hasPriceAgreement(pricing)) return item;
+    const product = state.products.find((entry) => entry.id === item.productId);
+    const agreed = product ? customerPrice(product, channel, pricing, state.organization.currency) : null;
+    return agreed && agreed.source !== "channel" && agreed.price !== null ? { ...item, unitPrice: agreed.price } : item;
+  });
+  const priced = priceSale(state, await saleCostsOn(principal, state, value.soldOn, items.map((item) => item.productId)), channel, items, value.deliveryCost);
   if (priced.problems.length) throw new ApiError(400, priced.problems.join(". "));
   const sale = {
     soldOn: value.soldOn, channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id, channelName: channel.name, customer: value.customer, note: value.note,
@@ -443,6 +455,7 @@ export async function recordSale(principal: Principal, input: SaleInput, options
   return {
     id, duplicate: false, sale: { id, ...sale, delivery: delivery ? { id: delivery.id, status: delivery.status, scheduledOn: delivery.scheduledOn, zoneId: zone?.id ?? null, zoneName: zone?.name ?? "", carrier: fields.carrier ?? "" } : null },
     deliveryAddress: delivery ? fields.address || null : null, customerAddress: saved?.address ?? null, newCustomer: entry?.created ?? false,
+    agreedPrices: items.some((item, index) => item.unitPrice !== undefined && value.items[index].unitPrice === undefined),
   };
 }
 

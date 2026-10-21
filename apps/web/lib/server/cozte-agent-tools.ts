@@ -356,6 +356,9 @@ export const cozteToolInputSchemas = {
       label: z.string().trim().max(60).optional().describe("Nombre de la dirección: Local, Depósito, Casa"),
       isDefault: z.boolean().optional().describe("true la deja como dirección principal"),
     }).optional().describe("Una dirección de entrega para agregarle"),
+    channel: reference.optional().describe("Su canal habitual (minorista, mayorista, con envío…): nombre o ID, o 'ninguno'. Sus ventas lo usan cuando no dicen otro"),
+    priceAdjustmentPercent: z.number().min(-90).max(100).optional().describe("Acuerdo general de precio sobre el del canal: -10 si le haces 10 % de descuento, 0 para quitarlo"),
+    prices: z.array(z.object({ product: reference, unitPrice: amount.nullable().describe("Precio acordado por unidad; null lo quita") })).max(100).optional().describe("Precios fijos acordados con este cliente para algunos productos"),
   }),
   setCompanyLocation: z.object({
     country: z.string().trim().min(2).max(60).describe("País de la empresa, por nombre o código (Argentina, AR, México…)"),
@@ -419,7 +422,7 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   editPresentation: "Modifica una presentación guardada: agrega, cambia, quita, mueve o duplica diapositivas; cambia título, estilo o mes; recalcula los datos; o deshace el último cambio. Todos los números de diapositiva de una llamada se refieren a la presentación como estaba ANTES de la llamada (como la ves en el último resultado): puedes quitar 2 y 7 y agregar antes de la 9 en una sola llamada. Cada cambio queda en el historial y se puede deshacer.",
   readPresentation: "Lista las presentaciones guardadas o muestra las diapositivas de una (número, diseño, título, textos, gráfico con su conclusión y cifras).",
   readCustomers: "Lista los clientes con cuántas compras hicieron, cuánto compraron, cada cuánto compran, su última compra y su estado (frecuente, activo, nuevo, en riesgo, inactivo), o muestra la ficha de uno: direcciones de entrega, compras por mes y últimas ventas con su entrega. Los clientes se crean solos al registrar ventas con su nombre.",
-  saveCustomer: "Crea un cliente o corrige sus datos (nombre, teléfono, email, notas) y le agrega una dirección de entrega con su zona. Las ventas con su nombre quedan ligadas a él y sus entregas usan su dirección principal. No hace falta crear el cliente antes de registrar una venta: se crea solo.",
+  saveCustomer: "Crea un cliente o corrige sus datos (nombre, teléfono, email, notas), su canal habitual y sus precios acordados (un % sobre el canal o precios fijos por producto), y le agrega una dirección de entrega con su zona. Las ventas a ese cliente usan sus precios acordados solas. Las ventas con su nombre quedan ligadas a él y sus entregas usan su dirección principal. No hace falta crear el cliente antes de registrar una venta: se crea solo.",
   setCompanyLocation: "Guarda dónde está la empresa (país y ciudad). Con eso quedan bien la hora y el día de la empresa, el trato y las palabras de su país, y la moneda que se sugiere. Úsala cuando la persona te diga dónde está; no cambia costos ni la moneda principal.",
   searchConversation: "Busca en toda la conversación con esta persona, también en la parte que ya no ves y en conversaciones archivadas: devuelve los mensajes que contienen las palabras, con fecha, quién lo dijo y un fragmento. Úsala cuando la persona se refiera a algo dicho antes que no está en los mensajes que ves. Los números del negocio no se buscan acá: léelos con las herramientas, que están al día.",
   sharePresentation: "Crea o desactiva el link público de una presentación: cualquiera con el link la ve sin cuenta, sin las notas de quien presenta ni otros datos de la empresa.",
@@ -843,7 +846,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       }
       const document = value.receipt ? await resolveDocument(principal, value.receipt) : null;
       const recorded = await recordSale(principal, {
-        soldOn: value.date ?? today(), channelId: channel?.item?.id ?? null, items, deliveryCost: value.deliveryCost,
+        soldOn: value.date ?? today(), channelId: value.channel ? channel?.item?.id ?? null : undefined, items, deliveryCost: value.deliveryCost,
         customer: value.customer ?? "", note: value.note ?? "", documentId: document?.id,
         paidAmount: value.paidAmount, paymentMethod: value.paymentMethod,
         ...(value.delivery ? { delivery: { scheduledOn: value.delivery.date, timeWindow: value.delivery.timeWindow, recipient: value.delivery.recipient, address: value.delivery.address, contact: value.delivery.contact, carrier: value.delivery.carrier, tracking: value.delivery.tracking, note: value.delivery.note, status: value.delivery.status } } : {}),
@@ -852,7 +855,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       const left = sale.variableCostMinor === null ? null : sale.totalMinor - sale.variableCostMinor - sale.sellingCostMinor - sale.deliveryCostMinor;
       return {
         ok: true, ids: { sale: recorded.id },
-        done: [`Venta registrada: ${sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", ")} por ${sale.channelName}, total ${sale.totalMinor} ${state.organization.currency}`, paymentLine(sale, state.organization.currency), ...(document ? [`Remito ${document.filename} adjuntado`] : []), ...(sale.delivery ? [`Entrega ${DELIVERY_STATUS_LABELS[sale.delivery.status].toLowerCase()} para el ${sale.delivery.scheduledOn}${sale.delivery.zoneName ? ` · zona ${sale.delivery.zoneName}${sale.delivery.carrier ? ` (${sale.delivery.carrier})` : ""}` : ""}${recorded.deliveryAddress ? ` · a ${recorded.deliveryAddress}` : " · sin dirección"}`] : [])],
+        done: [`Venta registrada: ${sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", ")} por ${sale.channelName}, total ${sale.totalMinor} ${state.organization.currency}`, paymentLine(sale, state.organization.currency), ...(recorded.agreedPrices ? [`Con los precios acordados con ${value.customer?.trim()}`] : []), ...(document ? [`Remito ${document.filename} adjuntado`] : []), ...(sale.delivery ? [`Entrega ${DELIVERY_STATUS_LABELS[sale.delivery.status].toLowerCase()} para el ${sale.delivery.scheduledOn}${sale.delivery.zoneName ? ` · zona ${sale.delivery.zoneName}${sale.delivery.carrier ? ` (${sale.delivery.carrier})` : ""}` : ""}${recorded.deliveryAddress ? ` · a ${recorded.deliveryAddress}` : " · sin dirección"}`] : [])],
         ...(sale.delivery ? { delivery: { id: sale.delivery.id, status: sale.delivery.status, date: sale.delivery.scheduledOn, zone: sale.delivery.zoneName || undefined, carrier: sale.delivery.carrier || undefined, address: recorded.deliveryAddress ?? undefined, cost: sale.deliveryCostMinor } } : {}),
         ...(value.customer?.trim() ? { customer: recorded.newCustomer ? `${value.customer.trim()}: cliente nuevo, creado con esta venta` : `${value.customer.trim()}: ya estaba en tus clientes` } : {}),
         ...(!sale.delivery && recorded.customerAddress ? { noDelivery: `Sin entrega: el canal no entrega. ${value.customer} tiene la dirección ${recorded.customerAddress}; si hay que llevarlo, crea la entrega con updateDelivery (sale = ${recorded.id}) sin pedir la dirección.` } : {}),
@@ -1263,10 +1266,15 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
           const key = customerKey(value.customer);
           return notFound("el cliente", value.customer, customers.filter((row) => customerKey(row.name).includes(key.split(" ")[0] ?? "")).slice(0, 8).map((row) => row.name));
         }
-        const detail = await loadCustomer(principal, found.id);
+        const [detail, channels, state] = await Promise.all([loadCustomer(principal, found.id), loadChannels(principal), loadState(principal)]);
         return {
           ok: true,
-          customer: { id: detail.customer.id, name: detail.customer.name, phone: detail.customer.phone, email: detail.customer.email, notes: detail.customer.notes },
+          customer: { id: detail.customer.id, name: detail.customer.name, phone: detail.customer.phone, email: detail.customer.email, notes: detail.customer.notes, owes: detail.stats.owed || undefined },
+          pricing: {
+            channel: channels.find((channel) => channel.id === detail.customer.defaultChannelId)?.name ?? null,
+            adjustmentPercent: (detail.customer.priceAdjustmentBps ?? 0) / 100,
+            agreedPrices: (detail.customer.prices ?? []).map((item) => ({ product: state.products.find((product) => product.id === item.productId)?.name ?? item.productId, unitPrice: item.unitPriceMinor })),
+          },
           stats: { sales: detail.stats.sales, revenue: detail.stats.revenue, left: detail.stats.left, firstOn: detail.stats.firstOn, lastOn: detail.stats.lastOn, everyDays: detail.stats.everyDays, daysSinceLast: detail.stats.daysSinceLast, status: labelOf(detail.stats) },
           addresses: detail.customer.addresses.map((address) => ({ address: address.address, zone: address.zone, recipient: address.recipient, contact: address.contact, label: address.label, notes: address.notes, main: address.isDefault })),
           months: detail.months.filter((item) => item.sales),
@@ -1285,20 +1293,41 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
     case "saveCustomer": {
       const value = args as z.infer<typeof cozteToolInputSchemas.saveCustomer>;
       const done: string[] = [];
+      // The channel and the agreed prices, resolved by name before anything is saved.
+      let defaultChannelId: string | null | undefined;
+      if (value.channel) {
+        if (/^(ninguno|ninguna|sin canal|none)$/i.test(value.channel.trim())) defaultChannelId = null;
+        else {
+          const found = resolveEntity(await loadChannels(principal), value.channel);
+          if (!found.item) return notFound("el canal", value.channel, found.candidates);
+          defaultChannelId = found.item.id;
+        }
+      }
+      let prices: { productId: string; unitPrice: number | null }[] | undefined;
+      if (value.prices?.length) {
+        const state = await loadState(principal);
+        prices = [];
+        for (const item of value.prices) {
+          const product = resolveEntity(state.products, item.product);
+          if (!product.item) return notFound("el producto", item.product, product.candidates);
+          prices.push({ productId: product.item.id, unitPrice: item.unitPrice });
+        }
+      }
+      const pricing = { defaultChannelId, priceAdjustmentPercent: value.priceAdjustmentPercent, prices };
       let id: string;
       if (value.customer) {
         const found = await findCustomer(principal, value.customer);
         if (!found) return notFound("el cliente", value.customer, (await loadCustomers(principal)).customers.slice(0, 8).map((row) => row.name));
         id = found.id;
-        done.push(...(await saveCustomer(principal, { id, name: value.name, phone: value.phone, email: value.email, notes: value.notes }, "cozte")).done);
+        done.push(...(await saveCustomer(principal, { id, name: value.name, phone: value.phone, email: value.email, notes: value.notes, ...pricing }, "cozte")).done);
       } else {
         if (!value.name) return { ok: false, error: "Falta el nombre del cliente" };
         const existing = await findCustomer(principal, value.name);
         if (existing) {
           id = existing.id;
-          done.push(...(await saveCustomer(principal, { id, phone: value.phone, email: value.email, notes: value.notes }, "cozte")).done);
+          done.push(...(await saveCustomer(principal, { id, phone: value.phone, email: value.email, notes: value.notes, ...pricing }, "cozte")).done);
         } else {
-          const created = await saveCustomer(principal, { name: value.name, phone: value.phone, email: value.email, notes: value.notes }, "cozte");
+          const created = await saveCustomer(principal, { name: value.name, phone: value.phone, email: value.email, notes: value.notes, ...pricing }, "cozte");
           id = created.id;
           done.push(...created.done);
         }

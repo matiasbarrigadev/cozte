@@ -1,7 +1,7 @@
 import { calculateCosts, type CostArea, type SharedExpense } from "./domain";
 import { DEFAULT_MIX_PLAN, buildBreakEvenPlan, type ProductSales, type SalesMixPlan } from "./break-even";
 import { roundMoney } from "./money";
-import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, buildCustomerDirectory, byProximity, initialDeliveryStatus, initialPayment, needsDelivery, nextPayment, priceSale, repriceSale, saleItemsText, type PaymentMethod, type BusinessRecords, type CustomerDirectory, type Delivery, type Purchase, type PurchaseKind, type Sale, type SalePatch, type SalesChannel } from "./business";
+import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, customerPrice, hasPriceAgreement, buildCustomerDirectory, byProximity, initialDeliveryStatus, initialPayment, needsDelivery, nextPayment, priceSale, repriceSale, saleItemsText, type PaymentMethod, type BusinessRecords, type CustomerDirectory, type Delivery, type Purchase, type PurchaseKind, type Sale, type SalePatch, type SalesChannel } from "./business";
 import { DEMO_TODAY, DEMO_ZONES, demoBusinessRecords, demoDeliveries, demoHistorySales, demoState, demoSupplierHistory } from "./demo";
 import { emptyTally, tallyDelivery } from "./delivery-zones";
 import { kindForPurchase, materialPrices, sortSuppliers, supplierKey, supplierMonths, supplierStats, suppliersFromHistory, type Supplier, type SupplierKind, type SupplierPurchase, type SupplierRow } from "./suppliers";
@@ -249,6 +249,18 @@ function newDelivery(sale: Sale, channel: Pick<SalesChannel, "deliveryMethod">, 
 
 type Body = Record<string, unknown> & { action: string };
 
+type PricingInput = { defaultChannelId?: string | null; priceAdjustmentPercent?: number; prices?: { productId: string; unitPrice: number | null }[] };
+
+function withPricing(customer: Customer, input: PricingInput): Customer {
+  let prices = customer.prices ?? [];
+  for (const item of input.prices ?? []) prices = item.unitPrice === null ? prices.filter((entry) => entry.productId !== item.productId) : [...prices.filter((entry) => entry.productId !== item.productId), { productId: item.productId, unitPriceMinor: item.unitPrice }];
+  return {
+    ...customer, prices,
+    ...(input.defaultChannelId !== undefined ? { defaultChannelId: input.defaultChannelId } : {}),
+    ...(input.priceAdjustmentPercent !== undefined ? { priceAdjustmentBps: Math.round(input.priceAdjustmentPercent * 100) } : {}),
+  };
+}
+
 /** The demo's version of the business API: same actions and answers, computed in the browser. */
 export function demoBusinessAction<T>(body: Body): T {
   const current = data();
@@ -257,9 +269,16 @@ export function demoBusinessAction<T>(body: Body): T {
   switch (body.action) {
     case "record-sale": {
       const input = body.sale as { soldOn: string; channelId?: string | null; items: { productId: string; quantity: number; unitPrice?: number }[]; deliveryCost?: number; customer?: string; note?: string; delivery?: DeliveryFields; paidAmount?: number; paymentMethod?: PaymentMethod | null };
-      const channel = channelOf(input.channelId);
+      const buyer = input.customer?.trim() ? current.customers.find((customer) => customerKey(customer.name) === customerKey(input.customer!)) : undefined;
+      const channel = channelOf(input.channelId === undefined ? buyer?.defaultChannelId ?? null : input.channelId);
       if (!channel) throw new DemoError("Canal no encontrado");
-      const priced = priceSale(demoState, costs, channel, input.items, input.deliveryCost);
+      const items = hasPriceAgreement(buyer) ? input.items.map((item) => {
+        if (item.unitPrice !== undefined) return item;
+        const product = demoState.products.find((entry) => entry.id === item.productId);
+        const agreed = product ? customerPrice(product, channel, buyer, demoState.organization.currency) : null;
+        return agreed && agreed.source !== "channel" && agreed.price !== null ? { ...item, unitPrice: agreed.price } : item;
+      }) : input.items;
+      const priced = priceSale(demoState, costs, channel, items, input.deliveryCost);
       if (priced.problems.length) throw new DemoError(priced.problems.join(". "));
       const resolved = demoResolveCustomer(current, input.customer);
       const draft: Sale = { id: `v-${Math.random().toString(36).slice(2, 8)}`, soldOn: input.soldOn, channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id, channelName: channel.name, customer: input.customer ?? "", customerId: resolved.id, note: input.note ?? "", documentId: null, source: "user", ...priced, ...initialPayment(priced.totalMinor, input, input.soldOn) };
@@ -349,19 +368,21 @@ export function demoBusinessAction<T>(body: Body): T {
       return { id, created: !input.id, done } as T;
     }
     case "save-customer": {
-      const input = body.customer as { id?: string; name?: string; phone?: string; email?: string; notes?: string };
+      const input = body.customer as { id?: string; name?: string; phone?: string; email?: string; notes?: string } & PricingInput;
+      const { defaultChannelId, priceAdjustmentPercent, prices, ...plain } = input;
+      const pricing = { defaultChannelId, priceAdjustmentPercent, prices };
       if (!input.id) {
         const name = input.name?.trim() ?? "";
         if (!name) throw new DemoError("Escribe el nombre del cliente");
         if (current.customers.some((customer) => customerKey(customer.name) === customerKey(name))) throw new DemoError(`Ya hay un cliente llamado ${name}`);
-        const customer: Customer = { id: `cl-${Math.random().toString(36).slice(2, 8)}`, name, phone: input.phone ?? "", email: input.email ?? "", notes: input.notes ?? "", source: "user", createdAt: new Date().toISOString(), addresses: [] };
+        const customer: Customer = withPricing({ id: `cl-${Math.random().toString(36).slice(2, 8)}`, name, phone: input.phone ?? "", email: input.email ?? "", notes: input.notes ?? "", source: "user", createdAt: new Date().toISOString(), addresses: [] }, pricing);
         commit({ ...current, customers: [...current.customers, customer] });
         return { id: customer.id, created: true, done: [`Cliente creado: ${name}`] } as T;
       }
       const existing = current.customers.find((customer) => customer.id === input.id);
       if (!existing) throw new DemoError("Cliente no encontrado");
       if (input.name && customerKey(input.name) !== customerKey(existing.name) && current.customers.some((customer) => customer.id !== existing.id && customerKey(customer.name) === customerKey(input.name!))) throw new DemoError(`Ya hay un cliente llamado ${input.name}: si es el mismo, únelos`);
-      const next = { ...existing, ...Object.fromEntries(Object.entries(input).filter(([key, value]) => value !== undefined && key !== "id")) } as Customer;
+      const next = withPricing({ ...existing, ...Object.fromEntries(Object.entries(plain).filter(([key, value]) => value !== undefined && key !== "id")) } as Customer, pricing);
       const rename = (sale: Sale) => sale.customerId === existing.id && input.name ? { ...sale, customer: input.name } : sale;
       commit({ ...current, customers: current.customers.map((customer) => customer.id === existing.id ? next : customer), records: { ...current.records, sales: current.records.sales.map(rename) }, history: current.history.map(rename) });
       return { id: existing.id, created: false, done: ["Datos del cliente actualizados"] } as T;

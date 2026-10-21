@@ -50,3 +50,13 @@ describe("collecting in the demo", () => {
     expect(demoRecords().owed?.some((sale) => sale.id === id)).toBe(false);
   });
 });
+
+describe("customer prices in the demo", () => {
+  it("sells to a customer with their channel and agreed prices", () => {
+    const product = demoState.products[0];
+    const { id } = demoBusinessAction<{ id: string }>({ action: "save-customer", customer: { name: "Vida Sana", defaultChannelId: "feria", prices: [{ productId: product.id, unitPrice: 1000 }] } });
+    expect(id).toBeTruthy();
+    const sold = demoBusinessAction<{ sale: Sale }>({ action: "record-sale", sale: { soldOn: "2026-09-26", customer: "vida sana", items: [{ productId: product.id, quantity: 3 }] } });
+    expect(sold.sale).toMatchObject({ channelId: "feria", totalMinor: 3000 });
+  });
+});

@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import type { CustomerPricing } from "@/lib/business";
 import { buildCustomerList, customerKey, customerMonths, customersFromHistory, customerStats, zoneFromAddress, type Customer, type CustomerAddress, type CustomerRow, type CustomerSale, type CustomerStats } from "@/lib/customers";
 import { monthsBack } from "@/lib/business-analytics";
 import { ApiError, type Principal } from "./auth";
@@ -11,7 +12,8 @@ import { organizationToday } from "./business";
  * creates its customer by name, and each new delivery address is kept in the customer's record.
  */
 
-type CustomerRowDb = { id: string; name: string; phone: string; email: string; notes: string; source: string; created_at: string };
+type CustomerRowDb = { id: string; name: string; phone: string; email: string; notes: string; source: string; created_at: string; default_channel_id: string | null; price_adjustment_bps: number };
+type PriceRowDb = { customer_id: string; product_id: string; unit_price_minor: number };
 type AddressRowDb = { id: string; customer_id: string; label: string; address: string; zone: string; recipient: string; contact: string; notes: string; is_default: number };
 type SaleRowDb = { id: string; customer_id: string | null; sold_on: string; channel_name: string; total_minor: number; variable_cost_minor: number | null; selling_cost_minor: number; delivery_cost_minor: number; items: string | null; delivery_status: string | null; delivery_address: string | null; paid_minor: number };
 
@@ -100,15 +102,19 @@ async function loadRecords(principal: Principal, customerId?: string): Promise<{
   await ensureCustomersImported(principal);
   const org = principal.organizationId;
   const scope = customerId ? " AND id=?" : "";
-  const [customers, addresses, sales] = await dbBatch<CustomerRowDb | AddressRowDb | SaleRowDb>([
-    { sql: `SELECT id, name, phone, email, notes, source, created_at FROM customers WHERE organization_id=? AND archived_at IS NULL${scope} ORDER BY name`, params: customerId ? [org, customerId] : [org] },
+  const [customers, addresses, sales, prices] = await dbBatch<CustomerRowDb | AddressRowDb | SaleRowDb | PriceRowDb>([
+    { sql: `SELECT id, name, phone, email, notes, source, created_at, default_channel_id, price_adjustment_bps FROM customers WHERE organization_id=? AND archived_at IS NULL${scope} ORDER BY name`, params: customerId ? [org, customerId] : [org] },
     { sql: `SELECT id, customer_id, label, address, zone, recipient, contact, notes, is_default FROM customer_addresses WHERE organization_id=? AND archived_at IS NULL${customerId ? " AND customer_id=?" : ""} ORDER BY is_default DESC, created_at DESC`, params: customerId ? [org, customerId] : [org] },
     { sql: `SELECT ${SALE_COLUMNS} FROM sales s LEFT JOIN deliveries d ON d.sale_id=s.id AND d.archived_at IS NULL WHERE s.organization_id=? AND s.archived_at IS NULL AND s.customer_id IS NOT NULL${customerId ? " AND s.customer_id=?" : ""} ORDER BY s.sold_on DESC LIMIT 5000`, params: customerId ? [org, customerId] : [org] },
+    { sql: `SELECT customer_id, product_id, unit_price_minor FROM customer_prices WHERE organization_id=?${customerId ? " AND customer_id=?" : ""}`, params: customerId ? [org, customerId] : [org] },
   ], { retrySafe: true });
+  const pricesOf = new Map<string, { productId: string; unitPriceMinor: number }[]>();
+  for (const row of prices as PriceRowDb[]) pricesOf.set(row.customer_id, [...(pricesOf.get(row.customer_id) ?? []), { productId: row.product_id, unitPriceMinor: row.unit_price_minor }]);
   const byCustomer = new Map<string, CustomerAddress[]>();
   for (const row of addresses as AddressRowDb[]) byCustomer.set(row.customer_id, [...(byCustomer.get(row.customer_id) ?? []), toAddress(row)]);
   return {
-    customers: (customers as CustomerRowDb[]).map((row) => ({ id: row.id, name: row.name, phone: row.phone, email: row.email, notes: row.notes, source: row.source === "cozte" || row.source === "import" ? row.source : "user", createdAt: row.created_at, addresses: byCustomer.get(row.id) ?? [] })),
+    customers: (customers as CustomerRowDb[]).map((row) => ({ id: row.id, name: row.name, phone: row.phone, email: row.email, notes: row.notes, source: row.source === "cozte" || row.source === "import" ? row.source : "user", createdAt: row.created_at, addresses: byCustomer.get(row.id) ?? [],
+      defaultChannelId: row.default_channel_id, priceAdjustmentBps: row.price_adjustment_bps ?? 0, prices: pricesOf.get(row.id) ?? [] })),
     sales: (sales as SaleRowDb[]).map(toSale),
   };
 }
@@ -136,12 +142,63 @@ export async function findCustomer(principal: Principal, reference: string): Pro
   return rows[0] ?? null;
 }
 
+/** A customer's channel and price agreement, to price a sale for them. */
+export async function customerPricingFor(principal: Principal, customerId: string): Promise<CustomerPricing> {
+  const [rows, prices] = await dbBatch<{ default_channel_id: string | null; price_adjustment_bps: number } | PriceRowDb>([
+    { sql: "SELECT default_channel_id, price_adjustment_bps FROM customers WHERE id=? AND organization_id=?", params: [customerId, principal.organizationId] },
+    { sql: "SELECT customer_id, product_id, unit_price_minor FROM customer_prices WHERE customer_id=? AND organization_id=?", params: [customerId, principal.organizationId] },
+  ], { retrySafe: true });
+  const row = (rows as { default_channel_id: string | null; price_adjustment_bps: number }[])[0];
+  return { defaultChannelId: row?.default_channel_id ?? null, priceAdjustmentBps: row?.price_adjustment_bps ?? 0, prices: (prices as PriceRowDb[]).map((item) => ({ productId: item.product_id, unitPriceMinor: item.unit_price_minor })) };
+}
+
+/** The channel and price agreement of a customer: `null` channel clears it; a null price removes that product's agreement. */
+const pricingFields = {
+  defaultChannelId: z.string().min(1).max(120).nullable().optional(),
+  priceAdjustmentPercent: z.number().min(-90).max(100).optional(),
+  prices: z.array(z.object({ productId: z.string().min(1).max(120), unitPrice: z.number().nonnegative().max(1_000_000_000_000).nullable() })).max(200).optional(),
+};
+
+/** The statements that store a customer's channel and price agreement, checked against the company's channels and products. */
+async function pricingStatements(principal: Principal, customerId: string, value: { defaultChannelId?: string | null; priceAdjustmentPercent?: number; prices?: { productId: string; unitPrice: number | null }[] }): Promise<{ statements: SqlStatement[]; done: string[] }> {
+  const org = principal.organizationId;
+  const statements: SqlStatement[] = [];
+  const done: string[] = [];
+  if (value.defaultChannelId) {
+    const [channel] = await dbQuery<{ name: string }>("SELECT name FROM sales_channels WHERE id=? AND organization_id=? AND archived_at IS NULL", [value.defaultChannelId, org]);
+    if (!channel) throw new ApiError(404, "Ese canal no existe");
+    done.push(`Canal habitual: ${channel.name}`);
+  }
+  if (value.defaultChannelId !== undefined) statements.push({ sql: "UPDATE customers SET default_channel_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?", params: [value.defaultChannelId, customerId, org] });
+  if (value.defaultChannelId === null) done.push("Sin canal habitual");
+  if (value.priceAdjustmentPercent !== undefined) {
+    statements.push({ sql: "UPDATE customers SET price_adjustment_bps=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?", params: [Math.round(value.priceAdjustmentPercent * 100), customerId, org] });
+    done.push(value.priceAdjustmentPercent ? `Precio ${value.priceAdjustmentPercent > 0 ? "+" : ""}${value.priceAdjustmentPercent} % sobre el del canal` : "Precio del canal, sin ajuste");
+  }
+  if (value.prices?.length) {
+    const ids = [...new Set(value.prices.map((item) => item.productId))];
+    const known = new Set((await dbQuery<{ id: string }>(`SELECT id FROM products WHERE organization_id=? AND archived_at IS NULL AND id IN (${ids.map(() => "?").join(", ")})`, [org, ...ids])).map((row) => row.id));
+    const missing = ids.filter((id) => !known.has(id));
+    if (missing.length) throw new ApiError(404, "Algún producto de los precios no existe");
+    for (const item of value.prices) {
+      statements.push(item.unitPrice === null
+        ? { sql: "DELETE FROM customer_prices WHERE customer_id=? AND product_id=? AND organization_id=?", params: [customerId, item.productId, org] }
+        : { sql: "INSERT INTO customer_prices (organization_id, customer_id, product_id, unit_price_minor) VALUES (?, ?, ?, ?) ON CONFLICT (customer_id, product_id) DO UPDATE SET unit_price_minor=excluded.unit_price_minor, updated_at=CURRENT_TIMESTAMP", params: [org, customerId, item.productId, item.unitPrice] });
+    }
+    const set = value.prices.filter((item) => item.unitPrice !== null).length;
+    const removed = value.prices.length - set;
+    done.push([set ? `${set} precio${set === 1 ? "" : "s"} acordado${set === 1 ? "" : "s"}` : "", removed ? `${removed} quitado${removed === 1 ? "" : "s"}` : ""].filter(Boolean).join(", "));
+  }
+  return { statements, done };
+}
+
 export const customerInputSchema = z.object({
   id: z.string().min(1).max(120).optional(),
   name: z.string().trim().min(1).max(120).optional(),
   phone: z.string().trim().max(60).optional(),
   email: z.string().trim().max(120).optional(),
   notes: z.string().trim().max(1000).optional(),
+  ...pricingFields,
 });
 
 /** Creates a customer or corrects one. Renaming keeps their sales pointing to them and updates the name they show. */
@@ -156,11 +213,13 @@ export async function saveCustomer(principal: Principal, input: z.input<typeof c
     const [taken] = await dbQuery<{ id: string }>("SELECT id FROM customers WHERE organization_id=? AND name_key=? AND archived_at IS NULL", [org, key]);
     if (taken) throw new ApiError(409, `Ya hay un cliente llamado ${value.name}`);
     const id = crypto.randomUUID();
+    const pricing = await pricingStatements(principal, id, value);
     await dbBatch([
       { sql: "INSERT INTO customers (id, organization_id, name, name_key, phone, email, notes, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", params: [id, org, value.name, key, value.phone ?? "", value.email ?? "", value.notes ?? "", source] },
+      ...pricing.statements,
       audit(principal, "create-customer", id, { ...value, source }),
     ]);
-    return { id, created: true, done: [`Cliente creado: ${value.name}`] };
+    return { id, created: true, done: [`Cliente creado: ${value.name}`, ...pricing.done] };
   }
   const [current] = await dbQuery<{ name: string }>("SELECT name FROM customers WHERE id=? AND organization_id=? AND archived_at IS NULL", [value.id, org]);
   if (!current) throw new ApiError(404, "Cliente no encontrado");
@@ -179,6 +238,9 @@ export async function saveCustomer(principal: Principal, input: z.input<typeof c
     statements.push({ sql: `UPDATE customers SET ${fields.map((field) => `${field}=?`).join(", ")}, updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`, params: [...fields.map((field) => value[field] ?? ""), value.id, org] });
     done.push("Datos del cliente actualizados");
   }
+  const pricing = await pricingStatements(principal, value.id, value);
+  statements.push(...pricing.statements);
+  done.push(...pricing.done);
   if (!statements.length) return { id: value.id, created: false, done: [] };
   statements.push(audit(principal, "update-customer", value.id, { before: current, patch: value, source }));
   await dbBatch(statements);

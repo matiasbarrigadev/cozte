@@ -2,18 +2,19 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { DIRECT_CHANNEL, PAYMENT_METHODS, channelPrice, needsDelivery, type PaymentMethod, type SalesChannel } from "@/lib/business";
+import { DIRECT_CHANNEL, PAYMENT_METHODS, customerPrice, needsDelivery, type CustomerEntry, type PaymentMethod, type SalesChannel } from "@/lib/business";
+import { customerKey } from "@/lib/customers";
 import type { DomainState } from "@/lib/domain";
 import { AnimatedIcon } from "@/components/animated-icon";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
-import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
 import { cn } from "@/lib/utils";
 import { businessAction, notifySaved, useMoney } from "./business-ui";
 import { matches, usePersistentState } from "./data-table";
 import { PAYMENT_CHOICE_LABELS, PaymentPicker, paymentFields, type PaymentChoice } from "./payment";
+import { CustomerPicker, QuickCustomerDialog } from "./customer-picker";
 
 /** A sale to start from: the one being repeated. */
 export type SalePreset = { key: number; channelId: string | null; customer: string; items: { productId: string; quantity: number }[] };
@@ -26,7 +27,7 @@ const PAYMENT_CHOICES: PaymentChoice[] = ["cash", "transfer", "debit", "credit",
  * The register: tap products (or type and press Enter) to build the ticket, pick the channel, the customer and how it
  * was paid, and register it in one step. Prices come from each channel; a price typed on a line replaces it.
  */
-export const SaleRegister = React.forwardRef<HTMLInputElement, { state: DomainState; channels: SalesChannel[]; demo: boolean; today: string; suggestions: Suggestion[]; preset: SalePreset | null; onSaved: () => void; onOpenDialog: () => void; onOpenChannels?: () => void }>(function SaleRegister({ state, channels, demo, today, suggestions, preset, onSaved, onOpenDialog, onOpenChannels }, searchRef) {
+export const SaleRegister = React.forwardRef<HTMLInputElement, { state: DomainState; channels: SalesChannel[]; demo: boolean; today: string; customers: CustomerEntry[]; onCustomerCreated?: () => void; preset: SalePreset | null; onSaved: () => void; onOpenDialog: () => void; onOpenChannels?: () => void }>(function SaleRegister({ state, channels, demo, today, customers: known, onCustomerCreated, preset, onSaved, onOpenDialog, onOpenChannels }, searchRef) {
   const money = useMoney(state.organization.currency);
   const channelIds = React.useMemo(() => [...channels.map((channel) => channel.id), DIRECT_CHANNEL.id], [channels]);
   const [channelId, setChannelId] = usePersistentState<string>("ventas:caja:canal", channels[0]?.id ?? DIRECT_CHANNEL.id, channelIds);
@@ -37,7 +38,16 @@ export const SaleRegister = React.forwardRef<HTMLInputElement, { state: DomainSt
   const setPayment = (choice: PaymentChoice) => { if (choice === "owed") setOwes(true); else { setOwes(false); setMethod(choice); } };
   const [lines, setLines] = React.useState<Map<string, Line>>(new Map());
   const [search, setSearch] = React.useState("");
-  const [customer, setCustomer] = React.useState("");
+  const [customer, setCustomer] = React.useState<CustomerEntry | null>(null);
+  const [creating, setCreating] = React.useState<string | null>(null);
+  // Customers created here are usable at once, before the list comes back from the server.
+  const [created, setCreated] = React.useState<CustomerEntry[]>([]);
+  const customers = React.useMemo(() => [...created.filter((entry) => !known.some((item) => customerKey(item.name) === customerKey(entry.name))), ...known], [created, known]);
+  const chooseCustomer = (entry: CustomerEntry | null) => {
+    setCustomer(entry);
+    // Their usual channel comes with them; their prices follow from it.
+    if (entry?.defaultChannelId && channelIds.includes(entry.defaultChannelId)) setChannelId(entry.defaultChannelId);
+  };
   const [soldOn, setSoldOn] = React.useState(today);
   const [busy, setBusy] = React.useState(false);
   const [idempotencyKey, setIdempotencyKey] = React.useState(() => crypto.randomUUID());
@@ -50,15 +60,16 @@ export const SaleRegister = React.forwardRef<HTMLInputElement, { state: DomainSt
     setAppliedPreset(preset.key);
     setLines(new Map(preset.items.filter((item) => state.products.some((product) => product.id === item.productId)).map((item) => [item.productId, { quantity: item.quantity, price: "" }])));
     setChannelId(preset.channelId && channelIds.includes(preset.channelId) ? preset.channelId : DIRECT_CHANNEL.id);
-    setCustomer(preset.customer);
+    setCustomer(preset.customer ? customers.find((entry) => customerKey(entry.name) === customerKey(preset.customer)) ?? null : null);
     setSoldOn(today);
   }
 
   const products = state.products.filter((product) => matches(search, [product.name]));
-  const priceOf = (productId: string) => {
+  const quoteOf = (productId: string) => {
     const product = state.products.find((item) => item.id === productId);
-    return product ? channelPrice(product, channel, state.organization.currency) : null;
+    return product ? customerPrice(product, channel, customer, state.organization.currency) : { price: null, source: "channel" as const };
   };
+  const priceOf = (productId: string) => quoteOf(productId).price;
   const add = (productId: string, delta = 1) => setLines((current) => {
     const next = new Map(current);
     const line = next.get(productId) ?? { quantity: 0, price: "" };
@@ -85,7 +96,7 @@ export const SaleRegister = React.forwardRef<HTMLInputElement, { state: DomainSt
     setBusy(true);
     try {
       const recorded = await businessAction<{ id: string; sale: { totalMinor: number } }>({ action: "record-sale", idempotencyKey, sale: {
-        soldOn, channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id, customer: customer.trim(),
+        soldOn, channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id, customer: customer?.name ?? "",
         items: ticket.map((item) => ({ productId: item.productId, quantity: item.line.quantity, ...(item.line.price.trim() !== "" ? { unitPrice: Number(item.line.price) } : {}) })),
         ...paymentFields(payment),
       } }, demo);
@@ -94,7 +105,7 @@ export const SaleRegister = React.forwardRef<HTMLInputElement, { state: DomainSt
         catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo anular"); }
       });
       setLines(new Map());
-      setCustomer("");
+      setCustomer(null);
       setSearch("");
       setOwes(false);
       setIdempotencyKey(crypto.randomUUID());
@@ -113,14 +124,14 @@ export const SaleRegister = React.forwardRef<HTMLInputElement, { state: DomainSt
       <div className="flex min-w-0 flex-col gap-3">
         <Input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar producto y Enter para sumarlo" aria-label="Buscar producto"
           onKeyDown={(event) => { if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && products[0]) { event.preventDefault(); add(products[0].id); setSearch(""); } }} />
-        <div className="grid max-h-80 grid-cols-2 gap-2 overflow-y-auto sm:grid-cols-3 xl:grid-cols-4" role="group" aria-label="Productos">
+        <div className="grid max-h-80 grid-cols-2 gap-2 overflow-x-hidden overflow-y-auto sm:grid-cols-3 xl:grid-cols-4" role="group" aria-label="Productos">
           {products.map((product) => {
-            const price = priceOf(product.id);
+            const { price, source } = quoteOf(product.id);
             const count = lines.get(product.id)?.quantity ?? 0;
             return <button key={product.id} type="button" onClick={() => add(product.id)} aria-label={`Sumar ${product.name}`}
-              className={cn("relative flex min-h-16 flex-col items-start justify-between gap-1 rounded-lg border bg-background p-2.5 text-left transition-colors hover:border-foreground/40 hover:bg-muted/50", count > 0 && "border-primary bg-primary/5")}>
+              className={cn("relative flex min-h-16 min-w-0 flex-col items-start justify-between gap-1 rounded-lg border bg-background p-2.5 text-left transition-colors hover:border-foreground/40 hover:bg-muted/50", count > 0 && "border-primary bg-primary/5")}>
               <span className="line-clamp-2 text-sm font-medium leading-snug">{product.name}</span>
-              <span className="text-xs text-muted-foreground tabular-nums">{price === null ? "Sin precio" : money(price)}</span>
+              <span className="flex flex-wrap items-center gap-x-1 text-xs text-muted-foreground tabular-nums">{price === null ? "Sin precio" : money(price)}{source !== "channel" ? <span className="rounded bg-primary/10 px-1 text-[10px] font-medium text-primary">{source === "agreed" ? "acordado" : "del cliente"}</span> : null}</span>
               {count > 0 ? <span className="absolute top-1.5 right-1.5 rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground tabular-nums">{count}</span> : null}
             </button>;
           })}
@@ -151,7 +162,7 @@ export const SaleRegister = React.forwardRef<HTMLInputElement, { state: DomainSt
         </div>
         <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Cliente</span>
-          <SuggestInput value={customer} onValueChange={(value) => setCustomer(value)} suggestions={suggestions} placeholder="Opcional" aria-label="Cliente" />
+          <CustomerPicker customers={customers} channels={channels} value={customer} onChange={chooseCustomer} onCreate={setCreating} />
         </div>
         <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Pago</span>
@@ -164,8 +175,10 @@ export const SaleRegister = React.forwardRef<HTMLInputElement, { state: DomainSt
         <Button ref={submitRef} type="button" size="lg" disabled={!ticket.length || busy} onClick={() => void register()} className="w-full">
           {busy ? "Registrando…" : ticket.length ? <>Registrar · {total === null ? "sin precio" : money(total)}{payment === "owed" ? ` · ${PAYMENT_CHOICE_LABELS.owed.toLowerCase()}` : ""}</> : "Registrar venta"}
         </Button>
-        {ticket.length ? <button type="button" className="self-center text-xs text-muted-foreground underline-offset-2 hover:underline" onClick={() => { setLines(new Map()); setCustomer(""); }}>Vaciar</button> : null}
+        {ticket.length ? <button type="button" className="self-center text-xs text-muted-foreground underline-offset-2 hover:underline" onClick={() => { setLines(new Map()); setCustomer(null); }}>Vaciar</button> : null}
       </div>
     </CardContent>
+    {creating !== null ? <QuickCustomerDialog name={creating} products={state.products} channels={channels} currency={state.organization.currency} demo={demo} onClose={() => setCreating(null)}
+      onCreated={(entry) => { setCreating(null); setCreated((current) => [entry, ...current]); chooseCustomer(entry); onCustomerCreated?.(); }} /> : null}
   </Card>;
 });

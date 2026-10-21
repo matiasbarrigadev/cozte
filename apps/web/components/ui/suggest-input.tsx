@@ -31,15 +31,19 @@ export function SuggestInput({ value, onValueChange, suggestions, onPick, varian
   const query = normalize(value.trim())
   // Only what matches and is not already exactly what is written.
   const shown = React.useMemo(() => items.filter((item) => { const text = normalize(item.value); return text !== query && (!query || text.includes(query)) }).slice(0, MAX_SHOWN), [items, query])
+  // Open only while the person is in the field: a pick, or the form clearing it after saving, never leaves it open.
+  const [open, setOpen] = React.useState(false)
   return <Autocomplete.Root items={shown} filteredItems={shown} value={value} itemToStringValue={(item: Suggestion) => item.value}
+    open={open && shown.length > 0} onOpenChange={(next) => setOpen(next)}
     onValueChange={(next, details) => {
       // Escape closes the list or reverts (handled by the field); it never wipes what was written.
       if (details.reason === "escape-key") return
       const picked = details.reason === "item-press"
+      if (picked) setOpen(false)
       onValueChange(next, picked)
       if (picked) { const match = items.find((item) => item.value === next); if (match) onPick?.(match) }
     }}>
-    <Autocomplete.Input {...input} autoComplete="off"
+    <Autocomplete.Input {...input} autoComplete="off" onBlur={(event) => { setOpen(false); input.onBlur?.(event) }}
       className={cn(
         variant === "default" && "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30",
         variant === "cell" && "h-11 w-full min-w-0 rounded-none border-0 bg-transparent px-3 text-sm shadow-none outline-none transition-colors placeholder:text-muted-foreground hover:bg-accent/30 focus-visible:relative focus-visible:z-10 focus-visible:bg-background focus-visible:ring-2 focus-visible:ring-ring/50",

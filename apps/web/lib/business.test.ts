@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateCosts, expensesInForce, investmentMonthlyShare, periodInForce, type DomainState } from "./domain";
-import { DIRECT_CHANNEL, buildBusinessView, buildCustomerDirectory, canFillSaleCosts, describeHistoryEvent, byProximity, byRecency, channelEconomics, companyStructure, deliverySummary, initialDeliveryStatus, investmentShare, monthLessons, monthResult, monthsLeft, needsDelivery, priceSale, repriceSale, saleVariableCost, type Delivery, type Purchase, type Sale, type SalesChannel, initialPayment, nextPayment, receivableOf, salePayment } from "./business";
+import { DIRECT_CHANNEL, buildBusinessView, buildCustomerDirectory, canFillSaleCosts, describeHistoryEvent, byProximity, byRecency, channelEconomics, companyStructure, deliverySummary, initialDeliveryStatus, investmentShare, monthLessons, monthResult, monthsLeft, needsDelivery, priceSale, repriceSale, saleVariableCost, type Delivery, type Purchase, type Sale, type SalesChannel, initialPayment, nextPayment, receivableOf, salePayment, customerPrice, hasPriceAgreement } from "./business";
 import { emptyTally, tallyDelivery } from "./delivery-zones";
 
 const state: DomainState = {
@@ -301,5 +301,17 @@ describe("what a sale collected", () => {
     expect(receivableOf([{ totalMinor: 1000, paidMinor: 0, soldOn: "2026-09-10" }, { totalMinor: 500, paidMinor: 200, soldOn: "2026-08-02" }, { totalMinor: 300, paidMinor: 300, soldOn: "2026-07-01" }])).toEqual({ totalMinor: 1300, sales: 2, oldestOn: "2026-08-02" });
     const money = (value: number) => `$${value}`;
     expect(describeHistoryEvent("update-sale", { before: { paidMinor: 0, paymentMethod: null }, patch: { paidAmount: 400, paymentMethod: "transfer" }, source: "user" }, money).lines).toEqual(["Cobrado: $0 → $400", "Medio de pago: sin indicar → Transferencia"]);
+  });
+});
+
+describe("what a product costs a customer", () => {
+  const channel: SalesChannel = { id: "may", name: "Mayorista", deliveryMethod: "", commissionBps: 0, feePerOrderMinor: 0, deliveryCostPerOrderMinor: 0, unitsPerOrderMilli: 1000, priceAdjustmentBps: -2000 };
+  const product = { id: "p1", salePriceMinor: 50_000 };
+  it("is the price agreed with them, else the channel price moved by their share, else the channel price", () => {
+    expect(customerPrice(product, channel, null, "CLP")).toEqual({ price: 40_000, source: "channel" });
+    expect(customerPrice(product, channel, { priceAdjustmentBps: -500 }, "CLP")).toEqual({ price: 38_000, source: "adjusted" });
+    expect(customerPrice(product, channel, { priceAdjustmentBps: -500, prices: [{ productId: "p1", unitPriceMinor: 35_000 }] }, "CLP")).toEqual({ price: 35_000, source: "agreed" });
+    expect(hasPriceAgreement({ defaultChannelId: "may" })).toBe(false);
+    expect(hasPriceAgreement({ prices: [{ productId: "p1", unitPriceMinor: 1 }] })).toBe(true);
   });
 });
