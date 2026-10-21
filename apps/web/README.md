@@ -1,4 +1,6 @@
-# Cozte web
+# Cozte web: documentación técnica
+
+Detalle técnico de la aplicación. Para la visión general, el alcance y el despliegue, ver el [README principal](../../README.md).
 
 Aplicación Next.js 16 alojable en Vercel. Toda la API de producto, autenticación, cálculo y consumo de modelos vive aquí. Cloudflare solo conserva los datos (D1 y R2); el Worker `apps/data-bridge` es un adaptador privado y no una API de producto.
 
@@ -13,7 +15,7 @@ npm run build
 npm run dev
 ```
 
-La ruta `/` es la landing pública. `/sign-in` y `/sign-up` llevan a la aplicación autenticada en `/app`; `/demo` permite explorar tres productos sin credenciales de datos. La demostración es de solo lectura; sus cambios se simulan localmente.
+La ruta `/` es la landing pública. `/sign-in` y `/sign-up` llevan a la aplicación autenticada en `/app`; `/demo` permite explorar una empresa de ejemplo sin credenciales de datos: sus cambios se aplican en memoria con el mismo motor y se pierden al recargar.
 
 Para usar datos reales, copia `.env.example` a `.env.local` y configura Clerk, la URL y secreto compartido del puente D1, `AI_GATEWAY_API_KEY` para MiniMax M3 y las credenciales R2 para documentos. No subas `.env.local` al repositorio. Cozte exige una clave explícita de AI Gateway tanto local como en Vercel; no depende de OIDC. El secreto `DATA_BRIDGE_SECRET` debe coincidir con el secreto del Worker; `CRON_SECRET` protege las tareas programadas. El asistente nunca confirma cambios: deja propuestas para revisión humana. El historial conserva fotos inmutables de cada cambio confirmado.
 
@@ -25,13 +27,12 @@ El chat acepta una imagen PNG/JPEG/WebP de hasta 2 MB o una planilla `.xlsx` de 
 
 Cada envío al asistente guarda el mensaje antes de abrir el stream y genera un ID de ejecución. En D1, `assistant_runs` y `assistant_run_events` registran configuración efectiva (con `null` para parámetros no fijados, como temperatura/topK), pasos, llamadas y resultados de herramientas, uso de tokens, texto de respuesta, errores y estado final. La traza excluye claves, imágenes en base64 y razonamiento privado del modelo; los archivos se registran como metadatos y las cargas grandes se truncan. `GET /api/assistant/runs` devuelve las últimas 30 ejecuciones del usuario autenticado, y `GET /api/assistant/runs?id=<uuid>` sus eventos; ambas consultas están restringidas a su usuario y empresa. Una ejecución aún en `running` tras 90 segundos aparece como `interrupted`, útil para detectar cortes abruptos de Vercel o del navegador. El ID también figura en `x-cozte-run-id` y en el error de stream. No debe publicarse este endpoint sin autenticación ni copiar sus datos empresariales a logs públicos.
 
-El proyecto `lightningteam/cozte` ya importa este repositorio con **Root Directory `apps/web`**. El propietario administra `cozte.com`. Consulta el README raíz para el estado de los servicios y los pasos pendientes.
-
 ## Módulos del negocio
 
 Además del costo de producir, el espacio de trabajo cubre lo que cuesta vender y sostener la empresa:
 
-- **Ventas** (`/app/ventas`): tabla editable y filtrable de las ventas del mes, la más reciente primero (fecha, canal, cliente, producto, cantidad, precio, costo de entrega, nota). Corregir una venta conserva el precio cobrado y el costo de cada producto del día de la venta (`repriceSale`); cambiar el canal recalcula comisión y entrega. También canales de venta y cuánto queda por unidad en cada canal.
+- **Ventas** (`/app/ventas`): el día (vendido hoy, por cobrar, para entregar hoy), una caja para registrar una venta en un paso (`sale-register.tsx`) y la lista por hoy, semana o mes, filtrable por cobrar o por entregar, con acciones en grupo. Cada venta guarda lo cobrado y el medio de pago (migración 0039, `salePayment` y `nextPayment` en `lib/business.ts`). Corregir una venta conserva el precio cobrado y el costo de cada producto del día de la venta (`repriceSale`); cambiar el canal recalcula comisión y entrega.
+- **Canales** (`/app/canales`): cada canal con su comisión, entrega y precio, cómo vendió en el mes y cuánto queda por unidad en cada uno.
 - **Entregas** (`/app/entregas`): cada venta que tiene que llegar al cliente tiene su entrega (tabla `deliveries`: fecha, franja, estado, quién recibe, dirección, contacto, quién la lleva, seguimiento, nota). Se crea sola al registrar una venta por un canal que entrega (o con datos de entrega). Tabla editable con filtros rápidos (por entregar, hoy, atrasadas, con problema, entregadas), búsqueda y orden por cercanía a hoy; resumen del día, la semana y el costo del mes. El costo de entregar vive en la venta, así que el resultado del mes sigue cada cambio.
   - **Zonas de entrega** (migración 0030: `delivery_zones`, `deliveries.zone_id`): cada zona es reparto propio, transportista o retiro en el local, con quién lleva los pedidos, los barrios o ciudades que cubre, costo por pedido, días de salida, días desde la venta y, opcionalmente, "todo lo demás" para las direcciones sin otra zona.
   - **Asignación:** cada entrega nueva toma la zona de la dirección del cliente (`matchZone` en `lib/delivery-zones.ts`: la ciudad o el barrio de la dirección, después un lugar nombrado tras la calle y por último la zona de todo lo demás). De la zona salen la forma, quién la lleva, el próximo día de salida (`nextDeliveryDay`) y el costo, salvo que se indiquen. Cambiar la zona de una entrega (o poner una dirección que cae en otra) aplica el costo de esa zona; "Deshacer" lo revierte. Al crear o cambiar una zona, las entregas abiertas sin zona o en la de todo lo demás que caen en ella se suman.

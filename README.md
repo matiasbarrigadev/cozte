@@ -1,98 +1,229 @@
 # Cozte
 
-MVP de costeo continuo para PyMEs manufactureras con varios productos, insumos compartidos y gastos de taller repartidos por horas o unidades. La interfaz combina un dashboard, detalle por producto, planilla editable, revisión de impacto, comprobantes, asistente y auditoría.
+**Costos claros y un asistente que los entiende, para pequeñas empresas que producen.**
 
-## Arquitectura
+Cozte es una aplicación web para PyMEs manufactureras y emprendimientos que fabrican lo que venden: alimentos, cosmética, gráfica, carpintería, artesanías. Calcula cuánto cuesta producir cada producto, cuánto deja cada venta y cuánto hay que vender para no perder, y lo mantiene al día a medida que cambian los precios, las ventas y los gastos.
 
-| Capa | Ubicación | Función |
+Tiene dos formas de trabajar sobre los mismos datos:
+
+- **Cozte AI**, un asistente conversacional que carga la información, responde preguntas sobre el negocio y explica los números al nivel de cada persona.
+- **Un panel clásico** para la operación diaria: caja de ventas, cobros, compras, entregas, clientes y proveedores.
+
+La interfaz y el asistente están en español y pensados para Latinoamérica: 18 monedas, tipos de cambio por fecha y el trato de cada país (vos o tú).
+
+> Producto en etapa piloto. Ver [Alcance y límites](#alcance-y-límites).
+
+---
+
+## Contenido
+
+- [Qué resuelve](#qué-resuelve)
+- [Funcionalidades](#funcionalidades)
+- [Cómo está hecho](#cómo-está-hecho)
+- [Estructura del repositorio](#estructura-del-repositorio)
+- [Desarrollo local](#desarrollo-local)
+- [Pruebas](#pruebas)
+- [Despliegue](#despliegue)
+- [Alcance y límites](#alcance-y-límites)
+- [Seguridad](#seguridad)
+- [Licencia](#licencia)
+
+## Qué resuelve
+
+Una pequeña empresa que fabrica varios productos suele tener los costos repartidos entre facturas, una planilla desactualizada y la memoria de quien compra. Comparte insumos y gastos entre productos (la luz, el alquiler, el sueldo del taller) y no sabe cuánto le cuesta realmente cada unidad, ni si un canal de venta con comisión le conviene.
+
+Cozte ordena esa información en un modelo de costos explícito y verificable:
+
+- un precio de insumo se carga una vez y recalcula todos los productos que lo usan;
+- cada gasto compartido se reparte con un criterio a la vista (horas, unidades o porcentajes);
+- cada número muestra de dónde sale, qué supuestos usa y qué dato falta para que sea confiable.
+
+## Funcionalidades
+
+### Costos
+
+- **Costos de producción.** Productos, recetas, insumos con precio versionado y fuente, mano de obra por lote y gastos del taller. Cada costo se clasifica en fijo, variable o mixto. Tiene vistas de tabla, lista y tablero, con edición en contexto y revisión del impacto antes de confirmar cambios.
+- **Gastos de la empresa.** Gastos mensuales por área (producción, entrega, ventas, administración), equivalencia mensual de pagos trimestrales o anuales, e inversiones depreciadas en su vida útil.
+- **Punto de equilibrio.** Cuántas unidades y cuánto dinero vender de cada producto para cubrir los costos fijos, según la mezcla de ventas elegida, y también para alcanzar una meta de ganancia.
+- **Historial.** Una foto inmutable del costo de cada producto en cada cambio confirmado, con la explicación de qué lo movió.
+
+### Día a día
+
+- **Ventas.**
+  - Una caja para registrar una venta en segundos: productos en botones con el precio del canal, cliente, medio de pago o «queda debiendo», y atajos de teclado.
+  - Una lista por día, semana o mes, filtrable por lo pendiente de cobrar o de entregar.
+  - Acciones en grupo: cobrar, entregar, cambiar de canal o anular varias ventas a la vez.
+- **Cobros.** Lo cobrado, lo que cada cliente debe y el medio de pago de cada venta.
+- **Clientes.** Ficha con historial y estado (nuevo, frecuente, en riesgo). Cada cliente puede tener un canal habitual, un descuento general y precios acordados por producto, que se aplican solos al venderle.
+- **Canales.** Comisiones, costo de entrega y ajuste de precio de cada canal, cuánto vendió cada uno y cuánto queda por unidad en cada canal.
+- **Compras.** Compras de insumos, gastos e inversiones, con comprobante y proveedor. Al comprar un insumo se propone su proveedor habitual y se muestra el último precio que cobró.
+- **Proveedores.** Lo que vende cada proveedor y cómo cambiaron sus precios.
+- **Entregas.** Zonas de reparto con días y costos, hoja de ruta del día con enlace a Google Maps y envío por WhatsApp.
+- **Resultado del mes.** Ventas, costo variable, gastos fijos y resultado, con lecciones a partir de los propios números.
+- En todos los casos, el cliente o el proveedor se elige de la lista o se crea en el momento, nunca como texto libre.
+
+### Cozte AI
+
+- **Conversación con herramientas reales.** Registra productos, recetas, compras, ventas, cobros y entregas; calcula, simula escenarios y arma gráficos y presentaciones.
+- **Archivos adjuntos.** Lee imágenes, PDF y Excel, como la foto de un remito o una lista de precios.
+- **Nivel de explicación.** Simple, Medio o Avanzado, elegido por cada persona.
+- **Recorrido de descubrimiento.** Guía por etapas: qué se produce, los insumos, dónde se produce, cómo se vende y cómo se entrega. Tiene dos modos:
+  - **Proyecto:** evaluar una idea con estimaciones antes de invertir.
+  - **En marcha:** ordenar un negocio que ya vende.
+
+  Las etapas se configuran sin desplegar código y habilitan secciones a medida que se completan.
+- **Precios de mercado.** Búsqueda de precios actuales en la web, siempre con página y fecha. Cada precio puede quedar fijo, seguir al mercado (se actualiza solo cada mes) o servir solo de referencia.
+- **Presentaciones.** Informes listos para compartir con un enlace público.
+
+### Multimoneda y país
+
+- Registra 18 monedas: las que no usan centavos (CLP, ARS, COP, PYG, CRC, UYU, DOP) en unidades enteras, y USD, EUR, BRL, MXN, PEN y otras con centavos.
+- Las compras en moneda extranjera se convierten al tipo de cambio de su fecha.
+- La fecha y la hora se calculan en la zona horaria de la empresa.
+
+## Cómo está hecho
+
+```mermaid
+flowchart LR
+  U[Navegador] --> W["apps/web<br/>Next.js en Vercel"]
+  W -->|Clerk| A[(Autenticación y organizaciones)]
+  W -->|"HMAC firmado"| B["apps/data-bridge<br/>Cloudflare Worker"]
+  B --> D[(Cloudflare D1)]
+  W --> R[(Cloudflare R2<br/>comprobantes privados)]
+  W --> G[Vercel AI Gateway]
+  W --> F[Búsqueda web y tipos de cambio]
+```
+
+| Capa | Tecnología | Función |
 | --- | --- | --- |
-| Web y API de producto | `apps/web`, Vercel | Next.js, Clerk, motor de costos, AI SDK 7, rutas privadas y cron. |
-| Persistencia | Cloudflare D1 | Empresas, productos, insumos, precios versionados, gastos, decisiones, auditoría y alertas. |
-| Archivos | Cloudflare R2 | Comprobantes privados por empresa. |
-| Adaptador de datos | `apps/data-bridge`, Cloudflare Worker | Ejecuta consultas D1 firmadas con HMAC desde la API en Vercel; no expone endpoints de negocio. |
+| Aplicación y API | Next.js 16, React 19, Tailwind CSS 4, en Vercel | Interfaz, rutas de API, cron y el agente |
+| Autenticación | Clerk | Sesiones y organizaciones: cada empresa es una organización |
+| Datos | Cloudflare D1, a través de un Worker propio | Empresas, costos, ventas, compras, clientes, auditoría |
+| Archivos | Cloudflare R2 | Comprobantes privados por empresa |
+| Agente | AI SDK 7 y Workflow (ejecución durable), Vercel AI Gateway | Cozte AI con herramientas, modelo configurable |
 
-El motor de costos es determinístico: un precio compartido se registra una vez y recalcula todos los productos que lo consumen. El costo por unidad es (insumos del lote + mano de obra directa del lote + la parte del lote en los gastos compartidos del mes) ÷ unidades buenas del lote. Cada gasto compartido es un monto mensual que se reparte por actividad del mes —horas por lote × lotes al mes, unidades buenas × lotes al mes o porcentajes acordados— y cada lote carga solo su parte. Si un producto no tiene lotes al mes, el motor supone uno y marca el costo como **estimado** con ese supuesto explícito; si falta un dato esencial (por ejemplo, el precio de un insumo usado) el costo queda **incompleto** y se muestra el costo conocido hasta ahora. Con precio de venta, el motor también calcula margen, margen de contribución y punto de equilibrio mensual. La IA no hace la aritmética financiera.
+### Principios de diseño
 
-Reglas contables del resultado y los registros:
+- **Un motor de costos determinístico.** Toda la aritmética financiera ocurre en código puro y probado (`apps/web/lib`), no en el modelo de lenguaje. El costo por unidad es (insumos del lote + mano de obra del lote + la parte del lote en los gastos compartidos del mes) ÷ unidades buenas del lote. Un costo al que le falta un dato queda marcado como *estimado* o *incompleto*, con el supuesto a la vista.
+- **El agente solo afirma lo que hizo.** Cada respuesta de Cozte pasa por un verificador determinístico (`lib/cozte-response-verifier.ts`) antes de mostrarse. Lo contrasta con los recibos de las herramientas del turno: cambios que no se guardaron, cifras que no salieron de un cálculo, preguntas o listas anunciadas que no aparecen. La respuesta que no pasa se corrige o se reemplaza por una armada solo con esos recibos. Una segunda revisión evalúa si la respuesta sirve a la persona.
+- **Registros que no se mueven solos.** Una venta fija el precio cobrado y el costo de cada producto del día en que se hizo. Corregir un costo después no reescribe el pasado, y cada cambio queda en la auditoría.
+- **Idempotencia y concurrencia.** Las escrituras llevan clave de idempotencia y control de revisión, así que un reintento del agente o de la red no duplica datos.
 
-- **Precisión por moneda.** CLP, ARS, COP, PYG, CRC, UYU y DOP se registran en unidades enteras; USD, EUR, BRL, MXN, PEN, BOB, GTQ, HNL, NIO, PAB y BZD, con centavos. El motor calcula en la unidad mínima de cada moneda para que los repartos cuadren exactos. Los precios de insumos conservan sus milésimas hasta multiplicarse por el consumo del lote.
-- **Costeo variable.** El resultado del mes descuenta los insumos y la mano de obra de lo vendido. Ese costo queda fijado con cada venta al costo del día de la venta: una venta cargada con retraso usa la última foto de costo completa de esa fecha. Si al registrarla faltaba un costo, se estima con el de hoy y se informa aparte. Los gastos del taller cuentan como gastos fijos del mes.
-- **Gastos por período.** Cada mes usa los gastos mensuales vigentes en ese mes. Al iniciar un período nuevo, los gastos del anterior continúan con sus montos (se copian) y el período anterior queda en el historial.
-- **Inversiones.** Se deprecian en línea recta durante su vida útil, y las cuotas suman exactamente el precio.
-- **Compras en otra moneda.** Se convierten al tipo de cambio de su fecha (o al de la factura, si se indica). Los insumos comprados son caja, no gasto del mes.
-- **Entregas.** Una entrega cancelada o quitada no tiene costo. El punto de equilibrio incluye las compras consumidas en el mes, de modo que vender ese monto significa no perder.
+<details>
+<summary><strong>Reglas contables del motor</strong></summary>
 
-**Punto de equilibrio en tres pasos** (`lib/break-even.ts`, sección «Punto de equilibrio» y `readBreakEven`). 1) Los costos fijos del mes en una lista que suma por categoría: las partes fijas de los gastos más la cuota del mes de las inversiones. 2) La ficha de cada producto: lo que cuesta hacer y vender una unidad (insumos, mano de obra, la parte variable de los gastos y el gasto de venta) y lo que deja. 3) La mezcla de ventas, por unidades o por facturación. El resultado dice cuántas unidades y cuánto dinero vender de cada producto para cubrir los fijos, y también para una meta de ganancia. Cómo se comporta cada gasto es una opción del motor, no una regla fija: fijo, variable (crece con cada unidad, tanda u hora de producción) o mixto (qué parte crece), con su motivo. La parte variable se reparte por ese impulsor y pasa al costo de cada unidad; la parte fija se reparte como siempre. Esa elección continúa al empezar un período nuevo. La mezcla (`sales_mix_plans`) puede salir de lo vendido el mes pasado, del plan de producción o de partes iguales, o puede ser la que dice la persona; en automático usa la primera con datos. Cozte recomienda según el caso, pregunta con opciones solo lo que cambia el resultado y guarda cada decisión con `setCostBehavior` o `setSalesMix`. Cada supuesto queda a la vista (los no revisados se marcan) y hay alertas cuando lo vendido se aleja de la mezcla elegida. El resultado del mes sigue usando costeo variable sobre insumos y mano de obra, sin cambios.
+- **Precisión por moneda.** El motor calcula en la unidad mínima de cada moneda para que los repartos cuadren exactos. Los precios de insumos conservan sus milésimas hasta multiplicarse por el consumo del lote.
+- **Costeo variable.** El resultado del mes descuenta los insumos y la mano de obra de lo vendido, con el costo del día de cada venta. Una venta cargada con retraso usa la foto de costo de esa fecha. Los gastos del taller cuentan como gastos fijos del mes.
+- **Comportamiento de cada gasto.** Fijo, variable (crece con cada unidad, tanda u hora de producción) o mixto. La parte variable pasa al costo de cada unidad; la fija se cubre en el punto de equilibrio.
+- **Gastos por período.** Cada mes usa los gastos vigentes en ese mes. Al iniciar un período nuevo, los gastos continúan con sus montos y el anterior queda en el historial.
+- **Inversiones.** Se deprecian en línea recta durante su vida útil, y las cuotas suman exactamente el precio. Pueden sumarse al costo de cada producto o contar solo en el resultado del mes.
+- **Compras en otra moneda.** Se convierten al tipo de cambio de su fecha o al de la factura. Los insumos comprados son caja, no gasto del mes.
+- **Entregas.** Una entrega cancelada no tiene costo.
+- **Cobros.** Una venta queda cobrada salvo que se registre lo contrario. Una venta cobrada sigue cobrada si se corrige su total.
 
-El perfil de producción registra ubicación, etapas, productos, categorías acordadas, conversión compra/consumo y reparto de gastos mensuales, trimestrales o anuales. Se puede revisar en cualquier momento. Cada confirmación del perfil guarda una versión inmutable con su costeo calculado; cada cambio confirmado de la planilla guarda una foto del costo y los datos usados para cada producto. El historial muestra variación y una explicación inicial de su principal componente.
+</details>
 
-La planilla separa los costos en **variables** (los insumos de la receta, la mano de obra por lote y los gastos que crecen con la producción), **fijos** y **mixtos**, cada grupo con lo que suma en un mes normal (`lib/cost-behavior.ts`). Los insumos siempre son variables. El tipo de cada gasto se cambia desde la planilla, desde el punto de equilibrio o pidiéndoselo a Cozte (`setCostBehavior`). Permite buscar y filtrar por tipo de costo o categoría, con vistas de tabla, lista y tablero por categoría. En la tabla se editan en contexto los nombres, categorías, proveedor, unidad de compra, moneda, precio y período. Los repartos y consumos se configuran por costo y producto; los cambios de unidad, período o distribución que afectan el cálculo requieren confirmación. Los importes se autoguardan como **borrador privado en D1** y solo cambian los costos vigentes después de revisar el impacto, indicar fuente y fecha, y confirmar.
+## Estructura del repositorio
 
-Las categorías son nombres acordados con la empresa y viven en un catálogo por organización. Se pueden crear y renombrar en Costos de producción; renombrarlas actualiza los conceptos relacionados y el mapa confirmado o en borrador. La categoría organiza la información, mientras cada concepto conserva su propia distribución: consumo por producto para costos directos, o horas, unidades o porcentajes explícitos para costos compartidos. La sección ofrece tabla editable, lista y tablero por categoría. Cozte puede proponer esas mismas operaciones en el chat; la persona revisa los campos y pulsa «Aplicar». Al confirmar el mapa de producción, sus categorías y las asignaciones por nombre de costos ya existentes se sincronizan con la planilla. Los costos nuevos del mapa se incorporan mediante propuestas aprobadas individualmente, para no crear importes vigentes sin revisión.
+La documentación técnica de la aplicación (módulos, tablas, herramientas de Cozte y decisiones de diseño) está en [`apps/web/README.md`](apps/web/README.md).
 
-### Cozte AI (harness del agente)
-
-El espacio de trabajo abre en Cozte AI (`/app`); el resumen está en `/app/resumen`. La primera vez, el propietario de una empresa nueva responde tres datos en dos pasos: su nombre, el nombre de la empresa y el país. El país fija la moneda principal, que se puede cambiar mientras no haya costos cargados. Con eso Cozte arranca: saluda por el nombre y ya conoce la empresa (`lib/server/onboarding.ts`, migración `0036`). El nombre de la empresa también se cambia desde «Tu empresa», en la cabecera.
-
-**Ventas para el día a día y canales aparte** (`components/business/sales-section.tsx`, `sale-register.tsx`, `payment.tsx`, `channels-section.tsx`). Cozte es la vía rápida para entender el negocio; Ventas es el panel clásico para operar sin el chat, y los dos ven los mismos datos al instante.
-- Arriba, el día: lo vendido hoy, lo que deben los clientes (de cualquier mes) y lo que hay que entregar hoy, con las atrasadas.
-- La caja registra una venta en un paso: productos en botones con su precio del canal (o buscar y Enter), canal, cliente, medio de pago o «queda debiendo», y Ctrl+Enter para registrar. «Repetir» carga una venta anterior en la caja.
-- La lista se ve por hoy, esta semana o un mes, o filtrada por cobrar o por entregar. Se pueden elegir varias ventas para marcarlas cobradas o entregadas, cambiarles el canal o anularlas.
-- Cobros (migración `0039`): cada venta guarda lo cobrado (`paid_minor`), el medio de pago y el día en que quedó saldada. Una venta nueva queda cobrada salvo que se diga otra cosa; una venta cobrada sigue cobrada si se corrige. Las ventas anteriores quedaron como cobradas el día de la venta. Clientes muestra cuánto debe cada uno. Cozte registra cobros con `recordSale` y `updateSale` (`paidAmount`, `markPaid`, `paymentMethod`) y ve lo adeudado en `readBusiness`.
-- El cliente de una venta siempre es un cliente de la empresa: se busca y elige, o se crea ahí mismo. Cada cliente puede tener un canal habitual, un descuento o recargo sobre el precio del canal y precios fijos por producto (migración `0040`, tabla `customer_prices`). Sus ventas toman solas ese canal (cuando no dicen otro) y esos precios (donde no se escribe uno), desde la caja, el formulario o Cozte (`saveCustomer` con `channel`, `priceAdjustmentPercent`, `prices`). Se editan en la ficha del cliente.
-- En Compras pasa lo mismo con el proveedor: se elige de la lista o se crea ahí mismo con su tipo, en el formulario, la tabla y el celular. Al elegir un insumo se propone su proveedor habitual y se muestra lo que ese proveedor cobró la última vez, con el total sugerido para la cantidad.
-- Canales es una sección propia: cada canal con su comisión, entrega y precio, cómo vendió en el mes y cuánto queda por unidad en cada uno.
-
-**Recorrido de descubrimiento** (`lib/journey.ts`, `lib/server/journey.ts`). El onboarding pregunta cuánto sabe la persona de costos (nivel Simple, Medio o Avanzado) y si la empresa ya vende. La respuesta elige el modo: **Proyecto** (descubrir y evaluar con estimaciones) o **En marcha** (registrar y ordenar lo real).
-- Cada modo tiene un recorrido de etapas: qué producís, insumos, dónde producís, dónde vendés y cómo entregás. Cada etapa se completa con reglas sobre los datos de la empresa (por ejemplo, «un producto con su receta»), nunca por lo que diga Cozte.
-- Las etapas abren secciones del menú. En Simple y Medio, lo que todavía no se abrió se ve atenuado con un candado y una pantalla que explica qué falta; en Avanzado todo está visible, con etiquetas de lo que falta. Lo abierto queda abierto (`module_unlocks`), y las empresas que ya tenían datos ven todo.
-- Los recorridos son datos: se editan desde el panel de superadmin (tabla `journey_definitions`, validados con zod) sin publicar una versión nueva, y se miden por etapa (`journey_progress`: cuándo empezó y cuándo se completó). Solo una regla de completitud nueva requiere código.
-- La receta cuenta como completa solo cuando la persona lo confirma (`confirmRecipe`, regla `recipe_confirmed` de la etapa de insumos). Si Cozte ve algo que un producto así suele llevar, la primera vez no confirma: lo sugiere y pregunta; si en el mensaje siguiente la persona insiste en que está completa, se confirma.
-- Al cambiar entre Proyecto y En marcha se borran las etapas empezadas y no terminadas del recorrido anterior; las completadas quedan como historia.
-- Cozte recibe en cada turno el modo, el estado de cada etapa y qué averiguar en la actual. Conduce la etapa con preguntas cortas y opciones, pero atiende primero cualquier otro pedido. Con `setBusinessMode` pasa un proyecto a En marcha y guarda lo estimado como plan (`business_plans`) para compararlo con lo real.
-
-**Precios desde la web** (`lib/server/web-search.ts`, `lib/server/market-prices.ts`). Cozte busca precios actuales con `searchWebPrices` (Firecrawl, `FIRECRAWL_API_KEY`) y los muestra con su página y fecha. Lee solo las líneas con precios, y lo que dicen las páginas es dato, nunca instrucción. Cada empresa tiene un tope de búsquedas por mes (`COZTE_WEB_SEARCH_MONTHLY_LIMIT`, 60 por defecto; tabla `web_searches`). Cada precio tiene una política que decide la persona (`setPricePolicy`, tabla `price_watches`):
-- **propio:** Cozte no lo toca;
-- **mercado mensual:** el cron `/api/cron/market-prices` lo busca de nuevo cada mes. Aplica los cambios chicos con su fuente; si el cambio supera `COZTE_MARKET_CHANGE_TO_CONFIRM` (15 %), pide confirmación y Cozte lo menciona. Un precio solo se acepta si ese número está escrito en la página citada;
-- **referencia:** no se usa como precio real hasta que la persona lo confirme.
-
-Cozte corre como un workflow durable en Vercel (`lib/server/cozte-workflow.ts`) con un modelo del AI Gateway configurable (`COZTE_MODEL`, `COZTE_FALLBACK_MODELS`, `COZTE_REASONING_EFFORT`). Trabaja sobre la misma base que la planilla con herramientas como estas (`lib/server/cozte-agent-tools.ts`): `readCosts` (foto y desglose por producto), `calculate` (calculadora exacta), `simulate` (escenarios sin guardar), `saveProduct`, `saveMaterial`, `saveRecipe` (por lote o por unidad, con conversión g↔kg, ml↔l, cm↔m), `saveExpense` (equivalente mensual y reparto), `saveCategory`, `removeItem` (bajas, siempre con confirmación en pantalla) y `saveNote` (decisiones que se recuerdan entre conversaciones, tabla `cozte_notes`). Las referencias se resuelven por ID o nombre sin adivinar: ante ambigüedad la herramienta devuelve las opciones. Las escrituras paralelas se reintentan contra la última revisión y son idempotentes por llamada.
-
-Cada turno empieza con la foto vigente de costos en las instrucciones (`lib/server/cozte-instructions.ts`), y el historial guarda las llamadas reales a herramientas con su resultado, no solo el texto. Antes de dar por buena una respuesta, un verificador determinístico (`lib/cozte-response-verifier.ts`) la contrasta con los recibos del turno: si afirma cambios que ninguna herramienta confirmó, muestra identificadores que no salieron de un resultado o expone detalles internos, esa respuesta se retira de la pantalla y el modelo recibe una corrección; si vuelve a fallar, se muestra una respuesta armada solo con los recibos. Las evaluaciones con modelo real están en `lib/server/cozte-agent.eval.test.ts` y las pruebas de herramientas contra D1 en `lib/server/cozte-agent-tools.integration.test.ts` (requieren `wrangler dev` del bridge; ver cada archivo).
-
-Las bajas pedidas por Cozte se guardan como propuestas en `assistant_proposals`, con su historial en `assistant_proposal_events`; la aprobación y la aplicación ocurren en una sola operación D1 con control de revisión.
-
-## Estado de la infraestructura
-
-- **Orden de despliegue de la revisión contable.** Primero, desplegar el worker `cozte-d1-bridge` (`npm run deploy` en `apps/data-bridge`): ahora acepta montos con centavos. Luego, aplicar la migración `0033` (`npm run db:remote`), que deja en 0 el costo de entrega de las ventas con entrega cancelada o quitada y registra el monto anterior en la auditoría. Por último, desplegar la web.
-
-- Cloudflare **Lightning CloudWave** (`b16b057db473a7ca309e70724394acb6`): D1 `claro-costos-db` creado; migraciones `0001` a `0018` aplicadas remotamente; `0019` (lotes al mes y notas de Cozte) debe aplicarse antes de desplegar esta versión. Wrangler capturó un backup al aplicar `0013_assistant_proposals.sql`.
-- Worker `cozte-d1-bridge` desplegado con `DATA_BRIDGE_SECRET`; la conexión firmada desde Vercel fue verificada. Su URL se utiliza solo desde el servidor de Vercel.
-- R2 está habilitado y el bucket privado `cozte-documents` fue creado. Las variables S3 están en Vercel Production; falta verificar una carga autenticada desde la aplicación.
-- La aplicación Clerk **Cozte** (`app_3Jf9dlY7bLusslTQ1YTsxlPCbxG`) tiene instancia de producción (`ins_3JfBfzn3opJsD1vzLOLZyZJwexb`), organizaciones habilitadas e ingreso por correo. Las claves de producción están en Vercel; los cinco CNAME requeridos se crearon en Vercel DNS y Clerk verificó DNS, SSL y correo. Google OAuth queda desactivado por decisión del equipo.
-- El proyecto Vercel `lightningteam/cozte` importa `main` con Root Directory `apps/web`. `cozte.com` y `www.cozte.com` responden; las rutas privadas exigen sesión.
+```
+apps/
+  web/                    Aplicación Next.js
+    app/                  Rutas: landing, /demo, /app (espacio de trabajo), /api
+    components/           Interfaz (secciones del negocio, chat de Cozte, gráficos)
+    lib/                  Motor de costos y reglas de negocio, puro y probado
+    lib/server/           Acceso a datos, herramientas y workflow de Cozte, integraciones
+  data-bridge/            Cloudflare Worker que ejecuta consultas D1 firmadas
+    migrations/           Migraciones SQL de D1, en orden
+PLAN_IMPLEMENTACION_MVP.md  Plan de producto, hipótesis y evolución
+MOCKUPS_UX_MVP.html         Exploración de UX inicial
+```
 
 ## Desarrollo local
 
-1. Instala dependencias en `apps/web` y `apps/data-bridge` con `npm ci`.
-2. En `apps/data-bridge`, ejecuta `npm run db:local` y `npm run dev`; para pruebas locales, configura `DATA_BRIDGE_SECRET` en `.dev.vars` (mínimo 32 caracteres; no lo subas).
-3. En `apps/web`, copia `.env.example` a `.env.local` y configura Clerk, `DATA_BRIDGE_URL` y el mismo secreto. Ejecuta `npm run dev`.
-4. Visita `/` para la landing pública o `/demo` sin necesidad de D1 o R2. La aplicación real está en `/app` y requiere sesión y organización en Clerk.
+Requisitos: Node.js 22 o superior, npm y una cuenta de Clerk con Organizations habilitado. Para el chat de Cozte hace falta además una clave del Vercel AI Gateway.
 
-Comprobaciones: `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` en `apps/web`; `npm run typecheck`, `npm run deploy:dry`, `npm run smoke` en `apps/data-bridge`. La prueba visual web es `npm run smoke` con el servidor en `localhost:3000`; si Playwright no tiene Chromium instalado, instala su navegador o usa `CHROME_PATH` para apuntar a Chrome.
+```bash
+# 1. Dependencias
+cd apps/data-bridge && npm ci
+cd ../web && npm ci
 
-## Puesta en marcha del proyecto Vercel existente
+# 2. Base de datos local y el Worker
+cd ../data-bridge
+cp .dev.vars.example .dev.vars        # DATA_BRIDGE_SECRET de 32 caracteres o más
+npm run db:local
+npm run dev
 
-1. El repositorio y **Root Directory `apps/web`** ya están enlazados. Las variables de `apps/web/.env.example` van en Vercel como secretos, nunca en código.
-2. El secreto `DATA_BRIDGE_SECRET` ya está instalado en Cloudflare y Vercel Production y la conexión firmada fue verificada. `DATA_BRIDGE_URL` también está configurada.
-3. El primer usuario y su empresa ya ingresaron en producción; se verificaron el dashboard, la membresía en D1 y consultas privadas con respuesta 200. El piloto usa correo con código; Google OAuth no está activado.
-4. Verificar una carga autenticada de PDF/imagen pequeña. El token R2 con permiso **Object Read & Write** limitado a `cozte-documents` y las cuatro variables `R2_*` ya están en Vercel Production, pero las variables sensibles no se exportan a pruebas locales.
-5. `CRON_SECRET` y `AI_GATEWAY_API_KEY` están configurados en Vercel Production. Cozte exige esta clave explícita, también en desarrollo, para atribuir el consumo al proyecto. Los cron en `apps/web/vercel.json` revisan a diario insumos sin precio, actualizan una vez al día los precios de mercado que vencen y publican/revalorizan cotizaciones cada hora. La búsqueda web necesita `FIRECRAWL_API_KEY`; sin ella, Cozte pide los precios a la persona.
-6. `FXRATES_API_KEY` es opcional y permite asociar consultas FXRatesAPI a una cuenta propia; el endpoint público funciona sin clave. Añádela solo en Vercel Production y vuelve a desplegar. Verifica el cupo y la frecuencia del plan en el panel del proveedor antes de depender del nivel gratuito.
-7. Probar alta de empresa, carga de varios productos, actualización compartida, gastos, chat, archivos y revisión de permisos antes de invitar usuarios. El propietario gestiona el dominio y sus DNS.
+# 3. Aplicación web
+cd ../web
+cp .env.example .env.local            # Clerk, DATA_BRIDGE_URL y el mismo secreto
+npm run dev
+```
 
-## Alcance del piloto y límites
+- `/` es la landing pública.
+- `/demo` es una empresa de ejemplo que funciona completa en el navegador, sin base de datos ni cuenta.
+- `/app` es el espacio de trabajo real y requiere iniciar sesión.
 
-Se implementó el flujo principal de costeo y actualización. El perfil estructurado calcula una estimación vigente; el costo real por lote y el escenario/objetivo aún no tienen captura independiente. Las pérdidas extraordinarias se detectan como brecha de rendimiento, pero no se cuantifican en una cuenta separada; tampoco se calcula capacidad ociosa. La carga de evidencias almacena archivos privados, pero **no extrae automáticamente datos de facturas**; el chat lee un extracto de Excel, no una importación masiva. Las reglas fiscales, integraciones con proveedores y conciliación no están incluidos. La moneda base y los costos en moneda extranjera ya funcionan para las monedas disponibles, pero no hay reglas fiscales ni tipos de cambio oficiales de cada país; VES no aparece en el catálogo actual del proveedor. No usar el resultado como sustituto de contabilidad o asesoría profesional.
+### Variables de entorno (`apps/web`)
 
-El [plan de implementación](PLAN_IMPLEMENTACION_MVP.md) desarrolla producto, hipótesis y evolución. El [mockup HTML](MOCKUPS_UX_MVP.html) conserva la exploración de UX.
+| Variable | Uso |
+| --- | --- |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY` | Autenticación |
+| `DATA_BRIDGE_URL`, `DATA_BRIDGE_SECRET` | Conexión firmada con el Worker de datos (solo servidor) |
+| `AI_GATEWAY_API_KEY` | Cozte AI |
+| `COZTE_MODEL`, `COZTE_FALLBACK_MODELS`, `COZTE_THINKING_BUDGET` | Modelo del agente y modelos de respaldo (opcional) |
+| `COZTE_QUALITY`, `COZTE_QUALITY_MODEL`, `COZTE_QUALITY_MAX_MS` | Revisión de calidad de cada respuesta (opcional) |
+| `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | Comprobantes en R2 |
+| `CRON_SECRET` | Autoriza las tareas programadas |
+| `FIRECRAWL_API_KEY`, `COZTE_WEB_SEARCH_MONTHLY_LIMIT`, `COZTE_MARKET_CHANGE_TO_CONFIRM` | Precios desde la web (opcional) |
+| `FXRATES_API_KEY` | Cuota propia de tipos de cambio (opcional) |
+
+Ninguna clave va en el código: todas viven en `.env.local` en desarrollo y en las variables del proyecto en producción.
+
+## Pruebas
+
+```bash
+cd apps/web
+npm run typecheck && npm run lint && npm run test
+```
+
+- **Unitarias** (Vitest): el motor de costos, las reglas contables, el verificador del agente y la lógica de cada sección. Son más de 300 pruebas.
+- **Integración contra D1**: los archivos `*.integration.test.ts` corren contra el Worker local. Para correrlas, levanta `wrangler dev` y define `COZTE_BRIDGE_TEST_URL`.
+- **Evaluaciones del agente**: `lib/server/cozte-agent.eval.test.ts` conversa con el modelo real sobre escenarios del negocio (registrar una venta debida, guardar un acuerdo de precios, buscar precios en la web, completar una receta). Mide si Cozte hizo lo correcto y si su respuesta pasó el verificador. Requieren `AI_GATEWAY_API_KEY` y el Worker local.
+- **Prueba visual**: `npm run smoke` recorre la aplicación con Playwright.
+
+En `apps/data-bridge`: `npm run typecheck`, `npm run deploy:dry` y `npm run smoke`.
+
+## Despliegue
+
+1. **Cloudflare.** Crear la base D1 y un bucket R2 privado. Desplegar el Worker de `apps/data-bridge` con `DATA_BRIDGE_SECRET` como secreto y aplicar las migraciones con `npm run db:remote`.
+2. **Vercel.** Importar el repositorio con Root Directory `apps/web` y cargar las variables de entorno. Las tareas programadas están en `apps/web/vercel.json`:
+   - revisión diaria de insumos sin precio;
+   - actualización mensual de los precios de mercado vencidos;
+   - tipos de cambio cada hora.
+3. **Orden.** Cuando una versión trae migraciones nuevas, se aplican antes de desplegar la web.
+
+## Alcance y límites
+
+Cozte está en etapa piloto. Hoy **no** incluye:
+
+- reglas fiscales, facturación electrónica ni conciliación bancaria;
+- importación masiva de facturas (Cozte lee un comprobante adjunto en el chat y lo registra, de a uno);
+- integraciones directas con plataformas de venta o proveedores;
+- costeo real por lote cargado aparte del estimado, cuentas separadas de pérdidas extraordinarias ni capacidad ociosa.
+
+Los resultados de Cozte ayudan a decidir, pero no reemplazan la contabilidad ni el asesoramiento profesional.
+
+## Seguridad
+
+- Cada empresa es una organización de Clerk, y todas las consultas se filtran por organización en el servidor.
+- La base de datos no es accesible desde el navegador: la aplicación llama a un Worker propio con solicitudes firmadas (HMAC), que solo ejecuta consultas.
+- Los comprobantes se guardan en un bucket privado y se sirven con enlaces temporales.
+- Lo que el agente lee de páginas web, archivos o datos cargados se trata como dato, nunca como instrucción.
+
+Si encuentras una vulnerabilidad, repórtala de forma privada desde la pestaña **Security** del repositorio en lugar de abrir un issue público.
+
+## Licencia
+
+Este repositorio no incluye una licencia de código abierto: el código es público para consulta y todos los derechos están reservados.
