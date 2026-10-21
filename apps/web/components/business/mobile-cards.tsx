@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
 import { cn } from "@/lib/utils";
 import { DELIVERY_TONE, DeliveryStatusBadge, relativeDay } from "./delivery-status";
+import { PaymentBadge } from "./payment";
 
 /**
  * Sales and deliveries as cards for a phone: the fields that matter first, one tap to mark a delivery as done,
@@ -93,9 +94,10 @@ function DeliveryEditDialog({ delivery, onClose, onSave, onRemove }: { delivery:
   </DialogContent></Dialog>;
 }
 
-export function SaleCards({ rows, today, channels, money, suggestions, onUpdate, onArchive, onEditItems, onOpenDeliveries }: {
+export function SaleCards({ rows, today, channels, money, suggestions, onUpdate, onArchive, onEditItems, onOpenDeliveries, onCollect, onRepeat }: {
   rows: Sale[]; today: string; channels: SalesChannel[]; money: (value: number) => string; suggestions: Suggestion[];
   onUpdate: (sale: Sale, patch: SalePatch, message?: string) => Promise<boolean>; onArchive: (sale: Sale) => void; onEditItems: (sale: Sale) => void; onOpenDeliveries?: () => void;
+  onCollect?: (sale: Sale) => void; onRepeat?: (sale: Sale) => void;
 }) {
   const [editing, setEditing] = React.useState<Sale | null>(null);
   if (!rows.length) return <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">No hay ventas con estos filtros.</p>;
@@ -114,13 +116,15 @@ export function SaleCards({ rows, today, channels, money, suggestions, onUpdate,
           <p className="text-base font-medium">{sale.customer || "Sin cliente"}</p>
           <p className="text-sm text-muted-foreground">{saleItemsText(sale.items)}</p>
           <div className="grid grid-cols-2 gap-2 text-sm">
-            <div className="rounded-lg bg-muted/60 px-2.5 py-1.5"><p className="text-[11px] text-muted-foreground">Cobrado</p><p className="font-semibold tabular-nums">{money(sale.totalMinor)}</p></div>
+            <div className="rounded-lg bg-muted/60 px-2.5 py-1.5"><p className="text-[11px] text-muted-foreground">Total</p><p className="font-semibold tabular-nums">{money(sale.totalMinor)}</p></div>
             <div className="rounded-lg bg-muted/60 px-2.5 py-1.5"><p className="text-[11px] text-muted-foreground">Te dejó</p><p className={cn("font-semibold tabular-nums", left !== null && left < 0 && "text-destructive")}>{left === null ? "Costo incompleto" : money(left)}</p></div>
           </div>
           {sale.note ? <p className="text-xs">{sale.note}</p> : null}
+          <PaymentBadge sale={sale} money={money} onClick={onCollect ? () => onCollect(sale) : undefined} className="self-start text-sm" />
           <div className="flex items-center gap-2 pt-1">
             <Button type="button" variant="outline" className="h-10 flex-1" onClick={() => setEditing(sale)}><AnimatedIcon name="edit" data-icon="inline-start" />Editar</Button>
             <Button type="button" variant="outline" className="h-10" onClick={() => onEditItems(sale)}>Productos</Button>
+            {onRepeat ? <Button type="button" variant="ghost" size="icon" className="size-10" aria-label="Repetir esta venta" onClick={() => onRepeat(sale)}><AnimatedIcon name="refresh" /></Button> : null}
             <Button type="button" variant="ghost" size="icon" className="size-10" aria-label="Anular venta" onClick={() => onArchive(sale)}><AnimatedIcon name="delete" /></Button>
           </div>
         </li>;

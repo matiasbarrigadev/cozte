@@ -15,7 +15,7 @@ import { addAssistantToolEvent, errorDetails } from "./assistant-trace";
 import { commitMutation, mutationSchema } from "./mutations";
 import { createMutationProposal } from "./assistant-proposals";
 import { archiveCozteNote, loadCozteNotes, saveCozteNote } from "./cozte-notes";
-import { AREA_LABELS, PURCHASE_KIND_LABELS, channelEconomics, investmentShare } from "@/lib/business";
+import { AREA_LABELS, PAYMENT_METHODS, PAYMENT_METHOD_LABELS, PAYMENT_STATUS_LABELS, PURCHASE_KIND_LABELS, channelEconomics, investmentShare, salePayment, type Sale } from "@/lib/business";
 import { archiveRecord, loadBusinessView, loadChannels, loadDeliveries, organizationPlace, recordPurchase, recordSale, saveChannel, saveDelivery, updateSale } from "./business";
 import { DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, businessTimeZone, businessToday, daysFrom, isOpenDelivery, type DeliveryStatus } from "@/lib/business";
 import { resolveDocument } from "./documents";
@@ -202,6 +202,8 @@ export const cozteToolInputSchemas = {
     customer: z.string().trim().max(120).optional(),
     note: z.string().trim().max(300).optional(),
     receipt: receipt.optional().describe("Remito o factura: número del archivo adjunto en el mensaje (1, 2…) o su nombre"),
+    paidAmount: amount.optional().describe("Lo cobrado de la venta. Omítelo si pagó todo (lo habitual); 0 si quedó debiendo todo; un monto si pagó una parte (seña)"),
+    paymentMethod: z.enum(PAYMENT_METHODS).optional().describe("Cómo pagó, si lo dice: cash (efectivo), transfer (transferencia), debit (débito) o credit (crédito)"),
     delivery: z.object({ ...deliveryDetails, status: deliveryStatus.optional() }).optional().describe("Datos de la entrega si la persona los da. No pidas la dirección antes de registrar: sin dirección se usa sola la principal del cliente y el recibo avisa si no tiene ninguna; sin fecha, el próximo día de salida de su zona (o la fecha de la venta), con el costo de la zona. Si el canal entrega, la entrega se crea igual; para que haya entrega en un canal que no entrega, pasa delivery: {}"),
   }),
   updateSale: z.object({
@@ -213,6 +215,9 @@ export const cozteToolInputSchemas = {
     items: z.array(z.object({ product: reference, quantity: z.number().positive().max(1_000_000_000), unitPrice: amount.optional().describe("Si se omite, se mantiene el precio cobrado (o el de lista si el producto es nuevo)") })).min(1).max(40).optional().describe("La lista completa de productos de la venta, ya corregida"),
     deliveryCost: amount.optional().describe("Lo que costó entregar este pedido"),
     fillMissingCosts: z.boolean().optional().describe("true completa con el costo de hoy los productos que no tenían costo completo al registrarse la venta (\"costo incompleto\"); cambia lo que dejó la venta. Pregúntalo antes si la persona no lo pidió"),
+    markPaid: z.boolean().optional().describe("true: el cliente terminó de pagar la venta"),
+    paidAmount: amount.optional().describe("Todo lo cobrado hasta ahora de la venta (lo de antes más lo nuevo), si pagó una parte"),
+    paymentMethod: z.enum(PAYMENT_METHODS).optional().describe("Cómo pagó: cash, transfer, debit o credit"),
   }),
   updateDelivery: z.object({
     delivery: z.string().min(1).max(120).optional().describe("ID de la entrega a cambiar (de readDeliveries)"),
@@ -389,9 +394,9 @@ const COZTE_TOOL_DESCRIPTIONS: Record<CozteToolName, string> = {
   saveNote: "Guarda, reemplaza o quita un hecho o decisión de la empresa para recordarlo en próximas conversaciones (ej. 'los sueldos se reparten por horas', 'el fundador no cobra sueldo fijo').",
   saveChannel: "Crea o modifica un canal de venta (local, feria, Instagram, Mercado Libre, mayorista…) con su comisión, cargo por venta, costo de entrega por pedido y ajuste de precio. Devuelve cuánto queda por unidad de cada producto en ese canal.",
   recordPurchase: "Registra una compra del día a día con su tipo y área, y le adjunta el comprobante. Un insumo con cantidad actualiza su precio; una inversión se reparte en su vida útil.",
-  recordSale: "Registra una venta: productos, cantidades y canal, con su remito o factura. Calcula lo cobrado, lo que cuesta vender y entregar, y lo que dejó.",
+  recordSale: "Registra una venta: productos, cantidades y canal, con su remito o factura, y si se cobró (todo, una parte o nada) y cómo. Calcula el total, lo que cuesta vender y entregar, y lo que dejó.",
   setInvestmentCost: "Guarda la decisión de la persona sobre una inversión del taller: si su parte mensual se suma al costo de cada producto o queda solo en el resultado del mes. Devuelve el costo antes y después.",
-  updateSale: "Corrige una venta ya registrada: fecha, canal, cliente, nota, productos (cantidades o precios) o costo de entrega. Conserva el precio cobrado y el costo de cada producto del día de la venta salvo que los cambies; recalcula lo que dejó y el resultado del mes.",
+  updateSale: "Corrige una venta ya registrada o registra su cobro (markPaid cuando terminó de pagar, paidAmount si pagó una parte): fecha, canal, cliente, nota, productos (cantidades o precios), costo de entrega o pago. Conserva el precio cobrado y el costo de cada producto del día de la venta salvo que los cambies; recalcula lo que dejó y el resultado del mes.",
   updateDelivery: "Cambia una entrega (fecha, franja, estado, quién recibe, dirección, zona, contacto, quién la lleva, seguimiento, nota o costo) o crea la entrega de una venta que no la tiene. Marcar 'delivered' registra la fecha de hoy. Cambiar la zona (o una dirección que cae en otra zona) aplica el costo de esa zona.",
   readDeliveries: "Lista las entregas del mes y todas las abiertas, la más cercana a hoy primero, con su estado, fecha, quién recibe, dirección, zona, quién la lleva, costo y la venta; y las zonas de entrega con su forma, costo, días, lo que cubren, cómo les fue en el mes y los lugares de clientes que no tienen zona.",
   readBreakEven: "Calcula el punto de equilibrio de un mes normal en tres pasos: los costos fijos (lista, total y cómo se comporta cada gasto), lo que cuesta hacer y vender una unidad de cada producto y lo que deja, y la mezcla de ventas; devuelve cuántas unidades y cuánto vender de cada producto para cubrir los fijos (y para la meta de ganancia), lo vendido este mes, los supuestos, sugerencias y alertas.",
@@ -840,13 +845,14 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       const recorded = await recordSale(principal, {
         soldOn: value.date ?? today(), channelId: channel?.item?.id ?? null, items, deliveryCost: value.deliveryCost,
         customer: value.customer ?? "", note: value.note ?? "", documentId: document?.id,
+        paidAmount: value.paidAmount, paymentMethod: value.paymentMethod,
         ...(value.delivery ? { delivery: { scheduledOn: value.delivery.date, timeWindow: value.delivery.timeWindow, recipient: value.delivery.recipient, address: value.delivery.address, contact: value.delivery.contact, carrier: value.delivery.carrier, tracking: value.delivery.tracking, note: value.delivery.note, status: value.delivery.status } } : {}),
       }, { source: "cozte", idempotencyKey: stableKey(input.runId, input.toolCallId) });
       const sale = recorded.sale;
       const left = sale.variableCostMinor === null ? null : sale.totalMinor - sale.variableCostMinor - sale.sellingCostMinor - sale.deliveryCostMinor;
       return {
         ok: true, ids: { sale: recorded.id },
-        done: [`Venta registrada: ${sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", ")} por ${sale.channelName}, total ${sale.totalMinor} ${state.organization.currency}`, ...(document ? [`Remito ${document.filename} adjuntado`] : []), ...(sale.delivery ? [`Entrega ${DELIVERY_STATUS_LABELS[sale.delivery.status].toLowerCase()} para el ${sale.delivery.scheduledOn}${sale.delivery.zoneName ? ` · zona ${sale.delivery.zoneName}${sale.delivery.carrier ? ` (${sale.delivery.carrier})` : ""}` : ""}${recorded.deliveryAddress ? ` · a ${recorded.deliveryAddress}` : " · sin dirección"}`] : [])],
+        done: [`Venta registrada: ${sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", ")} por ${sale.channelName}, total ${sale.totalMinor} ${state.organization.currency}`, paymentLine(sale, state.organization.currency), ...(document ? [`Remito ${document.filename} adjuntado`] : []), ...(sale.delivery ? [`Entrega ${DELIVERY_STATUS_LABELS[sale.delivery.status].toLowerCase()} para el ${sale.delivery.scheduledOn}${sale.delivery.zoneName ? ` · zona ${sale.delivery.zoneName}${sale.delivery.carrier ? ` (${sale.delivery.carrier})` : ""}` : ""}${recorded.deliveryAddress ? ` · a ${recorded.deliveryAddress}` : " · sin dirección"}`] : [])],
         ...(sale.delivery ? { delivery: { id: sale.delivery.id, status: sale.delivery.status, date: sale.delivery.scheduledOn, zone: sale.delivery.zoneName || undefined, carrier: sale.delivery.carrier || undefined, address: recorded.deliveryAddress ?? undefined, cost: sale.deliveryCostMinor } } : {}),
         ...(value.customer?.trim() ? { customer: recorded.newCustomer ? `${value.customer.trim()}: cliente nuevo, creado con esta venta` : `${value.customer.trim()}: ya estaba en tus clientes` } : {}),
         ...(!sale.delivery && recorded.customerAddress ? { noDelivery: `Sin entrega: el canal no entrega. ${value.customer} tiene la dirección ${recorded.customerAddress}; si hay que llevarlo, crea la entrega con updateDelivery (sale = ${recorded.id}) sin pedir la dirección.` } : {}),
@@ -876,7 +882,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
           items.push({ productId: product.item.id, quantity: item.quantity, unitPrice: item.unitPrice });
         }
       }
-      const sale = await updateSale(principal, value.sale, { soldOn: value.date, channelId, customer: value.customer, note: value.note, items, deliveryCost: value.deliveryCost, fillMissingCosts: value.fillMissingCosts }, "cozte").catch(async (error) => {
+      const sale = await updateSale(principal, value.sale, { soldOn: value.date, channelId, customer: value.customer, note: value.note, items, deliveryCost: value.deliveryCost, fillMissingCosts: value.fillMissingCosts, markPaid: value.markPaid, paidAmount: value.paidAmount, paymentMethod: value.paymentMethod }, "cozte").catch(async (error) => {
         if (!(error instanceof ApiError) || error.status !== 404) throw error;
         return null;
       });
@@ -887,7 +893,7 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
       }
       const left = sale.variableCostMinor === null ? null : sale.totalMinor - sale.variableCostMinor - sale.sellingCostMinor - sale.deliveryCostMinor;
       return {
-        ok: true, done: [`Venta corregida: ${sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", ")} por ${sale.channelName} el ${sale.soldOn}, total ${sale.totalMinor} ${state.organization.currency}`],
+        ok: true, done: [`Venta corregida: ${sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", ")} por ${sale.channelName} el ${sale.soldOn}, total ${sale.totalMinor} ${state.organization.currency}`, ...(value.markPaid || value.paidAmount !== undefined || value.paymentMethod ? [paymentLine(sale, state.organization.currency)] : [])],
         sale: { id: sale.id, date: sale.soldOn, channel: sale.channelName, total: sale.totalMinor, sellingCost: sale.sellingCostMinor, deliveryCost: sale.deliveryCostMinor, leftAfterSaleCosts: left },
       };
     }
@@ -1166,7 +1172,8 @@ async function runCozteTool(input: ToolStepInput): Promise<ToolResult> {
         fixedCostsPeriod: view.structure.period,
         resultNote: "Los gastos fijos son los vigentes en ese mes (fixedCostsPeriod). variableProductionCost incluye estimatedVariableCost: ventas registradas sin el costo de algún producto, estimadas con el costo de hoy (salesWithEstimatedCost); se fijan con updateSale fillMissingCosts. salesWithoutCost son ventas con un producto que todavía no tiene costo: esa parte no se descuenta y el resultado queda alto.",
         purchases: view.purchases.slice(0, 40).map((purchase) => ({ id: purchase.id, date: purchase.purchasedOn, description: purchase.description, amount: purchase.amountMinor, kind: PURCHASE_KIND_LABELS[purchase.kind], area: AREA_LABELS[purchase.area], hasReceipt: Boolean(purchase.documentId) })),
-        sales: view.sales.slice(0, 40).map((sale) => ({ id: sale.id, date: sale.soldOn, channel: sale.channelName, customer: sale.customer || undefined, total: sale.totalMinor, deliveryCost: sale.deliveryCostMinor, items: sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", "), hasReceipt: Boolean(sale.documentId), delivery: sale.delivery ? `${DELIVERY_STATUS_LABELS[sale.delivery.status]} (${sale.delivery.scheduledOn})` : "sin entrega" })),
+        owed: { total: view.receivable.totalMinor, sales: view.receivable.sales, oldest: view.receivable.oldestOn, list: view.owed.slice(0, 20).map((sale) => ({ id: sale.id, date: sale.soldOn, customer: sale.customer || sale.channelName, total: sale.totalMinor, owes: salePayment(sale).owedMinor })), note: "Lo que deben los clientes, de cualquier mes. Un cobro se registra con updateSale (markPaid o paidAmount)." },
+        sales: view.sales.slice(0, 40).map((sale) => ({ id: sale.id, date: sale.soldOn, channel: sale.channelName, customer: sale.customer || undefined, total: sale.totalMinor, payment: `${PAYMENT_STATUS_LABELS[salePayment(sale).status]}${sale.paymentMethod ? ` (${PAYMENT_METHOD_LABELS[sale.paymentMethod]})` : ""}${salePayment(sale).owedMinor ? `, debe ${salePayment(sale).owedMinor}` : ""}`, deliveryCost: sale.deliveryCostMinor, items: sale.items.map((item) => `${item.quantityMilli / 1000} × ${item.productName}`).join(", "), hasReceipt: Boolean(sale.documentId), delivery: sale.delivery ? `${DELIVERY_STATUS_LABELS[sale.delivery.status]} (${sale.delivery.scheduledOn})` : "sin entrega" })),
       };
     }
     case "showVisual": {
@@ -1366,6 +1373,13 @@ async function executeCozteToolStep(input: ToolStepInput): Promise<ToolResult> {
   }
   await record("tool_finished", { toolCallId: input.toolCallId, toolName: input.toolName, durationMs: Date.now() - startedAt, failed: output.ok === false, output });
   return output;
+}
+
+/** How a sale stands on payment, in one line for a receipt. */
+function paymentLine(sale: Pick<Sale, "totalMinor" | "paidMinor" | "paymentMethod">, currency: string): string {
+  const { status, owedMinor } = salePayment(sale);
+  const method = sale.paymentMethod ? ` en ${PAYMENT_METHOD_LABELS[sale.paymentMethod].toLowerCase()}` : "";
+  return status === "paid" ? `Cobrada${method}` : status === "partial" ? `Pagó ${sale.paidMinor} ${currency}${method}; debe ${owedMinor} ${currency}` : `Por cobrar: debe ${owedMinor} ${currency}`;
 }
 
 export function createCozteTools(principal: Principal, runId: string) {

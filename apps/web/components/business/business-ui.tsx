@@ -40,13 +40,14 @@ export function useMoney(currency: string) {
 }
 
 /** The month's business view: fetched for a workspace, computed in the browser for the demo. */
-export function useBusinessView(month: string, demo: boolean, state: DomainState, refreshKey = 0) {
+/** `month` null loads nothing (a view that is not needed right now). */
+export function useBusinessView(month: string | null, demo: boolean, state: DomainState, refreshKey = 0) {
   const [version, setVersion] = React.useState(0);
   const [loaded, setLoaded] = React.useState<{ month: string; version: number; view: BusinessView } | null>(null);
   const demoChanges = useDemoVersion(demo);
-  const demoView = React.useMemo(() => demo ? buildBusinessView(state, demoRecords(), month) : null, [demo, state, month, demoChanges]); // eslint-disable-line react-hooks/exhaustive-deps
+  const demoView = React.useMemo(() => demo && month ? buildBusinessView(state, demoRecords(), month) : null, [demo, state, month, demoChanges]); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(() => {
-    if (demo) return;
+    if (demo || !month) return;
     let active = true;
     fetch(`/api/business?month=${month}`, { cache: "no-store" })
       .then(async (response) => { if (!response.ok) throw new Error((await response.json()).error ?? "No se pudo cargar"); return response.json() as Promise<BusinessView>; })
@@ -55,8 +56,8 @@ export function useBusinessView(month: string, demo: boolean, state: DomainState
     return () => { active = false; };
     // The state revision refreshes the view after changes made elsewhere (the sheet or Cozte).
   }, [demo, month, version, state.revision, refreshKey]);
-  const view = demo ? demoView : loaded?.view ?? null;
-  const loading = !demo && (loaded?.month !== month || loaded.version !== version);
+  const view = !month ? null : demo ? demoView : loaded?.view ?? null;
+  const loading = !demo && Boolean(month) && (loaded?.month !== month || loaded.version !== version);
   return { view, loading, reload: React.useCallback(() => setVersion((current) => current + 1), []) };
 }
 

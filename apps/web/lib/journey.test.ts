@@ -29,6 +29,9 @@ describe("which sections each person sees", () => {
     const afterFirst = moduleAccess(DEFAULT_JOURNEYS.operating, { ...base, mode: "operating", completed: new Set(["producto"]) });
     expect(afterFirst.planilla.state).toBe("open");
     expect(afterFirst.gastos.state).toBe("locked");
+    // Channels open with the stage before selling, so they can be set up while that stage is current.
+    expect(afterFirst.canales).toEqual({ state: "locked", reason: "Se habilita al completar «Dónde producís»", stageId: "lugar" });
+    expect(moduleAccess(DEFAULT_JOURNEYS.operating, { ...base, mode: "operating", completed: new Set(["producto", "insumos", "lugar"]) }).canales.state).toBe("open");
   });
 
   it("keeps the sections about real sales closed while a project does not sell", () => {

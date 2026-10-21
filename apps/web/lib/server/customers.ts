@@ -13,7 +13,7 @@ import { organizationToday } from "./business";
 
 type CustomerRowDb = { id: string; name: string; phone: string; email: string; notes: string; source: string; created_at: string };
 type AddressRowDb = { id: string; customer_id: string; label: string; address: string; zone: string; recipient: string; contact: string; notes: string; is_default: number };
-type SaleRowDb = { id: string; customer_id: string | null; sold_on: string; channel_name: string; total_minor: number; variable_cost_minor: number | null; selling_cost_minor: number; delivery_cost_minor: number; items: string | null; delivery_status: string | null; delivery_address: string | null };
+type SaleRowDb = { id: string; customer_id: string | null; sold_on: string; channel_name: string; total_minor: number; variable_cost_minor: number | null; selling_cost_minor: number; delivery_cost_minor: number; items: string | null; delivery_status: string | null; delivery_address: string | null; paid_minor: number };
 
 function assertEditor(principal: Principal) {
   if (principal.role === "viewer") throw new ApiError(403, "No tienes permiso para cambiar clientes");
@@ -28,10 +28,10 @@ const toAddress = (row: AddressRowDb): CustomerAddress => ({ id: row.id, label: 
 const toSale = (row: SaleRowDb): CustomerSale => ({
   id: row.id, customerId: row.customer_id, soldOn: row.sold_on, channelName: row.channel_name, items: row.items ?? "",
   totalMinor: row.total_minor, variableCostMinor: row.variable_cost_minor, sellingCostMinor: row.selling_cost_minor, deliveryCostMinor: row.delivery_cost_minor,
-  deliveryStatus: row.delivery_status, deliveryAddress: row.delivery_address,
+  deliveryStatus: row.delivery_status, deliveryAddress: row.delivery_address, paidMinor: row.paid_minor,
 });
 
-const SALE_COLUMNS = `s.id, s.customer_id, s.sold_on, s.channel_name, s.total_minor, s.variable_cost_minor, s.selling_cost_minor, s.delivery_cost_minor,
+const SALE_COLUMNS = `s.id, s.customer_id, s.sold_on, s.channel_name, s.total_minor, s.variable_cost_minor, s.selling_cost_minor, s.delivery_cost_minor, s.paid_minor,
   (SELECT group_concat(CASE WHEN si.quantity_milli % 1000 = 0 THEN CAST(si.quantity_milli / 1000 AS TEXT) ELSE CAST(si.quantity_milli / 1000.0 AS TEXT) END || ' × ' || si.product_name, ', ') FROM sale_items si WHERE si.sale_id=s.id) AS items,
   d.status AS delivery_status, d.address AS delivery_address`;
 

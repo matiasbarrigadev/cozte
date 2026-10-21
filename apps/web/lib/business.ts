@@ -78,7 +78,50 @@ export type Sale = {
   delivery?: SaleDelivery | null;
   /** The customer's record, when the sale has one. */
   customerId?: string | null;
+  /** What has been collected so far; the customer owes the rest. */
+  paidMinor: number;
+  /** How it was paid, when known. */
+  paymentMethod: PaymentMethod | null;
+  /** The day it was paid in full; null while something is owed. */
+  paidOn: string | null;
 };
+
+export type PaymentMethod = "cash" | "transfer" | "debit" | "credit";
+export const PAYMENT_METHODS = ["cash", "transfer", "debit", "credit"] as const satisfies readonly PaymentMethod[];
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = { cash: "Efectivo", transfer: "Transferencia", debit: "Débito", credit: "Crédito" };
+export type PaymentStatus = "paid" | "partial" | "pending";
+export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = { paid: "Cobrada", partial: "Pagó una parte", pending: "Por cobrar" };
+
+/** Whether a sale is collected and what is still owed of it. */
+export function salePayment(sale: Pick<Sale, "totalMinor" | "paidMinor">): { status: PaymentStatus; owedMinor: number } {
+  const owedMinor = Math.max(0, Math.round((sale.totalMinor - sale.paidMinor) * 100) / 100);
+  return { status: owedMinor <= 0 ? "paid" : sale.paidMinor > 0 ? "partial" : "pending", owedMinor };
+}
+
+export type PaymentInput = {
+  /** What was collected; without it the sale is paid in full. 0 when the customer owes it all. */
+  paidAmount?: number;
+  paymentMethod?: PaymentMethod | null;
+};
+
+/** What a new sale collected: in full unless the person says otherwise. */
+export function initialPayment(totalMinor: number, input: PaymentInput, soldOn: string): Pick<Sale, "paidMinor" | "paymentMethod" | "paidOn"> {
+  const paidMinor = input.paidAmount === undefined ? totalMinor : Math.min(Math.max(0, input.paidAmount), totalMinor);
+  return { paidMinor, paymentMethod: input.paymentMethod ?? null, paidOn: paidMinor >= totalMinor ? soldOn : null };
+}
+
+/**
+ * What a sale has collected after a change. A sale that was paid in full stays paid when it is corrected (its total
+ * may change); one with something owed keeps what it collected, never more than its new total.
+ */
+export function nextPayment(sale: Pick<Sale, "totalMinor" | "paidMinor" | "paymentMethod" | "paidOn">, totalMinor: number, patch: PaymentInput & { markPaid?: boolean }, today: string): Pick<Sale, "paidMinor" | "paymentMethod" | "paidOn"> {
+  const wasPaid = sale.paidMinor >= sale.totalMinor;
+  const paidMinor = patch.markPaid ? totalMinor
+    : patch.paidAmount !== undefined ? Math.min(Math.max(0, patch.paidAmount), totalMinor)
+    : wasPaid ? totalMinor : Math.min(sale.paidMinor, totalMinor);
+  const paid = paidMinor >= totalMinor;
+  return { paidMinor, paymentMethod: patch.paymentMethod !== undefined ? patch.paymentMethod : sale.paymentMethod, paidOn: paid ? (wasPaid && sale.paidOn ? sale.paidOn : today) : null };
+}
 
 export type DeliveryStatus = "pending" | "on_the_way" | "delivered" | "failed" | "cancelled";
 export const DELIVERY_STATUSES: DeliveryStatus[] = ["pending", "on_the_way", "delivered", "failed", "cancelled"];
@@ -204,7 +247,7 @@ export function deliverySummary(deliveries: Delivery[], today: string, month: st
 }
 
 /** `fillMissingCosts` completes, with today's cost, the products that had no complete cost when the sale was recorded. */
-export type SalePatch = { soldOn?: string; channelId?: string | null; customer?: string; note?: string; items?: SaleRequest[]; deliveryCost?: number; fillMissingCosts?: boolean };
+export type SalePatch = { soldOn?: string; channelId?: string | null; customer?: string; note?: string; items?: SaleRequest[]; deliveryCost?: number; fillMissingCosts?: boolean; markPaid?: boolean; paidAmount?: number; paymentMethod?: PaymentMethod | null };
 
 /** Whether a sale was recorded without a product's full cost and today's costs could complete it. */
 export function canFillSaleCosts(sale: Pick<Sale, "items">, costs: ProductCost[]): boolean {
@@ -217,7 +260,7 @@ export function canFillSaleCosts(sale: Pick<Sale, "items">, costs: ProductCost[]
  * changes them; a new product takes today's cost. Commission is recomputed only when the channel or items change,
  * and the delivery cost follows a new channel unless it is given.
  */
-export function repriceSale(sale: Sale, patch: SalePatch, state: Pick<DomainState, "products"> & WithCurrency, costs: ProductCost[], channels: SalesChannel[]): { sale: Omit<Sale, "id" | "documentId" | "source" | "delivery">; problems: string[] } {
+export function repriceSale(sale: Sale, patch: SalePatch, state: Pick<DomainState, "products"> & WithCurrency, costs: ProductCost[], channels: SalesChannel[]): { sale: Omit<Sale, "id" | "documentId" | "source" | "delivery" | "paidMinor" | "paymentMethod" | "paidOn">; problems: string[] } {
   const currency = state.organization?.currency;
   const channelChanged = patch.channelId !== undefined && (patch.channelId ?? null) !== sale.channelId;
   const channelId = patch.channelId !== undefined ? patch.channelId : sale.channelId;
@@ -633,7 +676,7 @@ export function monthLessons(result: MonthResult, money: (value: number) => stri
 }
 
 /** `capped` when the month had more sales or purchases than were read. */
-export type BusinessRecords = { channels: SalesChannel[]; purchases: Purchase[]; investments: Purchase[]; sales: Sale[]; capped?: boolean };
+export type BusinessRecords = { channels: SalesChannel[]; purchases: Purchase[]; investments: Purchase[]; sales: Sale[]; capped?: boolean; /** Sales of any month with something still owed, the oldest first. */ owed?: Sale[] };
 
 /** Everything the business sections show for a month, computed from the stored records. */
 export function buildBusinessView(state: DomainState, records: BusinessRecords, month: string) {
@@ -648,6 +691,18 @@ export function buildBusinessView(state: DomainState, records: BusinessRecords, 
     purchases: records.purchases,
     investments: records.investments,
     sales: records.sales,
+    owed: records.owed ?? [],
+    receivable: receivableOf(records.owed ?? []),
+  };
+}
+
+/** What customers owe across every month: in total, in how many sales, and the oldest. */
+export function receivableOf(owed: Pick<Sale, "totalMinor" | "paidMinor" | "soldOn">[]): { totalMinor: number; sales: number; oldestOn: string | null } {
+  const pending = owed.filter((sale) => salePayment(sale).owedMinor > 0);
+  return {
+    totalMinor: Math.round(pending.reduce((sum, sale) => sum + salePayment(sale).owedMinor, 0) * 100) / 100,
+    sales: pending.length,
+    oldestOn: pending.reduce<string | null>((oldest, sale) => oldest === null || sale.soldOn < oldest ? sale.soldOn : oldest, null),
   };
 }
 
@@ -692,6 +747,7 @@ export type HistoryEvent = { id: string; at: string; who: string; byCozte: boole
 
 const FIELD_LABELS: Record<string, string> = {
   soldOn: "Fecha", channelId: "Canal", customer: "Cliente", note: "Nota", items: "Productos", deliveryCost: "Costo de entrega",
+  paidAmount: "Cobrado", paymentMethod: "Medio de pago", markPaid: "Cobro",
   scheduledOn: "Fecha de entrega", timeWindow: "Franja", status: "Estado", method: "Forma de entrega", carrier: "Quién entrega", recipient: "Recibe",
   address: "Dirección", contact: "Contacto", tracking: "Seguimiento", deliveredOn: "Entregada el", cost: "Costo de entrega",
   purchasedOn: "Fecha", description: "Descripción", supplier: "Proveedor", amount: "Monto", area: "Área", usefulLifeMonths: "Vida útil (meses)",
@@ -706,11 +762,14 @@ const TITLES: Record<string, string> = {
 /** One change in plain words: what happened and, field by field, what it became (and what it was, when known). */
 export function describeHistoryEvent(action: string, details: Record<string, unknown>, money: (value: number) => string): { title: string; lines: string[] } {
   const show = (key: string, value: unknown): string => {
+    if (key === "paymentMethod") return typeof value === "string" && value in PAYMENT_METHOD_LABELS ? PAYMENT_METHOD_LABELS[value as PaymentMethod] : "sin indicar";
     if (value === null || value === undefined || value === "") return "vacío";
     if (key === "status" && typeof value === "string" && value in DELIVERY_STATUS_LABELS) return DELIVERY_STATUS_LABELS[value as DeliveryStatus];
     if (key === "area" && typeof value === "string" && value in AREA_LABELS) return AREA_LABELS[value as CostArea];
     if ((key === "amount" || key === "deliveryCost" || key === "cost") && typeof value === "number") return money(value);
     if (key === "channelId") return value === null ? "Venta directa" : "otro canal";
+    if (key === "paidAmount" && typeof value === "number") return money(value);
+    if (key === "markPaid") return value ? "cobrada completa" : "sin cambios";
     if (key === "items" && Array.isArray(value)) return value.map((item) => { const line = item as { quantity?: number; productName?: string; productId?: string; quantityMilli?: number }; return `${line.quantity ?? (line.quantityMilli ?? 0) / 1000} × ${line.productName ?? "producto"}`; }).join(", ");
     return String(value);
   };
@@ -720,7 +779,7 @@ export function describeHistoryEvent(action: string, details: Record<string, unk
   if (patch) {
     for (const [key, value] of Object.entries(patch)) {
       if (!(key in FIELD_LABELS) || value === undefined) continue;
-      const beforeKey = key === "deliveryCost" ? "deliveryCostMinor" : key;
+      const beforeKey = key === "deliveryCost" ? "deliveryCostMinor" : key === "paidAmount" ? "paidMinor" : key;
       const previous = before ? before[beforeKey] : undefined;
       lines.push(previous !== undefined && key !== "items" && key !== "channelId" ? `${FIELD_LABELS[key]}: ${show(key, previous)} → ${show(key, value)}` : `${FIELD_LABELS[key]}: ${show(key, value)}`);
     }

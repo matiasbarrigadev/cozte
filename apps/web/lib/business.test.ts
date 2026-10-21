@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateCosts, expensesInForce, investmentMonthlyShare, periodInForce, type DomainState } from "./domain";
-import { DIRECT_CHANNEL, buildBusinessView, buildCustomerDirectory, canFillSaleCosts, describeHistoryEvent, byProximity, byRecency, channelEconomics, companyStructure, deliverySummary, initialDeliveryStatus, investmentShare, monthLessons, monthResult, monthsLeft, needsDelivery, priceSale, repriceSale, saleVariableCost, type Delivery, type Purchase, type Sale, type SalesChannel } from "./business";
+import { DIRECT_CHANNEL, buildBusinessView, buildCustomerDirectory, canFillSaleCosts, describeHistoryEvent, byProximity, byRecency, channelEconomics, companyStructure, deliverySummary, initialDeliveryStatus, investmentShare, monthLessons, monthResult, monthsLeft, needsDelivery, priceSale, repriceSale, saleVariableCost, type Delivery, type Purchase, type Sale, type SalesChannel, initialPayment, nextPayment, receivableOf, salePayment } from "./business";
 import { emptyTally, tallyDelivery } from "./delivery-zones";
 
 const state: DomainState = {
@@ -59,7 +59,7 @@ describe("business engine", () => {
     ];
     const investments = purchases.filter((item) => item.kind === "investment");
     const priced = priceSale(state, costs, online, [{ productId: "t300", quantity: 400 }]);
-    const sale: Sale = { id: "s1", soldOn: "2026-09-20", channelId: "ig", channelName: "Instagram", customer: "", note: "", ...priced, source: "cozte" };
+    const sale: Sale = { id: "s1", soldOn: "2026-09-20", channelId: "ig", channelName: "Instagram", customer: "", note: "", ...priced, source: "cozte", paidMinor: priced.totalMinor, paymentMethod: null, paidOn: "2026-09-20" };
     const result = monthResult({ state, costs, channels: [online], month: "2026-09", sales: [sale], purchases, investments });
     expect(result).toMatchObject({
       sales: 1, revenue: 800_000, variableProductionCost: 160_000, sellingCost: 80_000, deliveryCost: 400, contribution: 559_600,
@@ -107,7 +107,7 @@ describe("business engine", () => {
 describe("accounting integrity", () => {
   const sale = (patch: Partial<Sale> = {}): Sale => {
     const priced = priceSale(state, costs, online, [{ productId: "t300", quantity: 4 }]);
-    return { id: "s1", soldOn: "2026-09-20", channelId: "ig", channelName: "Instagram", customer: "", note: "", source: "user", ...priced, ...patch };
+    return { id: "s1", soldOn: "2026-09-20", channelId: "ig", channelName: "Instagram", customer: "", note: "", source: "user", paidMinor: priced.totalMinor, paymentMethod: null, paidOn: "2026-09-20", ...priced, ...patch };
   };
 
   it("spreads an investment so its monthly shares add up to exactly its price", () => {
@@ -175,7 +175,7 @@ describe("accounting integrity", () => {
     const priced = priceSale(state, costs, online, [{ productId: "t300", quantity: 4 }]);
     // Recorded: 4 × 2000 + 2 × 1500 = 11 000; 10 % commission = 1 100; the retired product had 60 per unit of packaging.
     const original: Sale = { id: "s9", soldOn: "2026-09-12", channelId: "ig", channelName: "Instagram", customer: "", note: "", source: "user", ...priced,
-      items: [...priced.items, retired], totalMinor: 11_000, sellingCostMinor: 1_100 + 120, variableCostMinor: priced.variableCostMinor! + 700, productionCostMinor: priced.productionCostMinor! + 900 };
+      items: [...priced.items, retired], totalMinor: 11_000, sellingCostMinor: 1_100 + 120, variableCostMinor: priced.variableCostMinor! + 700, productionCostMinor: priced.productionCostMinor! + 900, paidMinor: 11_000, paymentMethod: null, paidOn: "2026-09-12" };
     const moved = repriceSale(original, { channelId: "may" }, state, costs, [online, wholesale]);
     expect(moved.problems).toEqual([]);
     // Wholesale has no commission: only the packaging recorded with the sale stays.
@@ -200,7 +200,7 @@ describe("accounting integrity", () => {
 describe("sales and deliveries", () => {
   const sale = (): Sale => {
     const priced = priceSale(state, costs, online, [{ productId: "t300", quantity: 8 }]);
-    return { id: "s1", soldOn: "2026-09-10", channelId: "ig", channelName: "Instagram", customer: "Ana", note: "", documentId: null, source: "user", ...priced };
+    return { id: "s1", soldOn: "2026-09-10", channelId: "ig", channelName: "Instagram", customer: "Ana", note: "", documentId: null, source: "user", ...priced, paidMinor: priced.totalMinor, paymentMethod: null, paidOn: "2026-09-10" };
   };
 
   it("sorts sales most recent first and deliveries by closeness to today, the one ahead first on a tie", () => {
@@ -273,5 +273,33 @@ describe("sales and deliveries", () => {
     expect(describeHistoryEvent("update-sale", { before: { customer: "Ana", deliveryCostMinor: 400 }, patch: { customer: "Ana López", deliveryCost: 600 }, source: "user" }, money)).toEqual({ title: "Venta corregida", lines: ["Cliente: Ana → Ana López", "Costo de entrega: $400 → $600"] });
     expect(describeHistoryEvent("update-delivery", { id: "d1", status: "delivered", source: "cozte" }, money)).toEqual({ title: "Entrega actualizada", lines: ["Estado: Entregada"] });
     expect(describeHistoryEvent("archive-sale", { reason: "duplicada" }, money)).toEqual({ title: "Venta anulada", lines: ["Motivo: duplicada"] });
+  });
+});
+
+describe("what a sale collected", () => {
+  it("is paid in full unless the person says otherwise, and says what is still owed", () => {
+    expect(initialPayment(1000, {}, "2026-09-10")).toEqual({ paidMinor: 1000, paymentMethod: null, paidOn: "2026-09-10" });
+    expect(initialPayment(1000, { paidAmount: 0 }, "2026-09-10")).toEqual({ paidMinor: 0, paymentMethod: null, paidOn: null });
+    expect(initialPayment(1000, { paidAmount: 300, paymentMethod: "cash" }, "2026-09-10")).toEqual({ paidMinor: 300, paymentMethod: "cash", paidOn: null });
+    expect(salePayment({ totalMinor: 1000, paidMinor: 300 })).toEqual({ status: "partial", owedMinor: 700 });
+    expect(salePayment({ totalMinor: 1000, paidMinor: 0 })).toEqual({ status: "pending", owedMinor: 1000 });
+    expect(salePayment({ totalMinor: 1000, paidMinor: 1000 })).toEqual({ status: "paid", owedMinor: 0 });
+  });
+
+  it("collects in parts or in full, and a paid sale stays paid when its total changes", () => {
+    const owed = { totalMinor: 1000, paidMinor: 0, paymentMethod: null, paidOn: null };
+    expect(nextPayment(owed, 1000, { paidAmount: 400, paymentMethod: "transfer" }, "2026-09-12")).toEqual({ paidMinor: 400, paymentMethod: "transfer", paidOn: null });
+    expect(nextPayment(owed, 1000, { markPaid: true }, "2026-09-12")).toEqual({ paidMinor: 1000, paymentMethod: null, paidOn: "2026-09-12" });
+    const paid = { totalMinor: 1000, paidMinor: 1000, paymentMethod: "cash" as const, paidOn: "2026-09-10" };
+    expect(nextPayment(paid, 1500, {}, "2026-09-12")).toEqual({ paidMinor: 1500, paymentMethod: "cash", paidOn: "2026-09-10" });
+    // Something owed keeps what was collected, never more than the new total.
+    expect(nextPayment({ ...owed, paidMinor: 800 }, 600, {}, "2026-09-12")).toEqual({ paidMinor: 600, paymentMethod: null, paidOn: "2026-09-12" });
+    expect(nextPayment(paid, 1000, { paidAmount: 0 }, "2026-09-12")).toEqual({ paidMinor: 0, paymentMethod: "cash", paidOn: null });
+  });
+
+  it("adds up what customers owe and tells the history of a collection", () => {
+    expect(receivableOf([{ totalMinor: 1000, paidMinor: 0, soldOn: "2026-09-10" }, { totalMinor: 500, paidMinor: 200, soldOn: "2026-08-02" }, { totalMinor: 300, paidMinor: 300, soldOn: "2026-07-01" }])).toEqual({ totalMinor: 1300, sales: 2, oldestOn: "2026-08-02" });
+    const money = (value: number) => `$${value}`;
+    expect(describeHistoryEvent("update-sale", { before: { paidMinor: 0, paymentMethod: null }, patch: { paidAmount: 400, paymentMethod: "transfer" }, source: "user" }, money).lines).toEqual(["Cobrado: $0 → $400", "Medio de pago: sin indicar → Transferencia"]);
   });
 });

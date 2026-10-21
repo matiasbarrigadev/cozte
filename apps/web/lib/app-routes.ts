@@ -1,10 +1,11 @@
 /** Sections of the workspace and their URLs under /app. Cozte AI is the workspace's front door, at /app itself. */
-export type AppView = "dashboard" | "producto" | "planilla" | "ventas" | "entregas" | "clientes" | "proveedores" | "equilibrio" | "gastos" | "compras" | "resultado" | "analisis" | "asistente" | "historial" | "presentaciones" | "presentacion";
+export type AppView = "dashboard" | "producto" | "planilla" | "ventas" | "canales" | "entregas" | "clientes" | "proveedores" | "equilibrio" | "gastos" | "compras" | "resultado" | "analisis" | "asistente" | "historial" | "presentaciones" | "presentacion";
 
 const segments: Record<Exclude<AppView, "producto" | "presentacion">, string> = {
   dashboard: "resumen",
   planilla: "costos",
   ventas: "ventas",
+  canales: "canales",
   entregas: "entregas",
   clientes: "clientes",
   proveedores: "proveedores",

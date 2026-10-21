@@ -39,6 +39,8 @@ import {
   TruckIcon,
   UsersIcon,
   HandCoinsIcon,
+  WaypointsIcon,
+  WalletIcon,
   UploadIcon,
   XIcon,
 } from "lucide-animated";
@@ -81,6 +83,8 @@ const icons = {
   truck: TruckIcon,
   users: UsersIcon,
   sales: HandCoinsIcon,
+  channels: WaypointsIcon,
+  wallet: WalletIcon,
   upload: UploadIcon,
   close: XIcon,
 } as const;

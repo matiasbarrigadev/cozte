@@ -1,7 +1,7 @@
 import { calculateCosts, type CostArea, type SharedExpense } from "./domain";
 import { DEFAULT_MIX_PLAN, buildBreakEvenPlan, type ProductSales, type SalesMixPlan } from "./break-even";
 import { roundMoney } from "./money";
-import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, buildCustomerDirectory, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type BusinessRecords, type CustomerDirectory, type Delivery, type Purchase, type PurchaseKind, type Sale, type SalePatch, type SalesChannel } from "./business";
+import { DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, buildCustomerDirectory, byProximity, initialDeliveryStatus, initialPayment, needsDelivery, nextPayment, priceSale, repriceSale, saleItemsText, type PaymentMethod, type BusinessRecords, type CustomerDirectory, type Delivery, type Purchase, type PurchaseKind, type Sale, type SalePatch, type SalesChannel } from "./business";
 import { DEMO_TODAY, DEMO_ZONES, demoBusinessRecords, demoDeliveries, demoHistorySales, demoState, demoSupplierHistory } from "./demo";
 import { emptyTally, tallyDelivery } from "./delivery-zones";
 import { kindForPurchase, materialPrices, sortSuppliers, supplierKey, supplierMonths, supplierStats, suppliersFromHistory, type Supplier, type SupplierKind, type SupplierPurchase, type SupplierRow } from "./suppliers";
@@ -79,7 +79,7 @@ function demoCustomerSales(current: Store): CustomerSale[] {
   const bySale = new Map(current.deliveries.map((item) => [item.saleId, item]));
   return [...current.records.sales, ...current.history].map((sale) => ({
     id: sale.id, customerId: sale.customerId ?? null, soldOn: sale.soldOn, channelName: sale.channelName, items: saleItemsText(sale.items),
-    totalMinor: sale.totalMinor, variableCostMinor: sale.variableCostMinor, sellingCostMinor: sale.sellingCostMinor, deliveryCostMinor: sale.deliveryCostMinor,
+    totalMinor: sale.totalMinor, variableCostMinor: sale.variableCostMinor, sellingCostMinor: sale.sellingCostMinor, deliveryCostMinor: sale.deliveryCostMinor, paidMinor: sale.paidMinor,
     deliveryStatus: bySale.get(sale.id)?.status ?? sale.delivery?.status ?? null, deliveryAddress: bySale.get(sale.id)?.address ?? null,
   })).sort((a, b) => b.soldOn.localeCompare(a.soldOn));
 }
@@ -193,7 +193,8 @@ export const demoVersion = () => version;
 export function demoRecords(): BusinessRecords {
   const { records, deliveries, zones } = data();
   const bySale = new Map(deliveries.map((item) => [item.saleId, { id: item.id, status: item.status, scheduledOn: item.scheduledOn, deliveredOn: item.deliveredOn, zoneId: item.zoneId, zoneName: zones.find((zone) => zone.id === item.zoneId)?.name ?? "", carrier: item.carrier }]));
-  return { ...records, sales: records.sales.map((sale) => ({ ...sale, delivery: bySale.get(sale.id) ?? null })) };
+  const sales = records.sales.map((sale) => ({ ...sale, delivery: bySale.get(sale.id) ?? null }));
+  return { ...records, sales, owed: sales.filter((sale) => sale.paidMinor < sale.totalMinor).sort((a, b) => a.soldOn.localeCompare(b.soldOn)) };
 }
 
 /** The demo's deliveries of a month plus the open ones, closest to the demo's today first. */
@@ -255,13 +256,13 @@ export function demoBusinessAction<T>(body: Body): T {
   const channelOf = (id: string | null | undefined) => id ? current.records.channels.find((item) => item.id === id) : DIRECT_CHANNEL;
   switch (body.action) {
     case "record-sale": {
-      const input = body.sale as { soldOn: string; channelId?: string | null; items: { productId: string; quantity: number; unitPrice?: number }[]; deliveryCost?: number; customer?: string; note?: string; delivery?: DeliveryFields };
+      const input = body.sale as { soldOn: string; channelId?: string | null; items: { productId: string; quantity: number; unitPrice?: number }[]; deliveryCost?: number; customer?: string; note?: string; delivery?: DeliveryFields; paidAmount?: number; paymentMethod?: PaymentMethod | null };
       const channel = channelOf(input.channelId);
       if (!channel) throw new DemoError("Canal no encontrado");
       const priced = priceSale(demoState, costs, channel, input.items, input.deliveryCost);
       if (priced.problems.length) throw new DemoError(priced.problems.join(". "));
       const resolved = demoResolveCustomer(current, input.customer);
-      const draft: Sale = { id: `v-${Math.random().toString(36).slice(2, 8)}`, soldOn: input.soldOn, channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id, channelName: channel.name, customer: input.customer ?? "", customerId: resolved.id, note: input.note ?? "", documentId: null, source: "user", ...priced };
+      const draft: Sale = { id: `v-${Math.random().toString(36).slice(2, 8)}`, soldOn: input.soldOn, channelId: channel.id === DIRECT_CHANNEL.id ? null : channel.id, channelName: channel.name, customer: input.customer ?? "", customerId: resolved.id, note: input.note ?? "", documentId: null, source: "user", ...priced, ...initialPayment(priced.totalMinor, input, input.soldOn) };
       const main = resolved.customers.find((customer) => customer.id === resolved.id)?.addresses.find((address) => address.isDefault);
       const fields: DeliveryFields = { ...input.delivery, ...(!input.delivery?.address?.trim() && main ? { address: main.address, recipient: input.delivery?.recipient || main.recipient || undefined, contact: input.delivery?.contact || main.contact || undefined } : {}) };
       const delivers = Boolean(input.delivery) || needsDelivery(channel, input.deliveryCost);
@@ -287,7 +288,7 @@ export function demoBusinessAction<T>(body: Body): T {
       const { sale: next, problems } = repriceSale(sale, patch, demoState, costs, current.records.channels);
       if (problems.length) throw new DemoError(problems.join(". "));
       const resolved = patch.customer !== undefined ? demoResolveCustomer(current, patch.customer) : { customers: current.customers, id: sale.customerId ?? null };
-      const updated = { ...sale, ...next, customerId: resolved.id };
+      const updated = { ...sale, ...next, ...nextPayment(sale, next.totalMinor, patch, DEMO_TODAY), customerId: resolved.id };
       commit({ ...current, customers: resolved.customers, records: { ...current.records, sales: current.records.sales.map((item) => item.id === sale.id ? updated : item) } });
       return updated as T;
     }

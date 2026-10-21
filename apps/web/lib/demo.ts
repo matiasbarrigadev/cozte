@@ -75,9 +75,13 @@ export function demoBusinessRecords(): BusinessRecords {
     { id: "feria", name: "Ferias", deliveryMethod: "En mano", commissionBps: 0, feePerOrderMinor: 0, deliveryCostPerOrderMinor: 0, unitsPerOrderMilli: 1000, priceAdjustmentBps: 0 },
     { id: "librerias", name: "Librerías (por mayor)", deliveryMethod: "Moto propia", commissionBps: 0, feePerOrderMinor: 0, deliveryCostPerOrderMinor: 6000, unitsPerOrderMilli: 60000, priceAdjustmentBps: -3000 },
   ];
+  // Collected on the spot, except the bookshops' order (paid at 30 days) and a deposit on an online order.
+  const owing: Record<string, number> = { v8: 0, v6: 0.5 };
   const sale = (id: string, soldOn: string, channel: SalesChannel, items: { productId: string; quantity: number }[]): Sale => {
     const priced = priceSale(demoState, costs, channel, items);
-    return { id, soldOn, channelId: channel.id, channelName: channel.name, customer: "", note: "", documentId: null, source: "cozte", items: priced.items, totalMinor: priced.totalMinor, sellingCostMinor: priced.sellingCostMinor, deliveryCostMinor: priced.deliveryCostMinor, variableCostMinor: priced.variableCostMinor, productionCostMinor: priced.productionCostMinor };
+    const paidMinor = id in owing ? Math.round(priced.totalMinor * owing[id]) : priced.totalMinor;
+    return { id, soldOn, channelId: channel.id, channelName: channel.name, customer: "", note: "", documentId: null, source: "cozte", items: priced.items, totalMinor: priced.totalMinor, sellingCostMinor: priced.sellingCostMinor, deliveryCostMinor: priced.deliveryCostMinor, variableCostMinor: priced.variableCostMinor, productionCostMinor: priced.productionCostMinor,
+      paidMinor, paymentMethod: paidMinor ? (channel.id === "feria" ? "cash" : "transfer") : null, paidOn: paidMinor >= priced.totalMinor ? soldOn : null };
   };
   const [tienda, feria, librerias] = channels;
   const purchases: Purchase[] = [
@@ -207,6 +211,7 @@ export function demoHistorySales(): Sale[] {
         sales.push({
           id, soldOn, channelId: channel.id, channelName: channel.name, customer, note: "", documentId: null, source: "user",
           items: priced.items, totalMinor: priced.totalMinor, sellingCostMinor: priced.sellingCostMinor, deliveryCostMinor: priced.deliveryCostMinor, variableCostMinor: priced.variableCostMinor, productionCostMinor: priced.productionCostMinor,
+          paidMinor: priced.totalMinor, paymentMethod: channel.id === "feria" ? "cash" : "transfer", paidOn: soldOn,
           delivery: delivers ? { id: `e-${id}`, status: random() < 0.06 ? "cancelled" : "delivered", scheduledOn: scheduled, deliveredOn: late ? new Date(Date.parse(`${scheduled}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10) : scheduled, zoneId: zone.id, zoneName: zone.name, carrier: zone.carrier } : null,
         });
       }

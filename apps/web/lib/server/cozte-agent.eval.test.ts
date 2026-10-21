@@ -42,7 +42,7 @@ import { buildCozteInstructions } from "./cozte-instructions";
 import { cozteAgentSettings, cozteProviderOptions } from "./cozte-workflow";
 import { loadCozteNotes } from "./cozte-notes";
 import { loadCozteSettings } from "./cozte-settings";
-import { loadChannels } from "./business";
+import { loadBusinessView, loadChannels } from "./business";
 import { loadState } from "./state";
 import { calculateCosts } from "@/lib/domain";
 import { dbBatch, dbQuery } from "./db";
@@ -611,6 +611,32 @@ describe.skipIf(!enabled)("Cozte agent evaluation", { timeout: 20 * 60_000 }, ()
     console.log(`\n[${model}] recipe-complete ${JSON.stringify(checks)}\n${first.answer}\n${JSON.stringify(first.records.filter((item) => item.name !== "readCosts").map((item) => [item.name, item.input, item.output]))}\n---\n${second.answer}`);
     vi.unstubAllEnvs();
     results.push({ model, scenario: "recipe-complete", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "completa", answer: first.answer }, { user: "insiste", answer: second.answer }] });
+    expect(failures).toEqual([]);
+  });
+
+  it.each(models)("records a sale the customer still owes and collects it when they pay, with %s", async (model) => {
+    process.env.DATA_BRIDGE_URL = bridgeUrl;
+    process.env.DATA_BRIDGE_SECRET = process.env.DATA_BRIDGE_SECRET ?? "local-test-secret-for-cozte-at-least-32-chars";
+    const principal = { userId: "eval", organizationId: `org-eval-${crypto.randomUUID()}`, role: "owner" as const };
+    await loadState(principal);
+    await dbBatch([{ sql: "UPDATE organizations SET name='Sketch', currency='CLP', country='CL', time_zone='America/Santiago', business_mode='operating', onboarded_at=CURRENT_TIMESTAMP WHERE id=?", params: [principal.organizationId] }]);
+    const seed = createCozteTools(principal, crypto.randomUUID());
+    const output = await (seed.saveProduct.execute as (input: unknown, options: { toolCallId: string }) => Promise<{ ok?: boolean }>)({ name: "Cartel LED neón chico", goodUnitsPerLot: 1, lotsPerMonth: 20, hoursPerLot: 3, salePrice: 30000 }, { toolCallId: "seed-1" });
+    expect(output.ok).toBe(true);
+    const history: ModelMessage[] = [];
+    const first = await productionTurn({ model, principal, history, text: "Vendí 2 carteles chicos a Juan Pérez, me quedó debiendo." });
+    const month = (await organizationToday(principal)).slice(0, 7);
+    const owed = (await loadBusinessView(principal, month)).receivable;
+    const second = await productionTurn({ model, principal, history, text: "Juan me acaba de pagar todo por transferencia." });
+    const after = await loadBusinessView(principal, month);
+    const checks = {
+      recordedAsOwed: owed.totalMinor === 60000 && owed.sales === 1,
+      collectedWhenPaid: after.receivable.totalMinor === 0 && after.sales.some((sale) => sale.customer.includes("Juan") && sale.paymentMethod === "transfer"),
+      answeredEveryTurn: [first, second].every((turn) => turn.verified),
+    };
+    const failures = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
+    console.log(`\n[${model}] payments ${JSON.stringify(checks)}\n${first.answer}\n---\n${second.answer}`);
+    results.push({ model, scenario: "payments", failures: failures.length, failureDetails: failures, ...checks, transcript: [{ user: "debe", answer: first.answer }, { user: "pagó", answer: second.answer }] });
     expect(failures).toEqual([]);
   });
 

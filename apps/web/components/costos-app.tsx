@@ -26,6 +26,7 @@ import { CozteAssistant } from "./cozte-assistant";
 import { CostHistory, type CostSnapshotRow, type HistoryEntry, type ProfileSnapshotRow } from "./cost-history";
 import { BusinessAnalysisView } from "./analysis/business-analysis";
 import { SalesSection } from "./business/sales-section";
+import { ChannelsSection } from "./business/channels-section";
 import { DeliveriesSection } from "./business/deliveries-section";
 import { CustomersSection } from "./business/customers-section";
 import { SuppliersSection } from "./business/suppliers-section";
@@ -68,7 +69,7 @@ type NavItem = { id: View; label: string; icon: AnimatedIconName };
 const navGroups: { label: string; items: NavItem[] }[] = [
   { label: "Espacio de trabajo", items: [{ id: "asistente", label: "Cozte AI", icon: "assistant" }, { id: "dashboard", label: "Resumen", icon: "dashboard" }] },
   { label: "Costos", items: [{ id: "equilibrio", label: "Punto de equilibrio", icon: "gauge" }, { id: "planilla", label: "Costos de producción", icon: "costs" }, { id: "gastos", label: "Gastos de la empresa", icon: "layers" }] },
-  { label: "Día a día", items: [{ id: "ventas", label: "Ventas", icon: "sales" }, { id: "entregas", label: "Entregas", icon: "truck" }, { id: "clientes", label: "Clientes", icon: "users" }, { id: "compras", label: "Compras", icon: "receipt" }, { id: "proveedores", label: "Proveedores", icon: "boxes" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
+  { label: "Día a día", items: [{ id: "ventas", label: "Ventas", icon: "sales" }, { id: "canales", label: "Canales", icon: "channels" }, { id: "entregas", label: "Entregas", icon: "truck" }, { id: "clientes", label: "Clientes", icon: "users" }, { id: "compras", label: "Compras", icon: "receipt" }, { id: "proveedores", label: "Proveedores", icon: "boxes" }, { id: "resultado", label: "Resultado del mes", icon: "review" }] },
   { label: "Evolución", items: [{ id: "analisis", label: "Análisis", icon: "chart" }, { id: "presentaciones", label: "Presentaciones", icon: "presentation" }, { id: "historial", label: "Historial", icon: "history" }] },
 ];
 
@@ -396,7 +397,8 @@ export function CostosApp({ initial, demo = false, initialSection, adminView = f
               onReview={reviewChanges} onDiscard={() => { if (!demo) setDraftStatus("saving"); setDraft(emptyDraft()); setReview(null); }} />
           </> : null}
 
-          {view === "ventas" ? <SalesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenCozte={() => navigate("asistente")} onOpenDeliveries={() => navigate("entregas")} onDataChanged={refresh} /> : null}
+          {view === "ventas" ? <SalesSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenCozte={() => navigate("asistente")} onOpenDeliveries={() => navigate("entregas")} onOpenChannels={() => navigate("canales")} onDataChanged={refresh} /> : null}
+          {view === "canales" ? <ChannelsSection state={state} demo={demo} month={businessMonth} onMonthChange={setBusinessMonth} onOpenCozte={() => navigate("asistente")} onDataChanged={refresh} /> : null}
 
           {view === "clientes" ? <CustomersSection state={state} demo={demo} onDataChanged={refresh} /> : null}
           {view === "proveedores" ? <SuppliersSection state={state} demo={demo} onDataChanged={refresh} onOpenPurchases={() => navigate("compras")} /> : null}

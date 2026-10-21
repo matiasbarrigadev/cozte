@@ -147,8 +147,8 @@ function CustomerTable({ rows, today, money, onOpen }: { rows: CustomerRow[]; to
     const value = (row: CustomerRow): string | number => sort.key === "name" ? row.name.toLowerCase() : sort.key === "sales" ? row.stats.sales : sort.key === "revenue" ? row.stats.revenue : row.stats.lastOn ?? "";
     return [...filtered].sort((a, b) => { const x = value(a), y = value(b); return (x < y ? -1 : x > y ? 1 : 0) * direction; });
   }, [rows, status, search, sort]);
-  const exportRows = () => downloadCsv(`clientes-${today}`, ["Cliente", "Teléfono", "Email", "Dirección principal", "Zona", "Compras", "Compró", "Te dejó", "Primera compra", "Última compra", "Cada (días)", "Estado"],
-    shown.map((row) => { const main = row.addresses.find((address) => address.isDefault) ?? row.addresses[0]; return [row.name, row.phone, row.email, main?.address ?? "", main?.zone ?? "", row.stats.sales, row.stats.revenue, row.stats.left, row.stats.firstOn ?? "", row.stats.lastOn ?? "", row.stats.everyDays, CUSTOMER_STATUS_LABELS[row.stats.status]]; }));
+  const exportRows = () => downloadCsv(`clientes-${today}`, ["Cliente", "Teléfono", "Email", "Dirección principal", "Zona", "Compras", "Compró", "Debe", "Te dejó", "Primera compra", "Última compra", "Cada (días)", "Estado"],
+    shown.map((row) => { const main = row.addresses.find((address) => address.isDefault) ?? row.addresses[0]; return [row.name, row.phone, row.email, main?.address ?? "", main?.zone ?? "", row.stats.sales, row.stats.revenue, row.stats.owed, row.stats.left, row.stats.firstOn ?? "", row.stats.lastOn ?? "", row.stats.everyDays, CUSTOMER_STATUS_LABELS[row.stats.status]]; }));
   return <section className="flex flex-col gap-3 rounded-2xl border bg-card p-4 shadow-xs sm:p-5" aria-label="Lista de clientes">
     <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar por estado">
       {(["all", ...STATUS_ORDER] as const).map((key) => {
@@ -170,7 +170,7 @@ function CustomerTable({ rows, today, money, onOpen }: { rows: CustomerRow[]; to
           <span className="flex items-start justify-between gap-2"><span className="min-w-0"><span className="block font-medium">{row.name}</span><span className="block truncate text-xs text-muted-foreground">{main ? `${main.address}${main.zone && !main.address.includes(main.zone) ? ` · ${main.zone}` : ""}` : "Sin dirección"}</span></span><StatusBadge status={row.stats.status} /></span>
           <span className="grid grid-cols-3 gap-2 text-xs">
             <span><span className="block text-muted-foreground">Compras</span><span className="font-semibold tabular-nums">{row.stats.sales}</span></span>
-            <span><span className="block text-muted-foreground">Compró</span><span className="font-semibold tabular-nums">{money(row.stats.revenue)}</span></span>
+            <span><span className="block text-muted-foreground">{row.stats.owed ? "Debe" : "Compró"}</span><span className={cn("font-semibold tabular-nums", row.stats.owed && "text-amber-800 dark:text-amber-300")}>{money(row.stats.owed || row.stats.revenue)}</span></span>
             <span><span className="block text-muted-foreground">Última</span><span className="font-semibold">{row.stats.lastOn ? relativeDay(row.stats.lastOn, today) : "—"}</span></span>
           </span>
         </button></li>;
@@ -183,6 +183,7 @@ function CustomerTable({ rows, today, money, onOpen }: { rows: CustomerRow[]; to
             <th className={cn(sheetHead, "min-w-28 text-left")}>Zona</th>
             <SortableHead column="sales" label="Compras" sort={sort} onSort={setSort} className="text-right" />
             <SortableHead column="revenue" label="Compró" sort={sort} onSort={setSort} className="min-w-32 text-right" />
+            <th className={cn(sheetHead, "min-w-28 text-right")} title="Lo que te debe de sus compras">Debe</th>
             <th className={cn(sheetHead, "min-w-28 text-right")}>Te dejó</th>
             <SortableHead column="last" label="Última compra" sort={sort} onSort={setSort} className="min-w-36" />
             <th className={cn(sheetHead, "min-w-24 text-right")} title="Días entre compras, en promedio">Cada</th>
@@ -196,6 +197,7 @@ function CustomerTable({ rows, today, money, onOpen }: { rows: CustomerRow[]; to
               <TableCell className={cn(sheetCell, "px-3 text-sm text-muted-foreground")}>{main?.zone || "—"}</TableCell>
               <TableCell className={cn(sheetCell, "px-3 text-right tabular-nums")}>{row.stats.sales}</TableCell>
               <TableCell className={cn(sheetCell, "px-3 text-right font-medium tabular-nums")}>{money(row.stats.revenue)}</TableCell>
+              <TableCell className={cn(sheetCell, "px-3 text-right tabular-nums", row.stats.owed ? "font-medium text-amber-800 dark:text-amber-300" : "text-muted-foreground")}>{row.stats.owed ? money(row.stats.owed) : "—"}</TableCell>
               <TableCell className={cn(sheetCell, "px-3 text-right tabular-nums text-muted-foreground")}>{row.stats.left === null ? row.stats.sales ? "Incompleto" : "—" : money(row.stats.left)}</TableCell>
               <TableCell className={cn(sheetCell, "px-3 text-sm")}>{row.stats.lastOn ? <><span>{relativeDay(row.stats.lastOn, today)}</span><span className="block text-xs text-muted-foreground tabular-nums">{row.stats.lastOn.slice(8, 10)}/{row.stats.lastOn.slice(5, 7)}/{row.stats.lastOn.slice(2, 4)}</span></> : <span className="text-muted-foreground">—</span>}</TableCell>
               <TableCell className={cn(sheetCell, "px-3 text-right text-sm tabular-nums text-muted-foreground")}>{row.stats.everyDays ? `${row.stats.everyDays} días` : "—"}</TableCell>
@@ -293,7 +295,7 @@ function CustomerSheet({ id, state, demo, others, onClose, onChanged }: { id: st
         </DialogHeader>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Mini label="Compras" value={String(detail.stats.sales)} />
-          <Mini label="Compró" value={money(detail.stats.revenue)} />
+          <Mini label="Compró" value={money(detail.stats.revenue)} note={detail.stats.owed ? `Debe ${money(detail.stats.owed)}` : undefined} />
           <Mini label="Te dejó" value={detail.stats.left === null ? detail.stats.sales ? "Incompleto" : "—" : money(detail.stats.left)} />
           <Mini label="Compra cada" value={detail.stats.everyDays ? `${detail.stats.everyDays} días` : "—"} note={detail.stats.lastOn ? `Última: ${relativeDay(detail.stats.lastOn, detail.today).toLowerCase()}` : undefined} />
         </div>

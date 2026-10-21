@@ -13,6 +13,8 @@ export type CustomerSale = {
   id: string; customerId: string | null; soldOn: string; channelName: string; items: string;
   totalMinor: number; variableCostMinor: number | null; sellingCostMinor: number; deliveryCostMinor: number;
   deliveryStatus?: string | null; deliveryAddress?: string | null;
+  /** What was collected; without it, the sale counts as paid. */
+  paidMinor?: number;
 };
 
 export type CustomerStatus = "none" | "new" | "frequent" | "active" | "at-risk" | "inactive";
@@ -39,6 +41,8 @@ export type CustomerStats = {
   everyDays: number | null;
   daysSinceLast: number | null;
   status: CustomerStatus;
+  /** What they still owe across their sales. */
+  owed: number;
 };
 
 /** Lowercase, without accents, punctuation or extra spaces: the key that joins the same customer written differently. */
@@ -58,7 +62,7 @@ export const looksLikePhone = (contact: string) => contact.replace(/\D/g, "").le
 const days = (from: string, to: string) => Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86_400_000);
 
 export function customerStats(sales: CustomerSale[], today: string): CustomerStats {
-  if (!sales.length) return { sales: 0, revenue: 0, left: null, firstOn: null, lastOn: null, averageTicket: null, everyDays: null, daysSinceLast: null, status: "none" };
+  if (!sales.length) return { sales: 0, revenue: 0, left: null, firstOn: null, lastOn: null, averageTicket: null, everyDays: null, daysSinceLast: null, status: "none", owed: 0 };
   const dates = sales.map((sale) => sale.soldOn).sort();
   const revenue = sales.reduce((sum, sale) => sum + sale.totalMinor, 0);
   const complete = sales.every((sale) => sale.variableCostMinor !== null);
@@ -72,7 +76,8 @@ export function customerStats(sales: CustomerSale[], today: string): CustomerSta
     : distinctDays.length >= 3 ? "frequent"
     : distinctDays.length === 1 && daysSinceLast <= 30 ? "new"
     : "active";
-  return { sales: sales.length, revenue: Math.round(revenue * 100) / 100, left: left === null ? null : Math.round(left * 100) / 100, firstOn: dates[0], lastOn, averageTicket: Math.round((revenue / sales.length) * 100) / 100, everyDays, daysSinceLast, status };
+  const owed = sales.reduce((sum, sale) => sum + Math.max(0, sale.totalMinor - (sale.paidMinor ?? sale.totalMinor)), 0);
+  return { sales: sales.length, revenue: Math.round(revenue * 100) / 100, left: left === null ? null : Math.round(left * 100) / 100, firstOn: dates[0], lastOn, averageTicket: Math.round((revenue / sales.length) * 100) / 100, everyDays, daysSinceLast, status, owed: Math.round(owed * 100) / 100 };
 }
 
 export type CustomerRow = Customer & { stats: CustomerStats };

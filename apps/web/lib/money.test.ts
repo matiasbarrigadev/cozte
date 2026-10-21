@@ -54,7 +54,7 @@ describe("money precision by currency", () => {
     const sale = priceSale(state, costs, store, [{ productId: "jabon", quantity: 3 }]);
     // 3 × 4.99 = 14.97; commission 3.5 % = 0.52395 + 0.30 fee + 3 × 0.15 = 1.27.
     expect(sale).toMatchObject({ totalMinor: 14.97, sellingCostMinor: 1.27, deliveryCostMinor: 4.25, variableCostMinor: 3.12 });
-    const result = monthResult({ state, costs, channels: [store], month: "2026-09", sales: [{ id: "s", soldOn: "2026-09-10", channelId: "web", channelName: "Tienda", customer: "", note: "", source: "user", ...sale }], purchases: [], investments: [] });
+    const result = monthResult({ state, costs, channels: [store], month: "2026-09", sales: [{ id: "s", soldOn: "2026-09-10", channelId: "web", channelName: "Tienda", customer: "", note: "", source: "user", ...sale, paidMinor: sale.totalMinor, paymentMethod: null, paidOn: "2026-09-10" }], purchases: [], investments: [] });
     expect(result.contribution).toBe(6.33);
     expect(result.result).toBe(-83.77);
   });

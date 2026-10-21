@@ -8,7 +8,7 @@ import { convertNativeMilli } from "@/lib/currency";
 import { costsAsOf } from "@/lib/cost-snapshots";
 import type { SnapshotRow } from "@/lib/cost-analysis";
 import { fxTableNear, quotesFor } from "./fx";
-import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PURCHASE_KIND_LABELS, buildBusinessView, buildCustomerDirectory, businessToday, describeHistoryEvent, type HistoryEvent, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
+import { AREA_LABELS, DELIVERY_STATUSES, DELIVERY_STATUS_LABELS, DIRECT_CHANNEL, PAYMENT_METHODS, PURCHASE_KIND_LABELS, buildBusinessView, initialPayment, nextPayment, type PaymentMethod, buildCustomerDirectory, businessToday, describeHistoryEvent, type HistoryEvent, byProximity, initialDeliveryStatus, needsDelivery, priceSale, repriceSale, saleItemsText, type Delivery, type DeliveryStatus, type Purchase, type PurchaseKind, type Sale, type SaleItem, type SalesChannel } from "@/lib/business";
 import { ApiError, type Principal } from "./auth";
 import { dbBatch, dbQuery, type SqlStatement, type SqlValue } from "./db";
 import { customerAddressFor, loadCustomers, resolveCustomer, resolveCustomerEntry } from "./customers";
@@ -94,6 +94,9 @@ export const saleInputSchema = z.object({
   documentId: z.string().min(1).max(120).optional(),
   /** Delivery details; without them a delivery is still created when the channel delivers. */
   delivery: deliveryFieldsSchema.optional(),
+  /** What was collected; without it the sale is paid in full. 0 when the customer owes it all. */
+  paidAmount: amount.optional(),
+  paymentMethod: z.enum(PAYMENT_METHODS).nullable().optional(),
 });
 
 export const purchasePatchSchema = z.object({
@@ -113,6 +116,11 @@ export const salePatchSchema = z.object({
   items: z.array(z.object({ productId: z.string().min(1).max(120), quantity: z.number().positive().max(1_000_000_000), unitPrice: amount.optional() })).min(1).max(40).optional(),
   deliveryCost: amount.optional(),
   fillMissingCosts: z.boolean().optional(),
+  /** Collected in full now. */
+  markPaid: z.boolean().optional(),
+  /** Everything collected so far (not what is added now). */
+  paidAmount: amount.optional(),
+  paymentMethod: z.enum(PAYMENT_METHODS).nullable().optional(),
 });
 
 export type ChannelInput = z.input<typeof channelInputSchema>;
@@ -160,13 +168,26 @@ function monthBounds(value: string): [string, string] {
 
 type ChannelRow = { id: string; name: string; delivery_method: string; commission_bps: number; fee_per_order_minor: number; delivery_cost_per_order_minor: number; units_per_order_milli: number; price_adjustment_bps: number };
 type PurchaseRow = { id: string; purchased_on: string; description: string; supplier: string; supplier_id: string | null; amount_minor: number; kind: PurchaseKind; area: CostArea; material_name: string | null; quantity_milli: number | null; expense_id: string | null; expense_name: string | null; useful_life_months: number | null; include_in_unit_cost: number; document_id: string | null; source: "user" | "cozte" };
-type SaleRow = { id: string; sold_on: string; channel_id: string | null; channel_name: string; customer: string; customer_id?: string | null; note: string; total_minor: number; selling_cost_minor: number; delivery_cost_minor: number; variable_cost_minor: number | null; production_cost_minor: number | null; document_id: string | null; source: "user" | "cozte" };
+type SaleRow = { id: string; sold_on: string; channel_id: string | null; channel_name: string; customer: string; customer_id?: string | null; note: string; total_minor: number; selling_cost_minor: number; delivery_cost_minor: number; variable_cost_minor: number | null; production_cost_minor: number | null; document_id: string | null; source: "user" | "cozte"; paid_minor: number; payment_method: PaymentMethod | null; paid_on: string | null };
 type SaleDeliveryRow = { sale_id: string; id: string; status: DeliveryStatus; scheduled_on: string; delivered_on: string | null; zone_id: string | null; zone_name: string | null; carrier: string };
 type DeliveryRow = { id: string; sale_id: string; scheduled_on: string; time_window: string; status: DeliveryStatus; method: string; carrier: string; recipient: string; address: string; contact: string; tracking: string; note: string; delivered_on: string | null; zone_id: string | null; zone_name: string | null; route_position: number | null; source: "user" | "cozte"; sold_on: string; channel_id: string | null; channel_name: string; customer: string; total_minor: number; delivery_cost_minor: number };
 type SaleItemRow = { sale_id: string; product_id: string; product_name: string; quantity_milli: number; unit_price_minor: number; unit_variable_cost_minor: number | null; unit_cost_minor: number | null };
 
 const toChannel = (row: ChannelRow): SalesChannel => ({ id: row.id, name: row.name, deliveryMethod: row.delivery_method, commissionBps: row.commission_bps, feePerOrderMinor: row.fee_per_order_minor, deliveryCostPerOrderMinor: row.delivery_cost_per_order_minor, unitsPerOrderMilli: row.units_per_order_milli, priceAdjustmentBps: row.price_adjustment_bps });
 const toPurchase = (row: PurchaseRow): Purchase => ({ id: row.id, purchasedOn: row.purchased_on, description: row.description, supplier: row.supplier, supplierId: row.supplier_id, amountMinor: row.amount_minor, kind: row.kind, area: row.area, materialName: row.material_name, quantityMilli: row.quantity_milli, expenseId: row.expense_id, expenseName: row.expense_name, usefulLifeMonths: row.useful_life_months, includeInUnitCost: row.include_in_unit_cost === 1, documentId: row.document_id, source: row.source });
+
+const SALE_COLUMNS = "id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source, paid_minor, payment_method, paid_on";
+
+const toSale = (row: SaleRow, items: SaleItem[], delivery: Sale["delivery"] = null): Sale => ({
+  id: row.id, soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, customerId: row.customer_id ?? null, note: row.note,
+  totalMinor: row.total_minor, sellingCostMinor: row.selling_cost_minor, deliveryCostMinor: row.delivery_cost_minor,
+  variableCostMinor: row.variable_cost_minor, productionCostMinor: row.production_cost_minor, documentId: row.document_id, source: row.source,
+  paidMinor: row.paid_minor, paymentMethod: row.payment_method, paidOn: row.paid_on,
+  items, delivery,
+});
+
+/** Most sales with something owed listed at once, the oldest first. */
+const OWED_LIMIT = 500;
 
 const PURCHASE_COLUMNS = "p.id, p.purchased_on, p.description, p.supplier, p.supplier_id, p.amount_minor, p.kind, p.area, m.name AS material_name, p.quantity_milli, p.expense_id, e.name AS expense_name, p.useful_life_months, p.include_in_unit_cost, p.document_id, p.source FROM purchases p LEFT JOIN materials m ON m.id=p.material_id LEFT JOIN shared_expenses e ON e.id=p.expense_id";
 
@@ -182,18 +203,28 @@ const MONTH_RECORDS_LIMIT = 5000;
 export async function loadBusinessRecords(principal: Principal, forMonth: string) {
   const [from, to] = monthBounds(month.parse(forMonth));
   const org = principal.organizationId;
-  const [channels, purchases, investments, sales, items, deliveries] = await dbBatch<ChannelRow | PurchaseRow | SaleRow | SaleItemRow | SaleDeliveryRow>([
+  const owedWhere = "s.organization_id=? AND s.archived_at IS NULL AND s.paid_minor < s.total_minor";
+  const [channels, purchases, investments, sales, items, deliveries, owed, owedItems, owedDeliveries] = await dbBatch<ChannelRow | PurchaseRow | SaleRow | SaleItemRow | SaleDeliveryRow>([
     { sql: "SELECT id, name, delivery_method, commission_bps, fee_per_order_minor, delivery_cost_per_order_minor, units_per_order_milli, price_adjustment_bps FROM sales_channels WHERE organization_id=? AND archived_at IS NULL ORDER BY created_at", params: [org] },
     { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.purchased_on >= ? AND p.purchased_on < ? ORDER BY p.purchased_on DESC, p.created_at DESC LIMIT ${MONTH_RECORDS_LIMIT + 1}`, params: [org, from, to] },
     // Every investment whose useful life may still reach this month (bought on or before it).
     { sql: `SELECT ${PURCHASE_COLUMNS} WHERE p.organization_id=? AND p.archived_at IS NULL AND p.kind='investment' AND p.purchased_on < ? ORDER BY p.purchased_on DESC LIMIT 2000`, params: [org, to] },
-    { sql: `SELECT id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE organization_id=? AND archived_at IS NULL AND sold_on >= ? AND sold_on < ? ORDER BY sold_on DESC, created_at DESC LIMIT ${MONTH_RECORDS_LIMIT + 1}`, params: [org, from, to] },
+    { sql: `SELECT ${SALE_COLUMNS} FROM sales WHERE organization_id=? AND archived_at IS NULL AND sold_on >= ? AND sold_on < ? ORDER BY sold_on DESC, created_at DESC LIMIT ${MONTH_RECORDS_LIMIT + 1}`, params: [org, from, to] },
     { sql: "SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE s.organization_id=? AND s.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
     { sql: "SELECT d.sale_id, d.id, d.status, d.scheduled_on, d.delivered_on, d.zone_id, z.name AS zone_name, d.carrier FROM deliveries d JOIN sales s ON s.id=d.sale_id LEFT JOIN delivery_zones z ON z.id=d.zone_id AND z.organization_id=d.organization_id WHERE s.organization_id=? AND s.archived_at IS NULL AND d.archived_at IS NULL AND s.sold_on >= ? AND s.sold_on < ?", params: [org, from, to] },
+    // Sales of any month with something still owed: what customers owe is not a month's matter.
+    { sql: `SELECT ${SALE_COLUMNS.split(", ").map((column) => `s.${column}`).join(", ")} FROM sales s WHERE ${owedWhere} ORDER BY s.sold_on ASC, s.created_at ASC LIMIT ${OWED_LIMIT}`, params: [org] },
+    { sql: `SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE ${owedWhere}`, params: [org] },
+    { sql: `SELECT d.sale_id, d.id, d.status, d.scheduled_on, d.delivered_on, d.zone_id, z.name AS zone_name, d.carrier FROM deliveries d JOIN sales s ON s.id=d.sale_id LEFT JOIN delivery_zones z ON z.id=d.zone_id AND z.organization_id=d.organization_id WHERE ${owedWhere} AND d.archived_at IS NULL`, params: [org] },
   ], { retrySafe: true });
-  const deliveryBySale = new Map((deliveries as SaleDeliveryRow[]).map((row) => [row.sale_id, { id: row.id, status: row.status, scheduledOn: row.scheduled_on, deliveredOn: row.delivered_on, zoneId: row.zone_id, zoneName: row.zone_name ?? "", carrier: row.carrier }]));
+  const deliveryBySale = new Map([...deliveries as SaleDeliveryRow[], ...owedDeliveries as SaleDeliveryRow[]].map((row) => [row.sale_id, { id: row.id, status: row.status, scheduledOn: row.scheduled_on, deliveredOn: row.delivered_on, zoneId: row.zone_id, zoneName: row.zone_name ?? "", carrier: row.carrier }]));
   const itemsBySale = new Map<string, SaleItem[]>();
-  for (const row of items as SaleItemRow[]) {
+  const seenItems = new Set<string>();
+  for (const row of [...items as SaleItemRow[], ...owedItems as SaleItemRow[]]) {
+    // A sale of this month with something owed comes in both lists.
+    const key = `${row.sale_id}|${row.product_id}`;
+    if (seenItems.has(key)) continue;
+    seenItems.add(key);
     const list = itemsBySale.get(row.sale_id) ?? [];
     list.push({ productId: row.product_id, productName: row.product_name, quantityMilli: row.quantity_milli, unitPriceMinor: row.unit_price_minor, unitVariableCostMinor: row.unit_variable_cost_minor, unitCostMinor: row.unit_cost_minor });
     itemsBySale.set(row.sale_id, list);
@@ -204,13 +235,8 @@ export async function loadBusinessRecords(principal: Principal, forMonth: string
     channels: (channels as ChannelRow[]).map(toChannel),
     purchases: (purchases as PurchaseRow[]).slice(0, MONTH_RECORDS_LIMIT).map(toPurchase),
     investments: (investments as PurchaseRow[]).map(toPurchase),
-    sales: (sales as SaleRow[]).slice(0, MONTH_RECORDS_LIMIT).map((row): Sale => ({
-      id: row.id, soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, customerId: row.customer_id ?? null, note: row.note,
-      totalMinor: row.total_minor, sellingCostMinor: row.selling_cost_minor, deliveryCostMinor: row.delivery_cost_minor,
-      variableCostMinor: row.variable_cost_minor, productionCostMinor: row.production_cost_minor, documentId: row.document_id, source: row.source,
-      items: itemsBySale.get(row.id) ?? [],
-      delivery: deliveryBySale.get(row.id) ?? null,
-    })),
+    sales: (sales as SaleRow[]).slice(0, MONTH_RECORDS_LIMIT).map((row) => toSale(row, itemsBySale.get(row.id) ?? [], deliveryBySale.get(row.id) ?? null)),
+    owed: (owed as SaleRow[]).map((row) => toSale(row, itemsBySale.get(row.id) ?? [], deliveryBySale.get(row.id) ?? null)),
   };
 }
 
@@ -388,6 +414,7 @@ export async function recordSale(principal: Principal, input: SaleInput, options
     totalMinor: priced.totalMinor, sellingCostMinor: priced.sellingCostMinor, deliveryCostMinor: priced.deliveryCostMinor,
     variableCostMinor: priced.variableCostMinor, productionCostMinor: priced.productionCostMinor,
     documentId: await documentBelongs(principal, value.documentId), source: options.source, items: priced.items,
+    ...initialPayment(priced.totalMinor, value, value.soldOn),
   };
   if (duplicate[0]) return { id: duplicate[0].id, duplicate: true, sale: { id: duplicate[0].id, ...sale } };
   const id = crypto.randomUUID();
@@ -405,9 +432,9 @@ export async function recordSale(principal: Principal, input: SaleInput, options
   const delivery = delivers ? newDeliveryRow(principal, id, value.soldOn, channel, value.customer, fields, options.source, businessToday(state.organization.currency), place?.id ?? null, zone?.id ?? null) : null;
   const [saved] = !delivers && customerId ? await dbQuery<{ address: string }>("SELECT address FROM customer_addresses WHERE organization_id=? AND customer_id=? AND archived_at IS NULL ORDER BY is_default DESC, created_at DESC LIMIT 1", [principal.organizationId, customerId]) : [];
   await dbBatch([
-    { sql: "INSERT INTO sales (id, organization_id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source, actor_id, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
+    { sql: "INSERT INTO sales (id, organization_id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source, actor_id, idempotency_key, paid_minor, payment_method, paid_on) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", params: [
       id, principal.organizationId, sale.soldOn, sale.channelId, sale.channelName, sale.customer, customerId, sale.note, sale.totalMinor, sale.sellingCostMinor, sale.deliveryCostMinor,
-      sale.variableCostMinor, sale.productionCostMinor, sale.documentId, options.source, principal.userId, options.idempotencyKey,
+      sale.variableCostMinor, sale.productionCostMinor, sale.documentId, options.source, principal.userId, options.idempotencyKey, sale.paidMinor, sale.paymentMethod, sale.paidOn,
     ] },
     ...priced.items.map((item): SqlStatement => ({ sql: "INSERT INTO sale_items (sale_id, product_id, product_name, quantity_milli, unit_price_minor, unit_variable_cost_minor, unit_cost_minor) VALUES (?, ?, ?, ?, ?, ?, ?)", params: [id, item.productId, item.productName, item.quantityMilli, item.unitPriceMinor, item.unitVariableCostMinor, item.unitCostMinor] })),
     ...(delivery ? [delivery.statement] : []),
@@ -449,17 +476,12 @@ function newDeliveryRow(principal: Principal, saleId: string, soldOn: string, ch
 
 async function loadSale(principal: Principal, id: string): Promise<Sale> {
   const [rows, items] = await dbBatch<SaleRow | SaleItemRow>([
-    { sql: "SELECT id, sold_on, channel_id, channel_name, customer, customer_id, note, total_minor, selling_cost_minor, delivery_cost_minor, variable_cost_minor, production_cost_minor, document_id, source FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [id, principal.organizationId] },
+    { sql: `SELECT ${SALE_COLUMNS} FROM sales WHERE id=? AND organization_id=? AND archived_at IS NULL`, params: [id, principal.organizationId] },
     { sql: "SELECT si.sale_id, si.product_id, si.product_name, si.quantity_milli, si.unit_price_minor, si.unit_variable_cost_minor, si.unit_cost_minor FROM sale_items si JOIN sales s ON s.id=si.sale_id WHERE si.sale_id=? AND s.organization_id=?", params: [id, principal.organizationId] },
   ], { retrySafe: true });
   const row = (rows as SaleRow[])[0];
   if (!row) throw new ApiError(404, "Venta no encontrada");
-  return {
-    id: row.id, soldOn: row.sold_on, channelId: row.channel_id, channelName: row.channel_name, customer: row.customer, customerId: row.customer_id ?? null, note: row.note,
-    totalMinor: row.total_minor, sellingCostMinor: row.selling_cost_minor, deliveryCostMinor: row.delivery_cost_minor,
-    variableCostMinor: row.variable_cost_minor, productionCostMinor: row.production_cost_minor, documentId: row.document_id, source: row.source,
-    items: (items as SaleItemRow[]).map((item) => ({ productId: item.product_id, productName: item.product_name, quantityMilli: item.quantity_milli, unitPriceMinor: item.unit_price_minor, unitVariableCostMinor: item.unit_variable_cost_minor, unitCostMinor: item.unit_cost_minor })),
-  };
+  return toSale(row, (items as SaleItemRow[]).map((item) => ({ productId: item.product_id, productName: item.product_name, quantityMilli: item.quantity_milli, unitPriceMinor: item.unit_price_minor, unitVariableCostMinor: item.unit_variable_cost_minor, unitCostMinor: item.unit_cost_minor })));
 }
 
 /**
@@ -482,13 +504,14 @@ export async function updateSale(principal: Principal, id: string, input: SalePa
   const costs = patch.items || patch.fillMissingCosts ? await saleCostsOn(principal, state, patch.soldOn ?? sale.soldOn, [...sale.items.map((item) => item.productId), ...(patch.items ?? []).map((item) => item.productId)]) : calculateCosts(state);
   const { sale: next, problems } = repriceSale(sale, patch, state, costs, channels);
   if (problems.length) throw new ApiError(400, problems.join(". "));
+  const payment = nextPayment(sale, next.totalMinor, patch, await organizationToday(principal));
   const customerChange: SqlStatement[] = patch.customer !== undefined && patch.customer.trim() !== sale.customer
     ? [{ sql: "UPDATE sales SET customer_id=? WHERE id=? AND organization_id=?", params: [await resolveCustomer(principal, patch.customer, source), id, principal.organizationId] }]
     : [];
   await dbBatch([
     ...customerChange,
-    { sql: "UPDATE sales SET sold_on=?, channel_id=?, channel_name=?, customer=?, note=?, total_minor=?, selling_cost_minor=?, delivery_cost_minor=?, variable_cost_minor=?, production_cost_minor=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [
-      next.soldOn, next.channelId, next.channelName, next.customer, next.note, next.totalMinor, next.sellingCostMinor, next.deliveryCostMinor, next.variableCostMinor, next.productionCostMinor, id, principal.organizationId,
+    { sql: "UPDATE sales SET sold_on=?, channel_id=?, channel_name=?, customer=?, note=?, total_minor=?, selling_cost_minor=?, delivery_cost_minor=?, variable_cost_minor=?, production_cost_minor=?, paid_minor=?, payment_method=?, paid_on=? WHERE id=? AND organization_id=? AND archived_at IS NULL", params: [
+      next.soldOn, next.channelId, next.channelName, next.customer, next.note, next.totalMinor, next.sellingCostMinor, next.deliveryCostMinor, next.variableCostMinor, next.productionCostMinor, payment.paidMinor, payment.paymentMethod, payment.paidOn, id, principal.organizationId,
     ] },
     ...(patch.items || patch.fillMissingCosts ? [
       { sql: "DELETE FROM sale_items WHERE sale_id=? AND sale_id IN (SELECT id FROM sales WHERE organization_id=?)", params: [id, principal.organizationId] },
@@ -496,7 +519,7 @@ export async function updateSale(principal: Principal, id: string, input: SalePa
     ] : []),
     audit(principal, "update-sale", id, { before: sale, patch, source }),
   ]);
-  return { ...sale, ...next };
+  return { ...sale, ...next, ...payment };
 }
 
 /**

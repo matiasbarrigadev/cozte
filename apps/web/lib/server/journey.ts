@@ -60,6 +60,7 @@ function modulesWithData(state: DomainState, facts: JourneyFacts): Set<ModuleKey
   if (state.products.length || state.materials.length) { modules.add("planilla"); modules.add("historial"); }
   if (state.expenses.length) modules.add("gastos");
   if (facts.suppliers) modules.add("proveedores");
+  if (facts.channels) modules.add("canales");
   if (facts.purchases) modules.add("compras");
   if (facts.sales) modules.add("ventas");
   if (facts.deliveries || facts.deliveryZones) modules.add("entregas");
