@@ -15,7 +15,9 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { businessAction, notifySaved, useMoney } from "./business-ui";
 
-type Option = { kind: "customer"; entry: CustomerEntry } | { kind: "create"; name: string };
+type Option = { kind: "customer"; entry: CustomerEntry } | { kind: "create"; name: string } | { kind: "clear" };
+
+const optionText = (option: Option) => option.kind === "customer" ? option.entry.name : option.kind === "create" ? option.name : "";
 
 const MAX_SHOWN = 8;
 
@@ -32,21 +34,32 @@ export function pricingSummary(pricing: CustomerPricing | null | undefined, chan
  * The customer of a sale, always one of the company's customers: search and pick, or create a new one right there.
  * A name that is not picked is not used, so typos never become customers.
  */
-export function CustomerPicker({ customers, channels, value, onChange, onCreate, id, label = "Cliente" }: { customers: CustomerEntry[]; channels: SalesChannel[]; value: CustomerEntry | null; onChange: (customer: CustomerEntry | null) => void; onCreate: (name: string) => void; id?: string; label?: string }) {
+export function CustomerPicker({ customers, channels, value, onChange, onCreate, id, label = "Cliente", variant = "default", autoFocus, onCancel, onClear }: {
+  customers: CustomerEntry[]; channels: SalesChannel[]; value: CustomerEntry | null; onChange: (customer: CustomerEntry | null) => void; onCreate: (name: string) => void; id?: string; label?: string;
+  /** A borderless field that fills a table cell, for correcting a sale in place. */
+  variant?: "default" | "cell"; autoFocus?: boolean;
+  /** Leaving the field without picking (Escape or clicking away). */
+  onCancel?: () => void;
+  /** Offers "Sin cliente" to take the customer out of the sale. */
+  onClear?: () => void;
+}) {
   const [text, setText] = React.useState("");
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = React.useState(Boolean(autoFocus));
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const picked = React.useRef(false);
   const query = customerKey(text);
   const exact = query ? customers.find((customer) => customerKey(customer.name) === query) : undefined;
   const options = React.useMemo<Option[]>(() => {
     const found = customers.filter((customer) => !query || customerKey(customer.name).includes(query)).slice(0, MAX_SHOWN).map((entry): Option => ({ kind: "customer", entry }));
-    return text.trim() && !exact ? [...found, { kind: "create", name: text.trim() }] : found;
-  }, [customers, query, text, exact]);
+    return [...found, ...(text.trim() && !exact ? [{ kind: "create", name: text.trim() } as const] : []), ...(onClear && !text.trim() ? [{ kind: "clear" } as const] : [])];
+  }, [customers, query, text, exact, onClear]);
   const pick = (option: Option) => {
+    picked.current = true;
     setOpen(false);
     setText("");
     if (option.kind === "customer") onChange(option.entry);
-    else onCreate(option.name);
+    else if (option.kind === "create") onCreate(option.name);
+    else onClear?.();
   };
 
   if (value) {
@@ -60,21 +73,31 @@ export function CustomerPicker({ customers, channels, value, onChange, onCreate,
     </div>;
   }
   return <div className="flex flex-col gap-1">
-    <Autocomplete.Root items={options} filteredItems={options} value={text} itemToStringValue={(option: Option) => option.kind === "customer" ? option.entry.name : option.name}
+    <Autocomplete.Root items={options} filteredItems={options} value={text} itemToStringValue={optionText}
       open={open && options.length > 0} onOpenChange={(next) => setOpen(next)}
       onValueChange={(next, details) => {
         if (details.reason === "escape-key") return;
         if (details.reason === "item-press") {
-          const option = options.find((item) => (item.kind === "customer" ? item.entry.name : item.name) === next);
+          const option = options.find((item) => optionText(item) === next);
           if (option) pick(option);
           return;
         }
         setText(next);
       }}>
-      <Autocomplete.Input ref={inputRef} id={id} aria-label={label} autoComplete="off" placeholder="Buscar o crear cliente (opcional)"
-        onBlur={() => { setOpen(false); if (exact) pick({ kind: "customer", entry: exact }); }}
-        onKeyDown={(event) => { if (event.key === "Enter" && exact && !open) { event.preventDefault(); pick({ kind: "customer", entry: exact }); } }}
-        className="h-9 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30" />
+      <Autocomplete.Input ref={inputRef} id={id} aria-label={label} autoComplete="off" autoFocus={autoFocus} placeholder={variant === "cell" ? "Buscar o crear cliente" : "Buscar o crear cliente (opcional)"}
+        onBlur={() => {
+          setOpen(false);
+          if (exact) { pick({ kind: "customer", entry: exact }); return; }
+          // A pick from the list lands right after the field loses focus: give it a moment before leaving.
+          if (onCancel) window.setTimeout(() => { if (!picked.current) onCancel(); }, 200);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && onCancel) { event.preventDefault(); picked.current = true; onCancel(); return; }
+          if (event.key === "Enter" && exact && !open) { event.preventDefault(); pick({ kind: "customer", entry: exact }); }
+        }}
+        className={variant === "cell"
+          ? "h-11 w-full min-w-0 rounded-none border-0 bg-background px-3 text-sm shadow-none outline-none ring-2 ring-ring/50 placeholder:text-muted-foreground"
+          : "h-9 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"} />
       {options.length ? <Autocomplete.Portal>
         <Autocomplete.Positioner sideOffset={4} align="start" className="isolate z-50 outline-none">
           <Autocomplete.Popup className="max-h-[min(20rem,var(--available-height))] min-w-(--anchor-width) max-w-[min(26rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border bg-popover p-1 text-popover-foreground shadow-lg ring-1 ring-foreground/5 outline-none">
@@ -84,16 +107,38 @@ export function CustomerPicker({ customers, channels, value, onChange, onCreate,
                   <span className="truncate">{option.entry.name}</span>
                   {pricingSummary(option.entry, channels) || option.entry.address ? <span className="truncate text-xs text-muted-foreground">{pricingSummary(option.entry, channels) || option.entry.address}</span> : null}
                 </Autocomplete.Item>
-                : <Autocomplete.Item key="create" value={option} className="flex cursor-default items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-primary outline-none select-none data-highlighted:bg-accent">
+                : option.kind === "create" ? <Autocomplete.Item key="create" value={option} className="flex cursor-default items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-primary outline-none select-none data-highlighted:bg-accent">
                   <AnimatedIcon name="plus" size={14} />Crear cliente «{option.name}»
-                </Autocomplete.Item>}
+                </Autocomplete.Item>
+                : <Autocomplete.Item key="clear" value={option} className="flex cursor-default items-center rounded-lg px-2 py-1.5 text-sm text-muted-foreground outline-none select-none data-highlighted:bg-accent">Sin cliente</Autocomplete.Item>}
             </Autocomplete.List>
           </Autocomplete.Popup>
         </Autocomplete.Positioner>
       </Autocomplete.Portal> : null}
     </Autocomplete.Root>
-    {text.trim() && !exact && !open ? <p className="text-[11px] text-muted-foreground">«{text.trim()}» no es un cliente todavía. <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => pick({ kind: "create", name: text.trim() })}>Crearlo</button></p> : null}
+    {variant === "default" && text.trim() && !exact && !open ? <p className="text-[11px] text-muted-foreground">«{text.trim()}» no es un cliente todavía. <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => pick({ kind: "create", name: text.trim() })}>Crearlo</button></p> : null}
   </div>;
+}
+
+/**
+ * The customer cell of the sales table: shows the customer and, on click, the picker in place. Picking another
+ * customer, creating one or leaving the sale without one saves at once; prices already charged stay as they were.
+ */
+export function CustomerCell({ value, customers, channels, products, currency, demo, onCommit, onCustomerCreated }: { value: string; customers: CustomerEntry[]; channels: SalesChannel[]; products: Product[]; currency: string; demo: boolean; onCommit: (name: string) => void; onCustomerCreated?: (customer: CustomerEntry) => void }) {
+  const [editing, setEditing] = React.useState(false);
+  const [creating, setCreating] = React.useState<string | null>(null);
+  return <>
+    {editing ? <CustomerPicker variant="cell" autoFocus customers={customers} channels={channels} value={null} label="Cliente de la venta"
+      onChange={(entry) => { setEditing(false); if (entry && entry.name !== value) onCommit(entry.name); }}
+      onCreate={(name) => { setEditing(false); setCreating(name); }}
+      onClear={value ? () => { setEditing(false); onCommit(""); } : undefined}
+      onCancel={() => setEditing(false)} />
+      : <button type="button" onClick={() => setEditing(true)} className="flex h-11 w-full items-center px-3 text-left text-sm hover:bg-accent/30" title="Cambiar el cliente" aria-label={`${value || "Sin cliente"}: cambiar el cliente`}>
+        {value ? <span className="truncate">{value}</span> : <span className="text-muted-foreground">Sin cliente</span>}
+      </button>}
+    {creating !== null ? <QuickCustomerDialog name={creating} products={products} channels={channels} currency={currency} demo={demo} onClose={() => setCreating(null)}
+      onCreated={(entry) => { setCreating(null); onCustomerCreated?.(entry); onCommit(entry.name); }} /> : null}
+  </>;
 }
 
 export type PricingDraft = { defaultChannelId: string; adjustment: string; prices: Record<string, string> };

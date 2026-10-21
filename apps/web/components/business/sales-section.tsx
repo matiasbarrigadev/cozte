@@ -13,19 +13,19 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui
 import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
-import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
+import { SuggestInput } from "@/components/ui/suggest-input";
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { TextShimmer } from "@/components/ui/text-shimmer";
 import { cn } from "@/lib/utils";
 import { MonthPicker, ReceiptLink, SectionHeader, businessAction, formatDate, notifySaved, todayFor, uploadDocument, useBusinessView, useCustomerDirectory, useMoney } from "./business-ui";
-import { EditableDate, EditableNumber, EditableSuggest, EditableText, SortableHead, TableToolbar, downloadCsv, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
+import { EditableDate, EditableNumber, EditableText, SortableHead, TableToolbar, downloadCsv, matches, monthName, sheetCell, sheetHead, usePersistentState, type SortState } from "./data-table";
 import { RecordHistory } from "./record-history";
 import { DeliveryStatusBadge, relativeDay } from "./delivery-status";
 import { useDeliveries } from "./deliveries-section";
 import { SaleCards } from "./mobile-cards";
 import { PaymentBadge, PaymentDialog, PaymentPicker, paymentFields, type PaymentChoice } from "./payment";
 import { SaleRegister, type SalePreset } from "./sale-register";
-import { CustomerPicker, QuickCustomerDialog } from "./customer-picker";
+import { CustomerCell, CustomerPicker, QuickCustomerDialog } from "./customer-picker";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 const leftOf = (sale: Sale) => sale.variableCostMinor === null ? null : sale.totalMinor - sale.variableCostMinor - sale.sellingCostMinor - sale.deliveryCostMinor;
@@ -82,7 +82,6 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
   const money = useMoney(state.organization.currency);
   const [customersVersion, setCustomersVersion] = React.useState(0);
   const directory = useCustomerDirectory(demo, `${current.view?.sales.length ?? 0}:${customersVersion}`);
-  const customerSuggestions = React.useMemo<Suggestion[]>(() => directory.customers.map((item) => ({ value: item.name, hint: [item.address, item.sales > 1 ? `${item.sales} compras` : ""].filter(Boolean).join(" · ") || undefined })), [directory]);
   const [saleOpen, setSaleOpen] = React.useState(false);
   const [itemsSale, setItemsSale] = React.useState<Sale | null>(null);
   const [paying, setPaying] = React.useState<Sale | null>(null);
@@ -198,7 +197,7 @@ export function SalesSection({ state, demo, month, onMonthChange, onOpenCozte, o
           ]} />
         </CardHeader>
         <CardContent>
-          {rows.length ? <SalesTable key={`${status}:${period}:${month}`} rows={rows} costs={costs} today={today} label={status === "owed" ? "por cobrar" : periodLabel} exportName={status === "owed" ? "ventas-por-cobrar" : `ventas-${period === "month" ? month : period === "week" ? start : today}`} customerSuggestions={customerSuggestions} state={state} channels={view.channels} demo={demo} money={money}
+          {rows.length ? <SalesTable key={`${status}:${period}:${month}`} rows={rows} costs={costs} today={today} label={status === "owed" ? "por cobrar" : periodLabel} exportName={status === "owed" ? "ventas-por-cobrar" : `ventas-${period === "month" ? month : period === "week" ? start : today}`} customers={directory.customers} onCustomerCreated={() => setCustomersVersion((value) => value + 1)} state={state} channels={view.channels} demo={demo} money={money}
             onUpdate={update} onArchive={(sale) => void archive(sale)} onEditItems={setItemsSale} onSchedule={(sale) => void scheduleDelivery(sale)} onOpenDeliveries={onOpenDeliveries} onCollect={setPaying} onRepeat={repeat} bulk={bulk} />
             : <Empty className="py-6"><EmptyHeader><EmptyTitle>{status === "owed" ? "Nadie te debe nada" : status === "deliver" ? `No hay entregas pendientes de ventas de ${periodLabel}` : `No hay ventas ${period === "month" ? `en ${periodLabel}` : periodLabel}`}</EmptyTitle>
               <EmptyDescription>{status === "all" ? "Registralas en la caja de arriba o mandale a Cozte la foto del remito o factura." : "Cuando haya, aparecen acá."}</EmptyDescription></EmptyHeader>
@@ -230,8 +229,8 @@ function Segmented<T extends string>({ label, value, options, onChange }: { labe
 }
 
 /** The sales as an editable sheet: search and filters on top, selection for actions in groups, most recent first unless sorted. */
-function SalesTable({ rows: sales, costs, today, label, exportName, customerSuggestions, state, channels, demo, money, onUpdate, onArchive, onEditItems, onSchedule, onOpenDeliveries, onCollect, onRepeat, bulk }: {
-  rows: Sale[]; costs: ReturnType<typeof calculateCosts>; today: string; label: string; exportName: string; customerSuggestions: Suggestion[]; state: DomainState; channels: SalesChannel[]; demo: boolean; money: (value: number) => string;
+function SalesTable({ rows: sales, costs, today, label, exportName, customers, onCustomerCreated, state, channels, demo, money, onUpdate, onArchive, onEditItems, onSchedule, onOpenDeliveries, onCollect, onRepeat, bulk }: {
+  rows: Sale[]; costs: ReturnType<typeof calculateCosts>; today: string; label: string; exportName: string; customers: CustomerEntry[]; onCustomerCreated: () => void; state: DomainState; channels: SalesChannel[]; demo: boolean; money: (value: number) => string;
   onUpdate: (sale: Sale, patch: SalePatch, message?: string, undoable?: boolean) => Promise<boolean>; onArchive: (sale: Sale) => void; onEditItems: (sale: Sale) => void; onSchedule: (sale: Sale) => void; onOpenDeliveries?: () => void;
   onCollect: (sale: Sale) => void; onRepeat: (sale: Sale) => void; bulk: BulkActions;
 }) {
@@ -278,7 +277,7 @@ function SalesTable({ rows: sales, costs, today, label, exportName, customerSugg
       <Button type="button" size="sm" variant="ghost" className="ml-auto" onClick={() => setSelected(new Set())}>Quitar selección</Button>
     </div> : null}
     {history ? <RecordHistory kind="sale" id={history.id} title={`Venta del ${history.soldOn.slice(8, 10)}/${history.soldOn.slice(5, 7)}${history.customer ? ` a ${history.customer}` : ""}`} demo={demo} onClose={() => setHistory(null)} /> : null}
-    {isMobile ? <SaleCards rows={rows} today={today} channels={channels} money={money} suggestions={customerSuggestions} onUpdate={onUpdate} onArchive={onArchive} onEditItems={onEditItems} onOpenDeliveries={onOpenDeliveries} onCollect={onCollect} onRepeat={onRepeat} /> : <div className="max-h-[min(70vh,48rem)] overflow-auto rounded-lg border">
+    {isMobile ? <SaleCards rows={rows} today={today} channels={channels} money={money} customers={customers} products={state.products} currency={state.organization.currency} demo={demo} onCustomerCreated={onCustomerCreated} onUpdate={onUpdate} onArchive={onArchive} onEditItems={onEditItems} onOpenDeliveries={onOpenDeliveries} onCollect={onCollect} onRepeat={onRepeat} /> : <div className="max-h-[min(70vh,48rem)] overflow-auto rounded-lg border">
       <Table className="border-separate border-spacing-0">
         <TableHeader className="sticky top-0 z-20 bg-card"><TableRow className="hover:bg-transparent">
           <TableHead className={cn(sheetHead, "sticky left-0 z-30 w-10 min-w-10 max-w-10 bg-muted px-0 text-center")}><input type="checkbox" className="size-4 accent-primary" checked={allChosen} aria-label="Elegir todas las ventas que se ven" onChange={() => setSelected(allChosen ? new Set() : new Set(rows.map((sale) => sale.id)))} /></TableHead>
@@ -307,7 +306,7 @@ function SalesTable({ rows: sales, costs, today, label, exportName, customerSugg
               <EditableDate today={today} value={sale.soldOn} label={`Fecha de la venta a ${sale.customer || sale.channelName}`} onCommit={(soldOn) => void onUpdate(sale, { soldOn })} className="w-36 shrink-0" />
               <span className="pr-3 text-xs whitespace-nowrap text-muted-foreground">{relativeDay(sale.soldOn, today)}</span>
             </div></TableCell>
-            <TableCell className={sheetCell}><EditableSuggest suggestions={customerSuggestions} value={sale.customer} label="Cliente" placeholder="Sin cliente" onCommit={(customer) => void onUpdate(sale, { customer })} /></TableCell>
+            <TableCell className={sheetCell}><CustomerCell value={sale.customer} customers={customers} channels={channels} products={state.products} currency={state.organization.currency} demo={demo} onCustomerCreated={onCustomerCreated} onCommit={(customer) => void onUpdate(sale, { customer }, customer ? `Cliente: ${customer}` : "Venta sin cliente")} /></TableCell>
             <TableCell className={sheetCell}>{single ? <Dropdown variant="cell" aria-label="Producto vendido" value={single.productId} onChange={(event) => { if (event.target.value !== single.productId) void onUpdate(sale, { items: [{ productId: event.target.value, quantity: single.quantityMilli / 1000 }] }, "Producto cambiado"); }}>
               {state.products.some((product) => product.id === single.productId) ? null : <DropdownOption value={single.productId} disabled>{single.productName}</DropdownOption>}
               {state.products.map((product) => <DropdownOption key={product.id} value={product.id}>{product.name}</DropdownOption>)}

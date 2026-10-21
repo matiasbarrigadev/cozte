@@ -10,10 +10,13 @@ import { Dropdown, DropdownOption } from "@/components/ui/dropdown";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
-import { SuggestInput, type Suggestion } from "@/components/ui/suggest-input";
 import { cn } from "@/lib/utils";
 import { DELIVERY_TONE, DeliveryStatusBadge, relativeDay } from "./delivery-status";
 import { PaymentBadge } from "./payment";
+import { CustomerPicker, QuickCustomerDialog } from "./customer-picker";
+import { customerKey } from "@/lib/customers";
+import type { CustomerEntry } from "@/lib/business";
+import type { Product } from "@/lib/domain";
 
 /**
  * Sales and deliveries as cards for a phone: the fields that matter first, one tap to mark a delivery as done,
@@ -94,8 +97,9 @@ function DeliveryEditDialog({ delivery, onClose, onSave, onRemove }: { delivery:
   </DialogContent></Dialog>;
 }
 
-export function SaleCards({ rows, today, channels, money, suggestions, onUpdate, onArchive, onEditItems, onOpenDeliveries, onCollect, onRepeat }: {
-  rows: Sale[]; today: string; channels: SalesChannel[]; money: (value: number) => string; suggestions: Suggestion[];
+export function SaleCards({ rows, today, channels, money, customers, products, currency, demo, onCustomerCreated, onUpdate, onArchive, onEditItems, onOpenDeliveries, onCollect, onRepeat }: {
+  rows: Sale[]; today: string; channels: SalesChannel[]; money: (value: number) => string;
+  customers: CustomerEntry[]; products: Product[]; currency: string; demo: boolean; onCustomerCreated?: () => void;
   onUpdate: (sale: Sale, patch: SalePatch, message?: string) => Promise<boolean>; onArchive: (sale: Sale) => void; onEditItems: (sale: Sale) => void; onOpenDeliveries?: () => void;
   onCollect?: (sale: Sale) => void; onRepeat?: (sale: Sale) => void;
 }) {
@@ -130,13 +134,15 @@ export function SaleCards({ rows, today, channels, money, suggestions, onUpdate,
         </li>;
       })}
     </ul>
-    {editing ? <SaleEditDialog sale={editing} channels={channels} suggestions={suggestions} onClose={() => setEditing(null)} onSave={async (patch) => { if (!Object.keys(patch).length || await onUpdate(editing, patch)) setEditing(null); }} /> : null}
+    {editing ? <SaleEditDialog sale={editing} channels={channels} customers={customers} products={products} currency={currency} demo={demo} onCustomerCreated={onCustomerCreated} onClose={() => setEditing(null)} onSave={async (patch) => { if (!Object.keys(patch).length || await onUpdate(editing, patch)) setEditing(null); }} /> : null}
   </>;
 }
 
-function SaleEditDialog({ sale, channels, suggestions, onClose, onSave }: { sale: Sale; channels: SalesChannel[]; suggestions: Suggestion[]; onClose: () => void; onSave: (patch: SalePatch) => Promise<void> }) {
+function SaleEditDialog({ sale, channels, customers, products, currency, demo, onCustomerCreated, onClose, onSave }: { sale: Sale; channels: SalesChannel[]; customers: CustomerEntry[]; products: Product[]; currency: string; demo: boolean; onCustomerCreated?: () => void; onClose: () => void; onSave: (patch: SalePatch) => Promise<void> }) {
   const [busy, setBusy] = React.useState(false);
-  const [customer, setCustomer] = React.useState(sale.customer);
+  // The sale's customer from the list (or as it was written, for an old sale), changed only by picking or creating one.
+  const [customer, setCustomer] = React.useState<CustomerEntry | null>(() => sale.customer ? customers.find((entry) => customerKey(entry.name) === customerKey(sale.customer)) ?? { name: sale.customer, address: "", contact: "", recipient: "", lastOn: "", sales: 0 } : null);
+  const [creating, setCreating] = React.useState<string | null>(null);
   const [channelId, setChannelId] = React.useState(sale.channelId ?? DIRECT_CHANNEL.id);
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -144,7 +150,7 @@ function SaleEditDialog({ sale, channels, suggestions, onClose, onSave }: { sale
     const patch: SalePatch = {};
     const soldOn = String(data.get("soldOn") ?? "");
     if (soldOn && soldOn !== sale.soldOn) patch.soldOn = soldOn;
-    if (customer.trim() !== sale.customer) patch.customer = customer.trim();
+    if ((customer?.name ?? "") !== sale.customer) patch.customer = customer?.name ?? "";
     const note = String(data.get("note") ?? "").trim();
     if (note !== sale.note) patch.note = note;
     const nextChannel = channelId === DIRECT_CHANNEL.id ? null : channelId;
@@ -159,11 +165,12 @@ function SaleEditDialog({ sale, channels, suggestions, onClose, onSave }: { sale
     <form className="flex flex-col gap-4" onSubmit={submit}><FieldGroup>
       <Field><FieldLabel htmlFor="edit-sold-on">Fecha</FieldLabel><DatePicker id="edit-sold-on" name="soldOn" defaultValue={sale.soldOn} /></Field>
       <Field><FieldLabel htmlFor="edit-channel">Canal</FieldLabel><Dropdown id="edit-channel" className="w-full" value={channelId} onChange={(event) => setChannelId(event.target.value)}>{channels.map((item) => <DropdownOption key={item.id} value={item.id}>{item.name}</DropdownOption>)}<DropdownOption value={DIRECT_CHANNEL.id}>{DIRECT_CHANNEL.name}</DropdownOption></Dropdown></Field>
-      <Field><FieldLabel htmlFor="edit-customer">Cliente</FieldLabel><SuggestInput id="edit-customer" value={customer} suggestions={suggestions} onValueChange={(value) => setCustomer(value)} placeholder="Sin cliente" /></Field>
+      <Field><FieldLabel htmlFor="edit-customer">Cliente</FieldLabel><CustomerPicker id="edit-customer" customers={customers} channels={channels} value={customer} onChange={setCustomer} onCreate={setCreating} /></Field>
       <Field><FieldLabel htmlFor="edit-delivery-cost">Costo de entregar</FieldLabel><Input id="edit-delivery-cost" name="deliveryCost" type="number" min="0" step="any" inputMode="decimal" defaultValue={sale.deliveryCostMinor} disabled={channelId !== (sale.channelId ?? DIRECT_CHANNEL.id)} /></Field>
       <Field><FieldLabel htmlFor="edit-note">Nota</FieldLabel><Input id="edit-note" name="note" defaultValue={sale.note} /></Field>
     </FieldGroup>
       <DialogFooter><Button type="button" variant="outline" onClick={onClose}>Cancelar</Button><Button type="submit" disabled={busy}>{busy ? "Guardando…" : "Guardar"}</Button></DialogFooter>
     </form>
+    {creating !== null ? <QuickCustomerDialog name={creating} products={products} channels={channels} currency={currency} demo={demo} onClose={() => setCreating(null)} onCreated={(entry) => { setCreating(null); setCustomer(entry); onCustomerCreated?.(); }} /> : null}
   </DialogContent></Dialog>;
 }
